@@ -320,6 +320,23 @@ export function buildWorldlineView(
 }
 
 /**
+ * 视图摊平成「一张按时间排的存档表」——工具面（worldline_list）要表不要树。
+ *
+ * 线名在此下沉到每条存档上：`WorldlineSaveNode` 只带 `worldlineId`，消费端各自回查
+ * `lines` 必然各写一遍。助手侧那份就写错了（读的是不存在的顶层 `view.saves`，
+ * 恒得空表 → 工具永远回「尚无存档」），故摊平归此处一份，两面共用。
+ */
+export function flattenWorldlineSaves(view: WorldlineView): {
+	saves: Array<WorldlineSaveNode & { worldlineName: string }>;
+	currentSaveId: string | null;
+} {
+	const saves = view.lines
+		.flatMap((l) => l.saves.map((s) => ({ ...s, worldlineName: l.name })))
+		.sort((a, b) => a.createdAt - b.createdAt);
+	return { saves, currentSaveId: view.currentSaveId };
+}
+
+/**
  * 从扁平 entries 建 parent→children 与 ancestors 查询。
  * 供扩展/ host 注入 planNewSave。
  */

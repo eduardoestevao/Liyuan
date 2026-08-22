@@ -63,10 +63,87 @@ export interface PresetBlockPatch {
 export interface PresetPatch {
 	samplers?: Record<string, number>;
 	blocks?: PresetBlockPatch[];
+	/** 新增块（8/23：预设**创作**——此前只能改已有块，作者用梨园写预设时加不了新块） */
+	add?: NewPresetBlock[];
+}
+
+/**
+ * 新增一个提示词块。
+ *
+ * 位置就是语义：ST 里「在 chatHistory 之前」= 进 system，「之后」= postHistory，
+ * 所以 `before`/`after` 不是排版偏好，是**这块什么时候送达**。缺省追加到末尾。
+ * 给了 `depth` 则落成 in-chat 深度注入（`injection_position: 1`），位置改由深度决定。
+ */
+export interface NewPresetBlock {
+	/** 块 id；缺省自动生成（与既有 id 冲突时报错，不静默覆盖别人的块） */
+	id?: string;
+	name: string;
+	content: string;
+	/** 缺省 system */
+	role?: PieceRole;
+	/** 缺省 true */
+	enabled?: boolean;
+	/** 插在这个块之前（id） */
+	before?: string;
+	/** 插在这个块之后（id） */
+	after?: string;
+	/** in-chat 深度注入（0=最新一条之后）；给了它就不看 before/after */
+	depth?: number;
 }
 
 const isStRaw = (raw: Record<string, unknown>): boolean =>
 	Array.isArray(raw.prompts) || Array.isArray(raw.prompt_order);
+
+/** 新块 id：可读前缀 + 随机尾巴，肉眼能认出是梨园写的 */
+function newBlockId(): string {
+	return `ly-${Math.random().toString(36).slice(2, 10)}`;
+}
+
+/**
+ * 把 `patch.add` 的新块插进 ST 原文：`prompts[]` 落定义，`prompt_order[].order` 落位置与开关。
+ * **两处都要落**——只落 prompts 的块在有 prompt_order 的预设里根本不会被装配（stEntries 以 order 为准）。
+ */
+function addStBlocks(next: Record<string, unknown>, add: NewPresetBlock[]): string[] {
+	const prompts = (Array.isArray(next.prompts) ? next.prompts : []) as Record<string, unknown>[];
+	const taken = new Set(prompts.map((p) => (typeof p.identifier === "string" ? p.identifier : "")));
+	const orderIdx = pickPromptOrderIndex(next);
+	const chosen = orderIdx >= 0 ? (next.prompt_order as Record<string, unknown>[])[orderIdx] : null;
+	const order = (chosen?.order ?? []) as Record<string, unknown>[];
+	const created: string[] = [];
+
+	for (const b of add) {
+		const id = (b.id ?? "").trim() || newBlockId();
+		if (taken.has(id)) throw new Error(`预设里已有 id 为 ${id} 的块——改它用 blocks，别用 add`);
+		taken.add(id);
+		const inChat = typeof b.depth === "number" && Number.isFinite(b.depth);
+		prompts.push({
+			identifier: id,
+			name: b.name.trim() || id,
+			role: b.role ?? "system",
+			content: b.content,
+			system_prompt: false,
+			marker: false,
+			injection_position: inChat ? 1 : 0,
+			injection_depth: inChat ? Math.max(0, Math.trunc(b.depth as number)) : 0,
+		});
+		const enabled = b.enabled !== false;
+		if (chosen) {
+			// 位置＝语义（chatHistory 前后决定 system / postHistory），故按 id 定位而非索引
+			const at = b.before
+				? order.findIndex((o) => o.identifier === b.before)
+				: b.after
+					? order.findIndex((o) => o.identifier === b.after) + 1
+					: -1;
+			if (at >= 0) order.splice(at, 0, { identifier: id, enabled });
+			else order.push({ identifier: id, enabled });
+		}
+		created.push(id);
+	}
+
+	next.prompts = prompts;
+	if (chosen) chosen.order = order;
+	return created;
+}
 
 function stSamplers(raw: Record<string, unknown>): Record<string, number> {
 	const out: Record<string, number> = {};
@@ -163,6 +240,7 @@ export function patchPresetRaw(doc: PresetDoc, patch: PresetPatch): Record<strin
 				if (typeof v === "number" && Number.isFinite(v)) next[key] = v;
 			}
 		}
+		if (patch.add?.length) addStBlocks(next, patch.add);
 		return next;
 	}
 
@@ -175,7 +253,20 @@ export function patchPresetRaw(doc: PresetDoc, patch: PresetPatch): Record<strin
 		if (typeof p.name === "string" && p.name.trim()) b.name = p.name.trim();
 		if (typeof p.content === "string") b.content = p.content;
 	}
-	next.blocks = removed.size > 0 ? blocks.filter((b) => !(typeof b.id === "string" && removed.has(b.id))) : blocks;
+	let out = removed.size > 0 ? blocks.filter((b) => !(typeof b.id === "string" && removed.has(b.id))) : blocks;
+	for (const b of patch.add ?? []) {
+		const id = (b.id ?? "").trim() || newBlockId();
+		if (out.some((x) => x.id === id)) throw new Error(`预设里已有 id 为 ${id} 的块——改它用 blocks，别用 add`);
+		const rec = { id, name: b.name.trim() || id, role: b.role ?? "system", content: b.content, enabled: b.enabled !== false };
+		const at = b.before
+			? out.findIndex((x) => x.id === b.before)
+			: b.after
+				? out.findIndex((x) => x.id === b.after) + 1
+				: -1;
+		if (at >= 0) out = [...out.slice(0, at), rec, ...out.slice(at)];
+		else out = [...out, rec];
+	}
+	next.blocks = out;
 	if (patch.samplers) {
 		const s: Record<string, number> = {};
 		for (const [k, v] of Object.entries(patch.samplers)) {

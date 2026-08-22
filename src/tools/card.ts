@@ -1,20 +1,35 @@
 /**
- * 角色库族工具（PLAN-RP-TOOLING M-D4）。
+ * 角色库族工具（PLAN-RP-TOOLING M-D4；M-D7 补齐写侧与卡库）。
  *
  * 合一前仅助手侧有 `card_create` 一件（typebox 内联，未走统一层），
  * 台上与扩展各零件。`card_read` 是新增。
  *
- * ## 写侧保护（本窗口只做读 + 创建）
+ * ## 写侧（M-D7 开放）
  *
- * `updateCardFields` 直接 `writeFileSync` 覆盖用户原卡文件（PNG/JSON），无备份、无 overlay。
- * 与世界书族「用户原始资料只读、写入落独立 overlay」的纪律冲突。本窗口**不做 card_update**，
- * 等有备份/overlay 保护后再开写侧。
+ * `card_update` 曾被推迟，理由是「`updateCardFields` 直接覆盖用户原卡、无备份无 overlay，
+ * 与世界书族『用户原始资料只读』的纪律冲突」。那条纪律 2026-08-22 已被用户推翻
+ * （「agent 就是应该有这些权限」），世界书族的改/删同期开放到用户自己的书，
+ * 本族随之对齐。`updateCardFields` 对 PNG 卡改的是 tEXt 内嵌 JSON、立绘像素不动。
  *
  * `card_create` 是**安全写**：创建新文件（同名拒写 + 写入后 loadCardFile 回读自检，
  * 解析失败 unlinkSync 回滚），不碰用户现有卡数据。
+ *
+ * ## 为什么卡库/换卡/开场白只在助手面
+ *
+ * 不是权限限制，是**相关性**：换卡要 switchSession（台上正在生成，换会话会把本拍连根拔掉，
+ * 机械上就走不通），卡库与开场白是「开局」的事、与一拍演出无关。
+ * 台上留 `card_read` + `card_update`——「用户中途改了角色设定」是剧情事件。
  */
 
 import { errText, intArg, strArg, type ToolResult, type ToolSpec } from "./registry.ts";
+
+/** 卡库一项（列举用；与 GET /api/cards 同源） */
+export interface CardLibItemLike {
+	path: string;
+	name: string;
+	tags?: string[];
+	fav?: boolean;
+}
 
 export interface CardDeps {
 	// ---- 读者 ----
@@ -27,6 +42,23 @@ export interface CardDeps {
 	/** 创建一张新角色卡（JSON CharaCard V3）；同名拒写。返回 (name, path) 或 null=同名已存在 */
 	createCard?: (input: { name: string; description?: string; personality?: string; scenario?: string;
 		firstMes: string; mesExample?: string; alternateGreetings?: string[] }) => { name: string; path: string } | null;
+
+	// ---- M-D7 写侧与卡库 ----
+	/** 改当前卡的字段（只给的字段生效）；PNG 卡改内嵌 JSON，立绘不动 */
+	updateCard?: (patch: { name?: string; description?: string; personality?: string; scenario?: string;
+		firstMes?: string; mesExample?: string; systemPrompt?: string; postHistoryInstructions?: string;
+		creatorNotes?: string; tags?: string[] }) => void;
+	/** 卡库列表 + 当前卡路径 */
+	listCards?: () => { cards: CardLibItemLike[]; current: string };
+	/** 换卡（写 config 并切/建会话）；返回换卡后的卡名与会话结果 */
+	switchCard?: (path: string) => Promise<{ name: string; result: "switched" | "created" }>;
+	/** 开场白读写：整组读；按序号改/删；追加返回新序号 */
+	greetings?: {
+		list: () => string[];
+		add: (text: string) => number;
+		edit: (index: number, text: string) => void;
+		remove: (index: number) => void;
+	};
 }
 
 /**
@@ -148,5 +180,234 @@ export const cardCreate: ToolSpec<CardDeps> = {
 	},
 };
 
-/** 角色库族全部工具（M-D4：读 + 创建；写侧 card_update 待补保护层后开放） */
-export const cardTools: ToolSpec<CardDeps>[] = [cardRead, cardCreate];
+/**
+ * 调用情境（M-D7）：用户说「把她的性格改成更冷淡些」「这卡描述写错了」——
+ * 改的是**当前装载的卡本身**，跨会话生效。
+ *
+ * 台上也开放：中途改角色设定是剧情事件，不是管理动作。
+ * 但它改的是用户的卡文件、无备份——描述里那句「改前先确认」是这个工具唯一的安全网。
+ */
+export const cardUpdate: ToolSpec<CardDeps> = {
+	name: "card_update",
+	domain: "card",
+	mode: "write",
+	surfaces: ["stage", "assistant"],
+	label: "修改角色卡",
+	description: (ctx) =>
+		"改当前角色卡的字段（只传要改的，没传的原样保留）。直接改卡文件、跨会话生效、不可撤销——" +
+		"**仅在用户明确要求改卡时调用**。想改开场白正文用 first_mes；" +
+		// card_greetings 只在助手面注册，台上指它＝指一个模型调不到的工具
+		(ctx.surface === "stage" ? "备选开场白改不了，请用户去卡编辑器里改。" : "备选开场白归 card_greetings。"),
+	parameters: () => ({
+		type: "object",
+		properties: {
+			name: { type: "string", description: "卡名" },
+			description: { type: "string", description: "外貌/背景描述" },
+			personality: { type: "string", description: "性格特征" },
+			scenario: { type: "string", description: "当前场景/处境" },
+			first_mes: { type: "string", description: "开场白正文" },
+			mes_example: { type: "string", description: "对话范例" },
+			system_prompt: { type: "string", description: "卡内系统提示" },
+			post_history_instructions: { type: "string", description: "卡内末端指令（历史之后注入的那段）" },
+			creator_notes: { type: "string", description: "作者注" },
+			tags: { type: "array", items: { type: "string" }, description: "标签（整组替换）" },
+		},
+		required: [],
+	}),
+	async run(args, deps): Promise<ToolResult> {
+		if (!deps.updateCard) return { text: "本环境不支持修改角色卡。" };
+
+		const patch: Record<string, unknown> = {};
+		const map: Array<[string, string]> = [
+			["name", "name"],
+			["description", "description"],
+			["personality", "personality"],
+			["scenario", "scenario"],
+			["first_mes", "firstMes"],
+			["mes_example", "mesExample"],
+			["system_prompt", "systemPrompt"],
+			["post_history_instructions", "postHistoryInstructions"],
+			["creator_notes", "creatorNotes"],
+		];
+		for (const [from, to] of map) {
+			if (typeof args[from] === "string") patch[to] = args[from];
+		}
+		if (Array.isArray(args.tags)) {
+			patch.tags = args.tags.filter((t): t is string => typeof t === "string" && t.trim().length > 0).map((t) => t.trim());
+		}
+		const changed = Object.keys(patch);
+		if (changed.length === 0) return { text: "没有要改的字段（name/description/personality/scenario/first_mes… 至少给一个）。" };
+
+		try {
+			deps.updateCard(patch);
+		} catch (err) {
+			return { text: `修改角色卡失败：${errText(err)}` };
+		}
+		return {
+			text: `已改角色卡字段：${changed.join("、")}。跨会话生效。`,
+			activity: `改卡 · ${changed.length} 个字段`,
+			details: { changed },
+		};
+	},
+};
+
+/**
+ * 调用情境：用户问「我有哪些角色卡」，或换卡之前先取路径。
+ *
+ * 助手面：卡库是「开局」的事，与一拍演出无关（换卡本身台上也走不通，见文件头）。
+ */
+export const cardList: ToolSpec<CardDeps> = {
+	name: "card_list",
+	domain: "card",
+	mode: "read",
+	surfaces: ["assistant"],
+	label: "列出卡库",
+	description: () =>
+		"列出卡库里的全部角色卡（卡名/标签/路径）并标出当前装载的是哪张。用于换卡前取路径、或答「我有哪些卡」。",
+	parameters: () => ({
+		type: "object",
+		properties: {
+			keyword: { type: "string", description: "只列卡名或标签含此字样的（缺省列全部）" },
+		},
+		required: [],
+	}),
+	async run(args, deps): Promise<ToolResult> {
+		if (!deps.listCards) return { text: "本环境不支持列举卡库。" };
+
+		let lib: { cards: CardLibItemLike[]; current: string };
+		try {
+			lib = deps.listCards();
+		} catch (err) {
+			return { text: `列举卡库失败：${errText(err)}` };
+		}
+		const kw = strArg(args, "keyword").toLowerCase();
+		const list = kw
+			? lib.cards.filter(
+					(c) => c.name.toLowerCase().includes(kw) || (c.tags ?? []).some((t) => t.toLowerCase().includes(kw)),
+				)
+			: lib.cards;
+		if (list.length === 0) {
+			return { text: kw ? `卡库共 ${lib.cards.length} 张，无匹配「${kw}」的卡。` : "卡库是空的。", activity: "列卡库 · 0 张" };
+		}
+		const lines = list.map((c) => {
+			const marks = [c.path === lib.current ? "**当前**" : "", c.fav ? "收藏" : ""].filter(Boolean).join("·");
+			const tags = c.tags?.length ? `｜${c.tags.slice(0, 6).join("、")}` : "";
+			return `- ${c.name}${marks ? `｜${marks}` : ""}${tags}｜${c.path}`;
+		});
+		return {
+			text: `卡库${kw ? `含「${kw}」的` : ""} ${list.length}/${lib.cards.length} 张：\n${lines.join("\n")}`,
+			activity: `列卡库 · ${list.length} 张`,
+		};
+	},
+};
+
+/**
+ * 调用情境：用户说「换到那张卡」。
+ *
+ * ⚠ 仅助手面，且理由是**机械的**：换卡要 switchSession/newSession，
+ * 台上调用时本拍正在生成，切会话会把这一拍连根拔掉。
+ * 台上遇到这种要求就照实说一句「换卡请在卡库里点」，别硬来。
+ */
+export const cardSwitch: ToolSpec<CardDeps> = {
+	name: "card_switch",
+	domain: "card",
+	mode: "write",
+	surfaces: ["assistant"],
+	label: "切换角色卡",
+	description: () =>
+		"换到另一张角色卡（路径从 card_list 取）。会切到该卡的最近会话、没有就新建一个。" +
+		"**换卡是用户级的决定**——只在用户明确要求时调用。世界书挂载不随卡走，不会被清掉。",
+	parameters: () => ({
+		type: "object",
+		properties: {
+			path: { type: "string", description: "角色卡路径（从 card_list 取）" },
+		},
+		required: ["path"],
+	}),
+	async run(args, deps): Promise<ToolResult> {
+		if (!deps.switchCard) return { text: "本环境不支持切换角色卡。" };
+
+		const path = strArg(args, "path");
+		if (!path) return { text: "缺少 path 参数（路径从 card_list 取）。" };
+
+		let r: { name: string; result: "switched" | "created" };
+		try {
+			r = await deps.switchCard(path);
+		} catch (err) {
+			return { text: `切换角色卡失败：${errText(err)}` };
+		}
+		return {
+			text: `已换到「${r.name}」，${r.result === "switched" ? "并切到这张卡的最近会话" : "并为它新建了一个会话"}。`,
+			activity: `换卡「${r.name}」`,
+			details: r,
+		};
+	},
+};
+
+/**
+ * 调用情境：用户要增删改**备选开场白**（不是正在演的正文，是新会话的起手）。
+ *
+ * 助手面：开场白是开局的东西，与一拍演出无关。
+ * 四个动作合成一件工具——分成四件会让「开场白」这一件事在清单上占四行。
+ */
+export const cardGreetings: ToolSpec<CardDeps> = {
+	name: "card_greetings",
+	domain: "card",
+	mode: "write",
+	surfaces: ["assistant"],
+	label: "开场白增删改",
+	description: () =>
+		"管理角色卡的开场白（序号 0 = first_mes，1 起是备选）。action: list 列出 / add 追加 / edit 改一条 / delete 删一条。" +
+		"改的是卡文件，对新会话生效，不影响正在进行的对话。切换用哪条开场白请用 /greeting 命令。",
+	parameters: () => ({
+		type: "object",
+		properties: {
+			action: { type: "string", enum: ["list", "add", "edit", "delete"], description: "要做什么" },
+			index: { type: "number", description: "第几条（edit/delete 必填；0 = first_mes）" },
+			text: { type: "string", description: "开场白正文（add/edit 必填）" },
+		},
+		required: ["action"],
+	}),
+	async run(args, deps): Promise<ToolResult> {
+		const g = deps.greetings;
+		if (!g) return { text: "本环境不支持管理开场白。" };
+
+		const action = strArg(args, "action") || "list";
+		try {
+			if (action === "list") {
+				const all = g.list();
+				if (all.length === 0) return { text: "这张卡还没有开场白。", activity: "列开场白 · 0 条" };
+				const lines = all.map((t, i) => `${i}. ${t.length > 200 ? `${t.slice(0, 200)}…` : t}`);
+				return { text: `开场白 ${all.length} 条（0 = first_mes）：\n${lines.join("\n")}`, activity: `列开场白 · ${all.length} 条` };
+			}
+			if (action === "add") {
+				const text = strArg(args, "text");
+				if (!text) return { text: "缺少 text 参数（开场白正文）。" };
+				const idx = g.add(text);
+				return { text: `已追加开场白，序号 ${idx}。对新会话生效。`, activity: `加开场白 #${idx}` };
+			}
+
+			const total = g.list().length;
+			const index = intArg(args, "index", -1, 0, Math.max(0, total - 1));
+			if (typeof args.index !== "number" || index !== Math.trunc(args.index as number)) {
+				return { text: `缺少或越界的 index（当前共 ${total} 条，序号 0..${total - 1}）。` };
+			}
+			if (action === "edit") {
+				const text = strArg(args, "text");
+				if (!text) return { text: "缺少 text 参数（新的开场白正文）。" };
+				g.edit(index, text);
+				return { text: `已改开场白 #${index}。对新会话生效。`, activity: `改开场白 #${index}` };
+			}
+			if (action === "delete") {
+				g.remove(index);
+				return { text: `已删开场白 #${index}，现存 ${total - 1} 条。`, activity: `删开场白 #${index}` };
+			}
+			return { text: `未知 action「${action}」（可用：list / add / edit / delete）。` };
+		} catch (err) {
+			return { text: `开场白操作失败：${errText(err)}` };
+		}
+	},
+};
+
+/** 角色库族全部工具（M-D4 读+创建；M-D7 改卡 / 卡库 / 换卡 / 开场白） */
+export const cardTools: ToolSpec<CardDeps>[] = [cardRead, cardCreate, cardUpdate, cardList, cardSwitch, cardGreetings];

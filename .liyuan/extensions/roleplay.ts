@@ -18,14 +18,6 @@ import { Type } from "typebox";
 import { loadCardFile } from "../../src/card.ts";
 import { buildImportBlock, cleanChat, DEFAULT_STRIP_TAGS, parseStChat, serializeForImportSummary } from "../../src/chatlog.ts";
 import { findCommand } from "../../src/commands.ts";
-import {
-	appendCodexEntry,
-	createCodex,
-	findCodex,
-	formatCodexIndex,
-	listCodexes,
-	loadCodexEntries,
-} from "../../src/codex.ts";
 import { buildGreeting } from "../../src/greeting.ts";
 import { memoryArchiveCompacted, memoryRecallForTurn, memorySearch } from "../../src/memory/index.ts";
 import { GATED_TOOLS, WRITE_REQUEST_RE } from "../../src/tools/gate.ts";
@@ -119,10 +111,6 @@ const RP_TOOLS = [
 	"world_state_get",
 	"world_state_update",
 	"lorebook_write",
-	"codex_create",
-	"codex_mount",
-	"codex_unmount",
-	"codex_write",
 	"show_image",
 	"show_audio",
 	"show_video",
@@ -164,10 +152,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	let applyStoryPresetThisTurn = true;
 	/** 补充设定集文件（lorebook_write 的落点，按卡分文件） */
 	let overlayFile = "";
-	// 知识库（柱 3）：本会话挂载的库名与其归一化条目（独立于卡，.liyuan-codex/ 全局存在）
-	let mountedCodexes: string[] = [];
-	let codexEntries: LorebookEntry[] = [];
-	let codexIndexCache: string | null = null;
 	/** 项目根（工具执行时无 ctx.cwd，session_start 捕获） */
 	let appCwd = process.cwd();
 	// 场记记账：进行中标志（防重入）；连续性审查已关闭
@@ -398,45 +382,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		return false;
 	};
 
-	// ---------- 知识库挂载（柱 3）：挂载关系随剧情分支走，与账本/面板同一套快照机制 ----------
-
-	/** 重新装载全部挂载库的条目（挂载/卸载/写入后调用；库被删除的静默跳过），同时刷新末端注入用的速览 */
-	const reloadCodexEntries = () => {
-		const loaded = mountedCodexes.map((n) => ({ name: n, entries: loadCodexEntries(appCwd, n) ?? [] }));
-		codexEntries = loaded.flatMap((c) => c.entries);
-		codexIndexCache = formatCodexIndex(loaded.map((c) => ({ name: c.name, entryCount: c.entries.length })));
-	};
-
-	/** 检索用的合并条目集：卡素材（含补充设定集）+ 挂载知识库 */
-	const allEntries = () => (codexEntries.length > 0 ? [...entries, ...codexEntries] : entries);
-
-	/** 挂载清单快照写入会话树（rewind/fork 后挂载关系跟随剧情位置） */
-	const snapshotCodexMounts = () => {
-		try {
-			pi.appendEntry("rp-codex", { mounted: mountedCodexes });
-		} catch {
-			// 会话不可写时跳过；下次写入会补上
-		}
-	};
-
-	/** 从当前剧情分支上最近的挂载快照恢复；无快照返回 false */
-	const restoreCodexFromBranch = (sm: { getBranch: (fromId?: string) => unknown[] }): boolean => {
-		try {
-			const branch = sm.getBranch() as Array<Record<string, unknown>>;
-			for (let i = branch.length - 1; i >= 0; i--) {
-				const e = branch[i];
-				if (e.type === "custom" && e.customType === "rp-codex" && e.data && typeof e.data === "object") {
-					const mounted = (e.data as { mounted?: unknown }).mounted;
-					mountedCodexes = Array.isArray(mounted) ? mounted.filter((n): n is string => typeof n === "string") : [];
-					return true;
-				}
-			}
-		} catch {
-			// 树读取失败按无快照处理
-		}
-		return false;
-	};
-
 	/** 旁侧模型调用（场记/审计/摘要/别名共用）。返回文本或 null；错误上抛由调用方定夺 */
 	type SideCtx = {
 		model?: Parameters<typeof completeSimple>[0];
@@ -590,7 +535,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				query: Type.String({ description: "Keywords in the lorebook's own language" }),
 			}),
 			async execute(_id, params) {
-				const hits = searchEntries(allEntries(), params.query, 3);
+				const hits = searchEntries(entries, params.query, 3);
 				if (hits.length === 0) {
 					return { content: [{ type: "text", text: "No matching lore entries. The detail is unwritten — invent it consistently with established facts, then record important inventions via world_state_update (plot_threads or flags)." }] };
 				}
@@ -689,153 +634,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 						},
 					],
 					details: { uid: entry.uid, file: overlayFile },
-				};
-			},
-		});
-
-		// ---------- 知识库（PLAN-PHASE4 柱 3）：用户自建、跨对话挂载的命名设定库 ----------
-
-		pi.registerTool({
-			name: "codex_create",
-			label: "创建知识库",
-			description:
-				"Create a new named knowledge codex — a user-owned lore database independent of any character card, mountable to ANY conversation (e.g. '九州风物志', '奇物图鉴'). Use when the user asks to create a codex/database/library for collecting knowledge across stories. The new codex is automatically mounted to this conversation.",
-			parameters: Type.Object({
-				name: Type.String({ description: "Codex name, e.g. '九州风物志'（≤40 chars, used as its identity everywhere）" }),
-				description: Type.Optional(Type.String({ description: "One-line summary of what this codex collects" })),
-			}),
-			async execute(_id, params) {
-				const r = createCodex(appCwd, params.name, params.description ?? "");
-				if (!r.ok) {
-					return { content: [{ type: "text", text: r.error }], isError: true };
-				}
-				if (!mountedCodexes.some((n) => n.toLowerCase() === r.meta.name.toLowerCase())) {
-					mountedCodexes = [...mountedCodexes, r.meta.name];
-					snapshotCodexMounts();
-					reloadCodexEntries();
-				}
-				return {
-					content: [
-						{
-							type: "text",
-							text: `知识库「${r.meta.name}」已创建并挂载到本对话。此后可用 codex_write 写入条目；其他对话也可 codex_mount 挂载它。`,
-						},
-					],
-					details: { codex: r.meta.name },
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "codex_mount",
-			label: "挂载知识库",
-			description:
-				"Mount an existing knowledge codex onto this conversation (its entries join lorebook_search results, and you may write new entries into it via codex_write). Call WITHOUT a name to list all available codexes. Mounts persist with the story branch (they survive across turns and follow rewind).",
-			parameters: Type.Object({
-				name: Type.Optional(Type.String({ description: "Codex name to mount; omit to list all codexes" })),
-			}),
-			async execute(_id, params) {
-				const all = listCodexes(appCwd);
-				if (!params.name || !params.name.trim()) {
-					if (all.length === 0) {
-						return { content: [{ type: "text", text: "尚无任何知识库。可用 codex_create 创建。" }] };
-					}
-					const lines = all.map((c) => {
-						const mounted = mountedCodexes.some((n) => n.toLowerCase() === c.name.toLowerCase());
-						return `- ${c.name}（${c.entryCount} 条${mounted ? "，已挂载" : ""}）${c.description ? `：${c.description}` : ""}`;
-					});
-					return { content: [{ type: "text", text: `现有知识库：\n${lines.join("\n")}` }] };
-				}
-				const meta = findCodex(appCwd, params.name);
-				if (!meta) {
-					const known = all.map((c) => c.name).join("、");
-					return {
-						content: [{ type: "text", text: `没有名为「${params.name.trim()}」的知识库${known ? `（现有：${known}）` : "（尚无任何库，可 codex_create 创建）"}。` }],
-						isError: true,
-					};
-				}
-				if (mountedCodexes.some((n) => n.toLowerCase() === meta.name.toLowerCase())) {
-					return { content: [{ type: "text", text: `知识库「${meta.name}」已在挂载中（${meta.entryCount} 条）。` }] };
-				}
-				mountedCodexes = [...mountedCodexes, meta.name];
-				snapshotCodexMounts();
-				reloadCodexEntries();
-				return {
-					content: [
-						{ type: "text", text: `知识库「${meta.name}」已挂载（${meta.entryCount} 条），条目已并入检索。剧情中出现值得沉淀的新知识可用 codex_write 写入。` },
-					],
-					details: { codex: meta.name, entryCount: meta.entryCount },
-				};
-			},
-		});
-
-		pi.registerTool({
-			name: "codex_unmount",
-			label: "卸载知识库",
-			description:
-				"Unmount a codex from this conversation (the codex file is kept on disk untouched; it just stops participating in this story's retrieval).",
-			parameters: Type.Object({
-				name: Type.String({ description: "Mounted codex name to unmount" }),
-			}),
-			async execute(_id, params) {
-				const n = params.name.trim().toLowerCase();
-				if (!mountedCodexes.some((x) => x.toLowerCase() === n)) {
-					return {
-						content: [{ type: "text", text: `「${params.name.trim()}」不在挂载中${mountedCodexes.length ? `（当前挂载：${mountedCodexes.join("、")}）` : "（当前无挂载）"}。` }],
-						isError: true,
-					};
-				}
-				mountedCodexes = mountedCodexes.filter((x) => x.toLowerCase() !== n);
-				snapshotCodexMounts();
-				reloadCodexEntries();
-				return { content: [{ type: "text", text: `知识库「${params.name.trim()}」已卸载（文件保留，随时可再挂载）。` }] };
-			},
-		});
-
-		pi.registerTool({
-			name: "codex_write",
-			label: "写入知识库",
-			description:
-				"Record a piece of knowledge into a MOUNTED codex so it persists across ALL conversations that mount it. Call ONLY when the user asks to record/save something — never on your own initiative, and never ask the user about it. Card-specific canon belongs to lorebook_write instead. Never duplicates: identical content is rejected.",
-			parameters: Type.Object({
-				codex: Type.String({ description: "Mounted codex name to write into" }),
-				title: Type.String({ description: "Short entry title, e.g. '赤髓·蚀骨兰'" }),
-				keys: Type.Array(Type.String(), {
-					description: "Trigger keywords for retrieval (include Chinese AND any original-language names)",
-				}),
-				content: Type.String({ description: "The knowledge text (concise, factual, in the story's language)" }),
-				constant: Type.Optional(
-					Type.Boolean({ description: "true = always inject into context when mounted (reserve for critical facts)" }),
-				),
-			}),
-			async execute(_id, params) {
-				if (!mountedCodexes.some((n) => n.toLowerCase() === params.codex.trim().toLowerCase())) {
-					return {
-						content: [{ type: "text", text: `「${params.codex.trim()}」未挂载到本对话${mountedCodexes.length ? `（当前挂载：${mountedCodexes.join("、")}）` : ""}。先 codex_mount 再写入。` }],
-						isError: true,
-					};
-				}
-				const r = appendCodexEntry(appCwd, params.codex, {
-					title: params.title,
-					keys: params.keys,
-					content: params.content,
-					constant: params.constant,
-				});
-				if (!r.ok) {
-					return { content: [{ type: "text", text: r.error }], isError: true };
-				}
-				if (!r.entry) {
-					return { content: [{ type: "text", text: "内容与库中已有条目重复，未写入。" }] };
-				}
-				reloadCodexEntries();
-				return {
-					content: [
-						{
-							type: "text",
-							text: `已写入知识库「${params.codex.trim()}」：【${r.entry.comment}】关键词 ${r.entry.keys.join("、") || "（无）"}。所有挂载该库的对话此后都能检索到。`,
-						},
-					],
-					details: { codex: params.codex.trim(), uid: r.entry.uid },
 				};
 			},
 		});
@@ -1227,7 +1025,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			name: ASK_TOOL,
 			label: "请用户定夺",
 			description:
-				"IN-STORY co-creation gate (not OOC assistant chat). Pause narrative and show a choice card so the user picks the next beat. MUST call FIRST when: (1) user seeks direction — 该做什么/怎么办/怎么走/下一步/给选项, even inside IC prose; (2) user asks to generate/define identity or persona — 生成身份/开始生成身份/建档/捏角色/人设 — do NOT write a full identity dossier yourself, split key choices into options; (3) scene has 2+ clear forks that change the next turns; (4) new important character, major irreversible plot turn, or locking world-canon. Do NOT write option lists in narrative prose — only this tool shows clickable cards. Provide 2-4 concrete IC options in the story language; user may type custom or stop. After answer, continue as the character/world, never as a system assistant. Skip only pure atmosphere with no real fork. Do NOT use this tool to ask whether to save/write something into the lorebook or knowledge database — those writes execute directly when the user requests them (lorebook_write / codex_write), never through this choice card.",
+				"IN-STORY co-creation gate (not OOC assistant chat). Pause narrative and show a choice card so the user picks the next beat. MUST call FIRST when: (1) user seeks direction — 该做什么/怎么办/怎么走/下一步/给选项, even inside IC prose; (2) user asks to generate/define identity or persona — 生成身份/开始生成身份/建档/捏角色/人设 — do NOT write a full identity dossier yourself, split key choices into options; (3) scene has 2+ clear forks that change the next turns; (4) new important character, major irreversible plot turn, or locking world-canon. Do NOT write option lists in narrative prose — only this tool shows clickable cards. Provide 2-4 concrete IC options in the story language; user may type custom or stop. After answer, continue as the character/world, never as a system assistant. Skip only pure atmosphere with no real fork. Do NOT use this tool to ask whether to save/write something into the lorebook — those writes execute directly when the user requests them (lorebook_write), never through this choice card.",
 			parameters: Type.Object({
 				question: Type.String({
 					description: "Question on the choice card, in story language, e.g. '岔路口到了——你想这一步怎么走？'",
@@ -1326,9 +1124,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				savePanels(panelsFile, panels);
 			}
 			// 知识库挂载恢复：挂载关系只存会话树（无磁盘缓存），从剧情分支快照恢复
-			mountedCodexes = [];
-			restoreCodexFromBranch(ctx.sessionManager);
-			reloadCodexEntries();
 			// MCP 启用集：有会话树快照则恢复（续接/fork）；否则用项目「新对话默认」（发现项默认全关）
 			if (!restoreMcpFromBranch(ctx.sessionManager)) {
 				sessionMcpEnabled = defaultSessionEnabledIds(ctx.cwd);
@@ -1496,8 +1291,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		if (!restorePanelsFromBranch(ctx.sessionManager)) panels = {};
 		if (panelsFile) savePanels(panelsFile, panels);
 		// 知识库挂载同步回退：无快照 = 该剧情点尚无挂载
-		if (!restoreCodexFromBranch(ctx.sessionManager)) mountedCodexes = [];
-		reloadCodexEntries();
 		// MCP 启用集随剧情位置：无快照回落到新对话默认
 		if (!restoreMcpFromBranch(ctx.sessionManager)) {
 			sessionMcpEnabled = defaultSessionEnabledIds(appCwd);
@@ -1816,7 +1609,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			// 钉档前再刷一次账本/面板快照，保证 /back 到此点时状态对齐
 			snapshotState();
 			snapshotPanels();
-			snapshotCodexMounts();
 			pi.appendEntry(RP_SAVE_TYPE, data);
 			const lineNote =
 				data.forkFromSaveId && data.worldlineName !== prev?.worldlineName
@@ -2022,39 +1814,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		},
 	});
 
-	// 知识库面板按钮（PLAN-PANELS-V2 §2.4，用户主权直接放行不过门禁）：REST 经命令桥调用本命令挂/卸库，
-	// 与 codex_mount 工具同一内存与树快照路径（rewind/fork 跟随）
-	pi.registerCommand("codexmount", {
-		description: "挂载/卸载知识库（知识库面板按钮由系统自动调用），用法 /codexmount mount|unmount <库名>",
-		handler: async (args, ctx) => {
-			const m = /^\s*(mount|unmount)\s+(.+)$/.exec(args ?? "");
-			if (!m) {
-				notify(ctx, "用法：/codexmount mount|unmount <库名>");
-				return;
-			}
-			const name = m[2].trim();
-			if (m[1] === "mount") {
-				const meta = findCodex(appCwd, name);
-				if (!meta) {
-					notify(ctx, `没有名为「${name}」的知识库`);
-					return;
-				}
-				if (!mountedCodexes.some((n) => n.toLowerCase() === meta.name.toLowerCase())) {
-					mountedCodexes = [...mountedCodexes, meta.name];
-					snapshotCodexMounts();
-				}
-				notify(ctx, `知识库「${meta.name}」已挂载到本对话`);
-			} else {
-				const n = name.toLowerCase();
-				if (mountedCodexes.some((x) => x.toLowerCase() === n)) {
-					mountedCodexes = mountedCodexes.filter((x) => x.toLowerCase() !== n);
-					snapshotCodexMounts();
-				}
-				notify(ctx, `知识库「${name}」已卸载`);
-			}
-		},
-	});
-
 	pi.registerCommand("state", {
 		description: cmdDesc("state"),
 		handler: async (_args, ctx) => {
@@ -2065,7 +1824,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	pi.registerCommand("lore", {
 		description: cmdDesc("lore"),
 		handler: async (args, ctx) => {
-			const hits = searchEntries(allEntries(), args ?? "", 5);
+			const hits = searchEntries(entries, args ?? "", 5);
 			notify(
 				ctx,
 				hits.length

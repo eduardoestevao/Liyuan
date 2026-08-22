@@ -237,21 +237,6 @@ export function stateFromBranch(branch: BranchEntryLike[]): WorldState {
 	return defaultState();
 }
 
-/**
- * 当前分支上挂载的知识库名（rp-codex 快照，随 rewind/fork 走）。
- * 与扩展 restoreCodexFromBranch / main.ts mountedCodexes 同规则——取最近一条快照。
- */
-export function codexNamesFromBranch(branch: BranchEntryLike[]): string[] {
-	for (let i = branch.length - 1; i >= 0; i--) {
-		const e = branch[i];
-		if (e.type === "custom" && e.customType === "rp-codex" && e.data && typeof e.data === "object") {
-			const mounted = (e.data as { mounted?: unknown }).mounted;
-			return Array.isArray(mounted) ? mounted.filter((n): n is string => typeof n === "string") : [];
-		}
-	}
-	return [];
-}
-
 // ---------------- system prompt（字节稳定） ----------------
 
 export interface StageSystemOptions {
@@ -294,18 +279,7 @@ export function buildStageSystemPrompt({
 	const sections: string[] = [];
 	const declared = declaredMarkers ?? new Set<string>();
 
-	// 0) 梨园架构段：讲清脚下的机器怎么转（轮次、思考/扮演/写作三活动的位置、注入帧），供预设自行适配。
-	//    只写架构，不写角色（碰破限）、不教写作（那是预设的教导权）、不举写作细节（工具描述里已有）。
-	//    先于预设装配段：模型最先读到梨园怎么运转，再读预设教它演什么。
-	sections.push(
-		`# 梨园运行架构
-每拍按轮次推进，你会有多次输出，思考、扮演、写作在轮次中分开进行。
-- 首轮只规划：读题、探索、请用户定夺、列路标。路标是这一步的剧情走向，只到这一步为止。
-- 扮演轮逐路标推进：思考本路标剧情 → 构思怎么落笔 → 产出正文段落 → 推进路标。
-- 每轮出现的【进度】【判定】【记账】是当前状态，以它为准。`,
-	);
-
-	// 1) 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
+	// 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
 	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
 
 	// 2) 兜底：预设没声明的 marker 槽位，梨园按自己的版式补——补的是位置，不是措辞之外的话。
@@ -330,20 +304,6 @@ export function buildStageSystemPrompt({
 	if (!declared.has("worldInfoBefore") && !declared.has("worldInfoAfter") && constantLore.length > 0) {
 		const loreText = constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${m(e.content)}`).join("\n");
 		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
-	}
-
-	// 3) harness 骨架殿后：梨园自己的协议面，与预设作者的字分开。
-	sections.push(
-		`# 舞台
-你在进行一场长篇沉浸式角色扮演：扮演 ${card.name}，以及剧情需要的一切配角、路人与世界本身。用户扮演 ${config.userName}。`,
-	);
-
-	// M-R1（PLAN-RECTIFY §2.1-5）：纯协议，零扮演词。扮演的每个字都有署名主人（P1）。
-	if (tools !== false) {
-		sections.push(
-			`# 工作方式
-每拍第 1 轮用 \`beat_plan\` 列路标（没有戏的拍可 \`draft_write\` 一次交完）；正文用 \`draft_append\` 逐路标写在稿纸上，写完 \`draft_seal\` 收笔。剧情走向要用户拍板时随时 \`ask\`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。`,
-		);
 	}
 
 	// skill 素材位（M-R2 §4.C）：常驻包正文随 system 送达（署名数据，零 harness 引导语）；
@@ -375,7 +335,7 @@ ${index}`,
 - 标注【开场】的消息是 ${card.name} 的既定开场白，剧情从那一刻继续。
 - 标注【前情提要】的消息是更早剧情的接力摘要，是既定事实。
 - 标注【世界状态】的消息是当前事实基准：剧情记忆与它冲突时，以状态为准并在叙事内自然圆回，绝不跳出剧情解释。
-- 标注【登场名录】的消息是登场过但已不在当前状态的条目索引（离场/失去/了结）${tools !== false ? "，细节可用 `memory_search` 查" : ""}；名录之外的名字才是新登场。
+- 标注【登场名录】的消息是本局登场过的人物/物品/剧情线全量名字${tools !== false ? "，细节可用 `memory_search` 查" : ""}；名录之外的名字才是新登场。
 - 标注【活跃面板】的消息是各面板的当前内容（用户可能手改过），其中事实为准。
 - 标注【相关设定】的消息是自动附上的世界书参考，按需取用。
 - 标注【设定集索引】的消息是设定条目的标题索引${tools !== false ? "，内容未出现在【相关设定】时可用 `lorebook_search` 取原文" : ""}。
@@ -420,8 +380,6 @@ export interface StageInjectionOptions {
 	activatedLore: LorebookEntry[];
 	card: CharacterCard;
 	config: RpConfig;
-	/** M-R1：postHistory 通道的预设常驻内容（引擎每拍按真实求值内容拆层产出），原文原序 */
-	presetTail?: string[];
 	/** 上一拍台上叙事语言与配置不符（harness 检测） */
 	languageMismatch?: boolean;
 	/** 活跃面板全文快照（formatPanelSnapshot 产出）或一行速览 */
@@ -432,6 +390,8 @@ export interface StageInjectionOptions {
 	loreIndex?: string;
 	/** 登场名录索引行（formatRosterIndex 产出） */
 	rosterIndex?: string;
+	/** 剧情记忆召回块（向量库被动召回，受设置「每轮自动检索并注入模型」管辖；关或无命中则不出块） */
+	memoryRecall?: string;
 }
 
 /**
@@ -446,12 +406,12 @@ export function buildStageInjection({
 	activatedLore,
 	card,
 	config,
-	presetTail,
 	languageMismatch,
 	panelIndex,
 	wordRange,
 	loreIndex,
 	rosterIndex,
+	memoryRecall,
 }: StageInjectionOptions): string {
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const blocks: string[] = [];
@@ -477,9 +437,10 @@ export function buildStageInjection({
 		blocks.push(`【设定集索引】${loreIndex}`);
 	}
 
-	// 预设末端内容：原文直通，零归拢零引导语（M-R1）
-	if (presetTail && presetTail.length > 0) {
-		blocks.push(`【预设末端指令】\n${presetTail.join("\n\n")}`);
+	// 【剧情记忆】：向量库被动召回。块的语义早已写在 system「消息流约定」里，
+	// 此处只是把宣称过的通道接上——不加一句新话（铁律一）。
+	if (memoryRecall) {
+		blocks.push(`【剧情记忆】\n${memoryRecall}`);
 	}
 
 	// 卡末端指令：独立块（旧【导演备注】容器解散后的存留者——卡数据，原文直通）

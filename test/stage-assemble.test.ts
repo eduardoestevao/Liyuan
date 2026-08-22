@@ -11,7 +11,6 @@ import {
 	formatLoreIndex,
 	rebuildHistory,
 	stateFromBranch,
-	codexNamesFromBranch,
 	type BranchEntryLike,
 } from "../src/stage/assemble.ts";
 import type { DisplayRule } from "../src/cardfront.ts";
@@ -166,24 +165,6 @@ test("stateFromBranch：最近快照生效；无快照=初始", () => {
 	assert.deepEqual(stateFromBranch([userE("嗨")]), defaultState());
 });
 
-test("codexNamesFromBranch：最近挂载快照生效；随 rewind/fork 走；无快照=空", () => {
-	const branch: BranchEntryLike[] = [
-		{ type: "custom", customType: "rp-codex", data: { mounted: ["旧库"] } },
-		userE("走。"),
-		{ type: "custom", customType: "rp-codex", data: { mounted: ["甲库", "乙库"] } },
-	];
-	assert.deepEqual(codexNamesFromBranch(branch), ["甲库", "乙库"]);
-	assert.deepEqual(codexNamesFromBranch([userE("嗨")]), []);
-	// 卸载记为空数组快照，不是「无快照」
-	assert.deepEqual(codexNamesFromBranch([{ type: "custom", customType: "rp-codex", data: { mounted: [] } }]), []);
-	// 脏数据不炸：非数组/非字符串元素一律滤掉
-	assert.deepEqual(codexNamesFromBranch([{ type: "custom", customType: "rp-codex", data: { mounted: "x" } }]), []);
-	assert.deepEqual(
-		codexNamesFromBranch([{ type: "custom", customType: "rp-codex", data: { mounted: ["甲", 5, null] } }]),
-		["甲"],
-	);
-});
-
 // ---------------- 提示词装配 ----------------
 
 const card = {
@@ -284,14 +265,12 @@ test("末端注入：事实块——数据带标注送达，语义归 system；�
 		activatedLore: [],
 		card: { ...card, postHistoryInstructions: "卡作者的末端叮嘱。" },
 		config,
-		presetTail: ["末端破限原文", "末端文风要点", "末端行为边界"],
 		languageMismatch: true,
 	});
 	assert.ok(inj.startsWith("【世界状态】\n"), "世界状态最前，纯数据无解说");
 	assert.ok(!inj.includes("正文不得与之矛盾"), "语义解说不再逐拍复述（在 system 语义表）");
-	assert.ok(inj.includes("【预设末端指令】"), "预设末端原文直通");
-	const at = (t: string) => inj.indexOf(t);
-	assert.ok(at("末端破限原文") < at("末端文风要点") && at("末端文风要点") < at("末端行为边界"), "原序保持");
+	// 预设 after 段改走消息数组（按作者 role 落成真实消息），不再进注入块、梨园也不再扣标签
+	assert.ok(!inj.includes("【预设末端指令】"), "梨园的标签不再盖作者的话");
 	assert.ok(!inj.includes("【文风与写法】") && !inj.includes("【行为边界】"), "零归拢");
 	assert.ok(inj.includes("【卡作者末端指令】\n卡作者的末端叮嘱。"), "卡末端指令独立成块（D5）");
 	assert.ok(!inj.includes("【导演备注】"), "D5：导演备注容器解散");

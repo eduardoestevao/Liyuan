@@ -23,17 +23,15 @@ import {
 	scanEntries,
 	searchEntries,
 } from "../lorebook.ts";
-import { loadCodexEntries } from "../codex.ts";
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
 import { dir } from "../paths.ts";
 import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
-import { formatRosterIndex, formatState, saveState } from "../state.ts";
+import { formatRosterIndex, formatState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
 import type { LorebookEntry } from "../types.ts";
 import {
 	buildStageInjection,
 	buildStageSystemPrompt,
-	codexNamesFromBranch,
 	detectsLanguageMismatch,
 	formatLoreIndex,
 	rebuildHistory,
@@ -82,12 +80,12 @@ import {
 } from "./media-stage.ts";
 import { assistantStageTool, runAssistantStageTool } from "./assistant-stage.ts";
 import type { MemoryChunkLike } from "../tools/memory.ts";
+import type { WorldlineViewLite } from "../tools/worldline.ts";
+import { defaultSaveName } from "../worldline.ts";
 import { extractDraftBody } from "../draft.ts";
 import {
 	createWorkspace,
 	finalTimeline,
-	splitDraftSegments,
-	projectedState,
 	recordSegment,
 	runWriteTool,
 	type TurnWorkspace,
@@ -194,6 +192,12 @@ export interface StageEngineDeps {
 	/** 剧情库检索（memory_search 工具用）；未注入 = 该工具恒返回无命中 */
 	searchMemory?: (sessionId: string, query: string) => Promise<MemoryHitLike[]>;
 	/**
+	 * 每拍被动召回（【剧情记忆】注入用）：宿主按「当前对话 + 当前卡」绑 MemoryScope 后
+	 * 调 memoryRecallForTurn，受设置里「每轮自动检索并注入模型」开关管辖。
+	 * 未注入 = 无【剧情记忆】块（该块的语义 system 里已说明，出不出块按有无数据）。
+	 */
+	recallMemory?: (sessionId: string, query: string) => Promise<MemoryHitLike[]>;
+	/**
 	 * 向量库写侧三件（M-D3）。均由宿主按「当前对话 + 当前卡」绑定 MemoryScope 后注入——
 	 * **作用域不经模型**（PLAN-RP-TOOLING M-D3：scope 全隐藏），引擎只透传 sessionId。
 	 * 未注入 = 台上无对应工具（依赖缺失的工具不上清单）。
@@ -211,6 +215,19 @@ export interface StageEngineDeps {
 	loadPanels?: (sessionId: string) => Record<string, { name: string; kind: "markdown" | "svg" | "html"; content: string; archived?: boolean }>;
 	writePanel?: (sessionId: string, input: { name: string; kind: string; content: string }) => { ok: true; created: boolean; reopened: boolean; activeCount: number; overLimit: boolean } | { ok: false; error: string };
 	closePanel?: (sessionId: string, name: string) => { ok: boolean; error?: string };
+	/**
+	 * 世界线存档表（worldline_list 工具用）。宿主摊平后注入
+	 * （`flattenWorldlineSaves(buildWorldlineView(...))`）——树形归展示面，工具面要表。
+	 * 未注入 = 台上无 worldline_list。写侧（store/back）不上台，理由见 src/tools/worldline.ts 文件头。
+	 */
+	loadWorldline?: (sessionId: string) => WorldlineViewLite;
+	/**
+	 * 钉一个存档点（`worldline_store`，M-D7）。**封笔后调用**——引擎在场记之后执行，
+	 * 那时 rp-state 刚落、面板快照也已随写入落在分支上，回退到此点状态才对得齐。
+	 * 分线与否由宿主按钉档那一刻的树形算（planNewSave），不经模型。
+	 * 未注入 = 台上无 worldline_store。
+	 */
+	storeSave?: (sessionId: string, name: string) => { id: string; name: string; worldlineName: string } | null;
 	/** 被压缩裁掉的早期正文归档进剧情库（供 memory_search 召回细节）；未注入 = 只落摘要不归档 */
 	archiveCompacted?: (sessionId: string, text: string) => Promise<void>;
 	/**
@@ -219,6 +236,46 @@ export interface StageEngineDeps {
 	 * 未注入 = 台上无 lorebook_toggle 工具。
 	 */
 	setDisabledLore?: (fingerprints: string[], enabled: boolean) => number;
+	/**
+	 * 世界书写侧宿主件（M-D7）：改/删条目、列书单、建书、挂载，以及带来源标记的列举。
+	 *
+	 * 为什么整包归宿主而不是引擎自己干：写的是**用户的书文件**，写完还要迁移
+	 * `config.disabledLore` 里的指纹、热重载素材、通知前端——config 落盘与热重载都在
+	 * server/ 侧（引擎不碰 writeJsonWithBackup，与 setDisabledLore 同一条理由）。
+	 *
+	 * 未注入 = 台上退回旧行为：写只落补充设定集、列举不带来源标记、无改/删/书一级工具。
+	 */
+	loreHost?: {
+		write: (input: { title: string; keys: string[]; content: string; constant?: boolean; book?: string }) => LorebookEntry | null;
+		update: (
+			fingerprint: string,
+			patch: { title?: string; keys?: string[]; content?: string; constant?: boolean },
+		) => { entry: LorebookEntry; newFingerprint: string; path: string } | null;
+		remove: (fingerprint: string) => { entry: LorebookEntry; path: string } | null;
+		listMarked: () => Array<LorebookEntry & { agentWritten?: boolean }>;
+		listBooks: () => { books: Array<{ path: string; name: string; entryCount: number }>; mounted: string[] };
+		createBook: (
+			name: string,
+			first: { title: string; keys: string[]; content: string; constant?: boolean },
+		) => { path: string; mounted: string[] } | null;
+		mountBook: (path: string, mounted: boolean) => string[];
+	};
+	/**
+	 * 改当前角色卡的字段（`card_update`，M-D7）。归宿主：卡字段进 system prompt，
+	 * 写完必须热重载（softRefreshConfig 在 server/ 侧）。未注入 = 台上无 card_update。
+	 */
+	updateCard?: (patch: {
+		name?: string;
+		description?: string;
+		personality?: string;
+		scenario?: string;
+		firstMes?: string;
+		mesExample?: string;
+		systemPrompt?: string;
+		postHistoryInstructions?: string;
+		creatorNotes?: string;
+		tags?: string[];
+	}) => void;
 	/**
 	 * MCP 外设（8/06 重新接线）：宿主注入 hub 的两个能力，台上据此挂 mcp__ 工具。
 	 * 未注入 = 台上无 MCP 工具（依赖缺失的工具不上清单）。
@@ -246,6 +303,12 @@ export interface StageEngineDeps {
 
 // ---------------- 引擎 ----------------
 
+/**
+ * 【剧情记忆】被动召回的超时上限。向量检索正常在秒内返回，但云端 embedding 抽风时
+ * 单次可挂几百秒——这是串在扮演之前的旁路调用，超时即放弃，绝不让用户干等。
+ */
+const RECALL_TIMEOUT_MS = 5000;
+
 const nowMsg = (text: string) => ({
 	role: "user",
 	content: [{ type: "text", text }],
@@ -260,83 +323,6 @@ const textOfAssistant = (m: AssistantMsgLike | null): string => {
 		.join("")
 		.trim();
 };
-
-// ---------------- 五注入（PLAN-RECTIFY §2.3：轮次层全部送模文案，文案即规格） ----------------
-
-/** 规划卡：每拍第 1 轮随末端注入送达（工作区新建必空） */
-export const PLAN_CARD =
-	"【第 1 步·规划】本拍还没有计划。读题、探索（工具自取）；用户这句输入引出的未定变量——" +
-	"取不同值这拍走向会分岔、且设定里查不到的——先 `ask` 请用户定，再用 `beat_plan` 列路标。" +
-	"你的任务是列出抽象的路标的同时为路标的具体内容留下充分的可发挥余地，" +
-	"让下面每个剧情轮次扮演路标时拥有极大的发挥空间以给用户带来更多的剧情可能性。" +
-	"没有戏的拍可 `draft_write` 一次交完；用户本轮在求方向/递笔的，直接 `ask`。";
-
-/** 记账注入：seal（含兜底封笔）之后第一件事；本拍已有落账（结构信号）时跳过 */
-export const LEDGER_INJECTION =
-	"【记账】已封笔。核对本拍变动并落账：世界状态用 `world_state_update`（物品/时间/位置/关系），" +
-	"表格与面板用 `panel_write` 同步。没有变动就直接停。";
-
-/** 验收口径正文字数（不含格式区块、不计空白）——进度行/判定注入的事实源 */
-const draftBodyCharsOf = (ws: TurnWorkspace): number =>
-	ws.draft.trim() ? extractDraftBody(ws.draft).replace(/\s+/g, "").length : 0;
-
-const rangeNote = (wordRange?: { min: number; max: number }): string =>
-	wordRange ? `（目标 ${wordRange.min}–${wordRange.max}）` : "";
-
-/**
- * 进度行：每轮替换语义（替代开工卡/回看卡）。事实（路标进度与字数）+ 必读 skill 指令。
- * 8/12 复现并泛化（8/11 四改定形，原硬编码「剧情指导」→ 现认 frontmatter `每轮` 标志）：
- * 工具调用是模型可靠执行的动作、思考指令不是——把死磕挂到强制 skill_read 制造的停顿上，
- * 受理门（agentLoop 内）为其做结构保证；认数据不认名字（合铁律三）。
- *
- * 字数测量**只活在写作中的轮次层**（8/10 复核定案）：续写的触发条件就是
- * 「正文低于目标→接着写」，死板但有效——这是续写机能的燃料，不是修复诱饵。
- * 封笔之后（seal 回执/代收认收）保持零数字：写完之后的测量值只会喂出
- * 「超了 72 字→edit 删字」那条已处死的末端修复。
- */
-export function progressLine(
-	ws: TurnWorkspace,
-	wordRange?: { min: number; max: number },
-	packNames?: string[],
-	forcedSkills?: string[],
-): string {
-	const parts: string[] = [];
-	if (ws.plan.length > 0) {
-		const i = ws.plan.findIndex((s) => !s.done);
-		if (i >= 0) parts.push(`路标 ${i + 1}/${ws.plan.length}「${ws.plan[i]!.text}」`);
-	}
-	parts.push(`已演 ${ws.appends} 段，正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}`);
-	// 必定读取（每轮）skill：落笔前强制先读（受理门保证）——制造停顿=死磕燃料；标志在数据不在名字
-	const forced =
-		forcedSkills && forcedSkills.length > 0
-			? `每个路标落笔前先 \`skill_read\`${forcedSkills.map((n) => `「${n}」`).join("")}构思本路标，再 \`draft_append\`。`
-			: "";
-	const packs = packNames && packNames.length > 0 ? `可读场面包：${packNames.join(" / ")}。` : "";
-	return `【进度】${parts.join("；")}。${forced}${packs}`;
-}
-
-/** 判定注入：收笔前一次性（8/12 起不再依赖路标勾选）——续写/ask/收笔归模型判断
- * （字数事实随行；8/12 删「路标已演完」半句：放宽到没勾完路标也送，路标进度由进度行
- * 覆盖，判定注入不重复报；ask 裁决句恢复 v1.3.0 实弹验证措辞，PLAN-ASK §2.1） */
-export function verdictInjection(ws: TurnWorkspace, userName: string, wordRange?: { min: number; max: number }): string {
-	return (
-		`【判定】正文约 ${draftBodyCharsOf(ws)} 字${rangeNote(wordRange)}。` +
-		`续写、\`ask\`、或 \`draft_seal\` 收笔——你判断；下文涉及 ${userName} 的行动或选择，先 \`ask\` 再动笔。`
-	);
-}
-
-/** 进度行替换语义：移除 convo 里上一条【进度】再推新行（判定/记账/谢幕一次性，不替换） */
-function replaceProgressLine(convo: unknown[], line: string): void {
-	for (let k = convo.length - 1; k >= 0; k--) {
-		const msg = convo[k] as { role?: string; content?: Array<{ type?: string; text?: string }> };
-		const txt = Array.isArray(msg.content) ? msg.content.map((c) => c.text ?? "").join("") : "";
-		if (msg.role === "user" && txt.startsWith("【进度】")) {
-			convo.splice(k, 1);
-			break;
-		}
-	}
-	convo.push(nowMsg(line));
-}
 
 /**
  * 定稿合并：稿件为主体；text 通道里**格式特征**的尾巴（状态栏占位 / catsay / w2g…）
@@ -497,6 +483,11 @@ export class StageEngine {
 	#warnedAuditDrop = 0;
 	#warnedProtocolDrop = "";
 	#lastAssemblyJson = "";
+	/**
+	 * 本拍模型请求的存档名（`worldline_store` 登记，封笔后由 #turn 兑现）。
+	 * 每拍开头清空——报错/空手/中断都会从 #turn 里提前 return，只有这里清才不会漏到下一拍。
+	 */
+	#pendingSave: string | null = null;
 
 	constructor(deps: StageEngineDeps) {
 		this.#deps = deps;
@@ -538,6 +529,7 @@ export class StageEngine {
 	async #run(userText: string | null): Promise<void> {
 		const ev = this.#deps.events ?? {};
 		this.#busy = true;
+		this.#pendingSave = null; // 上一拍若中途 return，登记的存档请求不许漏到这一拍
 		ev.onTurnStart?.();
 		let endInfo: StageTurnEndInfo = { aborted: false };
 		try {
@@ -676,8 +668,11 @@ export class StageEngine {
 			rules: extractDraftRules([...materials.presetRuleTexts, ...phAll.map((b) => b.text)]),
 			userName: config.userName,
 			charName: card.name,
-			baseState: state,
 		};
+
+		// 【剧情记忆】被动召回：向量库注入侧。旁路调用必须带超时——provider 抽风时单次能卡
+		// 几百秒，扮演不能陪着干等；拿不到就当没有，这一拍不出该块。
+		const memoryRecall = await this.#recallForBeat(sm.getSessionId(), lastUserText);
 
 		const systemPrompt = buildStageSystemPrompt({
 			card,
@@ -698,23 +693,61 @@ export class StageEngine {
 			activatedLore: activated,
 			card,
 			config,
-			presetTail: phAll.map((p) => p.text),
 			languageMismatch,
 			panelIndex,
 			...(wsDeps.rules.wordRange ? { wordRange: wsDeps.rules.wordRange } : {}),
 			loreIndex: formatLoreIndex(materials.entries),
 			rosterIndex: formatRosterIndex(state),
+			...(memoryRecall ? { memoryRecall } : {}),
 		});
 
-		// 末端消息 = 动态注入 + 本拍用户原话。
-		// 顺序要紧：用户当拍的话必须落在**整个上下文的最后一句**。
-		// 注入块（世界状态/索引等）压在提问之后时，模型会把提问读成历史里的旧话，
-		// 于是既不检索也不正面回应——8/03 实测：同一提问，挪到注入之后立刻触发 lorebook_search。
+		// 末端消息 = 梨园数据块 + 本拍用户原话 + 预设 after 段（各按自己的 role）。
+		// 顺序要紧：用户当拍的话必须落在**梨园数据块之后**。数据块压在提问之后时，模型会把提问
+		// 读成历史里的旧话，于是既不检索也不正面回应——8/03 实测：同一提问，挪到注入之后立刻触发 lorebook_search。
+		// ⚠ after 段排在原话之后（实测最长把原话推离生成点 9190 字，双人成行）：那是预设作者指定的
+		// 位置，且 after 段是元指令（格式/CoT 开头/预填）而非剧情数据，与 8/03 那批被误读成旧话的数据不同性质。
 		const endsWithUser = history[history.length - 1]?.role === "user";
 		const past = endsWithUser ? history.slice(0, -1) : history;
-		// 规划卡（五注入之一）：每拍第 1 轮随末端注入送达（工作区新建必空），用户话保持最后一句。
-		const injWithCard = tools.length > 0 ? `${injection}\n\n${PLAN_CARD}` : injection;
-		const tailText = endsWithUser ? `${injWithCard}\n\n${history[history.length - 1].text}` : injWithCard;
+		const tailText = endsWithUser ? `${injection}\n\n${history[history.length - 1].text}` : injection;
+
+		// 预设 after 段（酒馆 chatHistory 槽位之后的条目）：按作者声明的 role 落成真实消息。
+		// 降级规则照抄酒馆 src/prompt-converters.js，不是梨园自创：
+		//  ① packages/ai 的消息只有 user/assistant（system 只走 streamFn 的独立参数）；酒馆
+		//     convertClaudeMessages 同样只把**开头连续**的 system 收进 system 参数，其后
+		//     role==='system' 一律改成 'user'——故历史之后的 system 块在此作 user。
+		//  ② 连续同角色合并成一条（convertClaudeMessages 的 mergedMessages：轮次只支持 user/assistant）。
+		//  ③ 末条 assistant 就是预填位，但酒馆 addAssistantPrefix 有 hasAnyTools 门——挂了工具就不打预填。
+		//     梨园每拍挂着 draft_*，故同样不打：末尾的 assistant 降为 user 并入上一条。
+		//     （且当前 Claude 模型对末条 assistant 预填直接返回 400，此门同时是送模侧的保命闸。）
+		const asUser = (text: string, timestamp = 0) => ({ role: "user", content: [{ type: "text", text }], timestamp });
+		const asAssistant = (text: string, timestamp = 0) => ({
+			role: "assistant",
+			content: [{ type: "text", text }],
+			api: "openai-completions",
+			provider: "history",
+			model: "history",
+			usage: {
+				input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
+				cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
+			},
+			stopReason: "stop",
+			timestamp,
+		});
+		const tailRuns: Array<{ role: "user" | "assistant"; text: string }> = [
+			{ role: "user", text: tailText },
+			...phAll
+				.filter((p) => p.text.trim().length > 0)
+				.map((p) => ({ role: p.role === "assistant" ? ("assistant" as const) : ("user" as const), text: p.text })),
+		];
+		if (tools.length > 0) {
+			for (let i = tailRuns.length - 1; i >= 0 && tailRuns[i].role === "assistant"; i--) tailRuns[i].role = "user";
+		}
+		const tailMerged: Array<{ role: "user" | "assistant"; text: string }> = [];
+		for (const run of tailRuns) {
+			const prev = tailMerged[tailMerged.length - 1];
+			if (prev && prev.role === run.role) prev.text = `${prev.text}\n\n${run.text}`;
+			else tailMerged.push({ ...run });
+		}
 
 		const messages: unknown[] = [
 			// M4 前情提要：被 rp-summary 覆盖的早期剧情在此回读（历史里那段已整体不存在）。
@@ -728,24 +761,8 @@ export class StageEngine {
 						},
 					]
 				: []),
-			...past.map((m) =>
-				m.role === "user"
-					? { role: "user", content: [{ type: "text", text: m.text }], timestamp: 0 }
-					: {
-							role: "assistant",
-							content: [{ type: "text", text: m.text }],
-							api: "openai-completions",
-							provider: "history",
-							model: "history",
-							usage: {
-								input: 0, output: 0, cacheRead: 0, cacheWrite: 0, totalTokens: 0,
-								cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
-							},
-							stopReason: "stop",
-							timestamp: 0,
-						},
-			),
-			{ role: "user", content: [{ type: "text", text: tailText }], timestamp: Date.now() },
+			...past.map((m) => (m.role === "user" ? asUser(m.text) : asAssistant(m.text))),
+			...tailMerged.map((r) => (r.role === "user" ? asUser(r.text, Date.now()) : asAssistant(r.text, Date.now()))),
 		];
 
 		const { apiKey, headers } = await this.#deps.getAuth(model);
@@ -825,12 +842,6 @@ export class StageEngine {
 		const aborted = final?.stopReason === "aborted";
 		if (!text) text = textOfAssistant(final);
 
-		// M-E 兜底封笔：分段续写完但模型始终没调 draft_seal（催告已给过一轮）。
-		// 8/10 起封笔只是状态切换（验收已整体退役），此处仅补齐工件状态。
-		if (ws.appends > 0 && !ws.sealed && ws.draft.trim()) {
-			runWriteTool(ws, wsDeps, "draft_seal", {});
-		}
-
 		// 定稿 = 工作区稿（工件）；工作区空（中断半拍/循环认栽）退回直出正文
 		// **但**模型常把格式栈尾巴（状态栏/catsay 等）走 text 通道而非 draft_write 参数：
 		// 二选一会把那部分连内容一起扔掉（8/05 实锤：模型宣告要出「正文+状态栏+咪咪点评」，
@@ -900,25 +911,10 @@ export class StageEngine {
 		}
 
 		// M-A：#revise 旁路停用（8/10 验收整体退役；修改由模型自发 draft_edit 承担）。
-		// 记账：world_state_update 干跑验证过的 patch 在此统一落账——
-		// 落树刚完成、叶即本拍新条目，无叶漂移窗口；模型是记账主体，harness 只执行。
-		if (entryId && !aborted && ws.patches.length > 0) {
-			const nextState = projectedState(ws, state);
-			sm.appendCustomEntry(STATE_ENTRY_TYPE, nextState);
-			const stateFile = this.#deps.getStateFile?.(sm.getSessionId());
-			if (stateFile) {
-				try {
-					saveState(stateFile, nextState);
-				} catch {
-					// 缓存写失败不影响树上快照（账本权威在树，磁盘只是缓存）
-				}
-			}
-			ev.onActivity?.(`记账 ${ws.patches.length} 笔（模型提交）`);
-			sm.flush();
-		}
-
-		// 场记兜底（D5）：模型本拍没调 world_state_update 才旁路补账，M-B 视实弹数据决定退役。
-		if (entryId && !aborted && finalText && ws.patches.length === 0) {
+		// 记账（第三步）：world_state_update 已撤出模型视野，账本整体归封笔后的场记旁路。
+		// 触发是结构信号（本拍有正文＝封笔），扮演者无感；场记读「已写出的正文＋当前账本」
+		// 出 patch，判断在模型、落账由 harness 死板执行（叶守卫在 runScribeTurn 内）。
+		if (entryId && !aborted && finalText) {
 			const r = await runScribeTurn(
 				{
 					// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
@@ -939,6 +935,27 @@ export class StageEngine {
 			if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);
 			sm.flush();
 		}
+
+		// 世界线存档（M-D7）：模型本拍调过 worldline_store 才有值。
+		// **必须排在场记之后**——rp-state 刚落在叶上，回退到此点账本才对得齐
+		// （面板快照在 panel_write 时已自落，无需再补）。分线与否由宿主按此刻树形算。
+		if (this.#pendingSave && this.#deps.storeSave && entryId && !aborted && finalText) {
+			const want = this.#pendingSave;
+			try {
+				const saved = this.#deps.storeSave(sm.getSessionId(), want);
+				if (saved) {
+					ev.onActivity?.(`已钉档「${saved.name}」（${saved.worldlineName}）`);
+					sm.flush();
+				} else {
+					ev.onNotify?.("warning", `存档「${want}」未能钉下（无当前叶位）。`);
+				}
+			} catch (err) {
+				// 存档失败不该动摇已经写好的一拍
+				console.error("[stage] 钉档失败", err);
+				ev.onNotify?.("warning", `存档「${want}」失败：${err instanceof Error ? err.message : String(err)}`);
+			}
+		}
+		this.#pendingSave = null;
 
 		// M4 长局压缩：攒够拍数就把早期剧情摘要成 rp-summary（装配时回读为【前情提要】）。
 		// 放在谢幕前的最后一步——记账已落，摘要能读到最新账本；叶守卫在 runCompaction 内。
@@ -1071,27 +1088,11 @@ export class StageEngine {
 			? mediaStageToolNames({ tts: this.#deps.ttsAvailable?.() === true })
 			: new Set<string>();
 		// 写账工具（记账轮的结构信号——§2.3：判据必须是结构信号，禁止文本识别）
-		const LEDGER_TOOLS = new Set(["world_state_update", "panel_write", "panel_close"]);
 		const convo = [...o.messages];
-		// 注入留档：所有 convo.push(inject(...)) 改用此函数，自动记录注入文字
-		const inject = (text: string) => { blog("injection", text); return nowMsg(text); };
 		let last: AssistantMsgLike = o.first;
 		let text = "";
-		let nudged = false; // 空手逼稿只给一轮机会，防空转
-		let sealNudged = false; // 封笔催告（逐路标续写完但忘了 draft_seal），只给一轮
 		let userStopped = false; // P7：用户在 ask 选择卡上点了停止——本拍收束
 		let lastConsumed = 0; // 本轮开始时 text 长度——判定「本轮新产出文本」用
-		// 五注入日程状态（D9：进度行替换语义；判定/记账/谢幕一次性）
-		let verdictInjected = false;
-		// 必定读取（每轮）受理门：每条路标落笔前必须先读完所有 forcedSkills
-		// （8/16：重置点从「交段」搬到「勾路标」，与送模文案同步改口径。停顿本身是设计
-		// ——工具调用是模型可靠执行的动作、思考指令不是——只是计价单位从段落改成路标：
-		// 一条路标内接着演的段落不再重复强制读。）
-		const readThisStep = new Set<string>(); // 本条路标已读的 forcedSkill 名
-		let forcedNudgedForStep = false; // 本条路标已催过一次（防空转安全阀）
-		const skillReadDone = new Set<string>(); // 重复读瘦身：本拍已读过全文的 skill 名
-		let ledgerInjected = false;
-		let ledgerDone = false;
 		// 稿首次落地时的 text 长度：之前的 text 是读题/计划旁白（工具轮的 text 通道产出），
 		// 不算正文也不算尾巴；之后的 text 才是尾巴候选（状态栏等）。-1 = 稿未落地。
 		let tailStart = -1;
@@ -1109,54 +1110,25 @@ export class StageEngine {
 				(c): c is { type: string; id?: string; name?: string; arguments?: Record<string, unknown> } =>
 					c.type === "toolCall",
 			);
-			let ledgerCallThisRound = false;
 
 			if (calls.length === 0) {
-				// 模型停手：按五注入日程决定下一站，没有下一站才收束。
+				// 模型停手：预设主导，harness 不再催轮——收束本拍。
 				if (o.ws.draft.trim()) {
 					convo.push(last);
-					if (!o.ws.sealed && o.ws.appends > 0 && !sealNudged) {
-						// 催封笔（§2.4，只给一次）
-						sealNudged = true;
-						convo.push(inject(`已续写 ${o.ws.appends} 个路标未封笔。写完就 draft_seal，没写完接着写。`));
-					} else {
-						// 停手分支补判定（8/12）：模型勾完路标后直接停手（不调 seal、不调工具），
-						// 工具轮判定分支只跑在模型还在调工具时，停手分支原先整个没有判定逻辑——
-						// ask 裁决席位同样消失。兜底封笔前补一次（verdictInjected 守卫防循环）。
-						if (!verdictInjected && o.ws.plan.length > 0 && draftBodyCharsOf(o.ws) > 0) {
-							verdictInjected = true;
-							convo.push(inject(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
-						} else {
-							// 兜底封笔（催告已给过/全量稿天然封笔）→ 记账：停手不越站
-							if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
-							if (!ledgerDone && !ledgerInjected && o.ws.patches.length === 0 && o.ws.panelWrites === 0) {
-								ledgerInjected = true;
-								convo.push(inject(LEDGER_INJECTION));
-							} else {
-								break; // 日程走完：本拍收束
-							}
-						}
-					}
+					if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
 				} else {
 					const direct = `${o.directText}${text}`.trim();
 					if (direct) {
 						// 宽进严出：直出正文代收为 draft_write（已流式外发过，不重复上屏）。
-						// internal=true 跳过门禁——代收是兜底，被拦下就等于把这拍正文丢了。
 						const r = runWriteTool(o.ws, o.wsDeps, "draft_write", { content: direct }, true);
 						directConsumed = true;
 						strayFrom = text.length;
 						o.ws.strayText = "";
 						ev.onActivity?.(r.ok ? "直出正文已代收为 draft_write" : "直出正文代收失败");
 						convo.push(last);
-						convo.push(inject("正文已代收为 draft_write。需要改就重交，不需要就结束。"));
-					} else {
-						// 空手停笔（实弹三拍 0 字正文的病灶）：逼稿一次，仍空手才认栽
-						if (nudged) break;
-						nudged = true;
-						convo.push(last);
-						convo.push(inject("你还没有落笔。用 draft_append 演出，或 draft_write 一次交完，否则本拍无产出。"));
 					}
 				}
+				break;
 			} else {
 				convo.push(last);
 				for (const call of calls) {
@@ -1202,51 +1174,7 @@ export class StageEngine {
 						});
 						continue;
 					}
-					// 记账轮的结构信号（§2.3）：写账工具被调＝记账仍在进行；面板写入计数进工作区
-					if (LEDGER_TOOLS.has(name)) ledgerCallThisRound = true;
 					if (name === "panel_write" || name === "panel_close") o.ws.panelWrites++;
-					// 必定读取（每轮）受理门（复现 8/11「强制调用」，泛化为认 `每轮` 标志不认名字）：
-					// 一条路标落笔前必须先 skill_read 完所有 forcedSkills——没读全就交，本次首交不受理
-					// （回执指路）；模型执意重交则放行（每条路标只拦一次，防空转，安全阀同封笔催告）。
-					const skillReadName =
-						name === "skill_read" ? (call.arguments as { name?: string } | undefined)?.name : undefined;
-					if (skillReadName && o.forcedSkills.includes(skillReadName)) readThisStep.add(skillReadName);
-					const unreadForced = o.forcedSkills.filter((n) => !readThisStep.has(n));
-					if (name === "draft_append" && unreadForced.length > 0 && !forcedNudgedForStep) {
-						forcedNudgedForStep = true;
-						r = {
-							text: `本次未受理：先 \`skill_read\`${unreadForced.map((n) => `「${n}」`).join("")}构思这个路标，再重交。`,
-							activity: "交稿暂缓——先读必定 skill",
-							ok: false,
-						};
-					} else if (skillReadName && skillReadDone.has(skillReadName)) {
-						// 重复读回执瘦身（8/11）：skill 文件在一拍内静态，第二次起的读不再重发全文
-						// （首读回执仍在上文）——动作与停顿保留（脚手架本体），重复文本归零。
-						// 只对 skill 合法：内容静态可预知，代答不丢信息；MCP 等实时应答永不代答。
-						r = {
-							text: `「${skillReadName}」本拍已读过，全文见上文回执。`,
-							activity: `读 skill「${skillReadName}」· 已读过（省流）`,
-							ok: true,
-						};
-					} else if (
-						// 抢跑 seal 时序保证（PLAN-ASK §2.2）：判定是唯一 ask 裁决席位，模型直接封笔会整个
-						// 跳过它（8/11 实弹）。首次抢跑不受理，回执即判定文案（同一席位提前送达）；下一轮再调
-						// seal 照常受理。8/12 放宽：不再要求路标全勾——模型没勾完就封笔同样会跳过判定
-						// （实弹：勾 2/3 直接封笔，判定整个消失），判定送达不该依赖模型自觉勾选。
-						// 无计划的分段拍与 harness 内部兜底封笔不走此分支。
-						name === "draft_seal" &&
-						!verdictInjected &&
-						!o.ws.sealed &&
-						o.ws.plan.length > 0 &&
-						draftBodyCharsOf(o.ws) > 0
-					) {
-						verdictInjected = true;
-						r = {
-							text: verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange),
-							activity: "封笔暂缓——先判定",
-							ok: false,
-						};
-					} else {
 					// 三态路由 +MCP：统一层/台上读侧 → tools.ts；MCP 外设 → hub；其余 → 工作区。
 					// MCP 走网络/子进程，可能很慢——把本拍 abort 信号透传下去，用户点停止能立刻中断。
 					r = name === "assistant_run"
@@ -1269,48 +1197,12 @@ export class StageEngine {
 								: READ_TOOLS.has(name)
 									? await this.#runReadTool(o, readDeps, name, call.arguments ?? {})
 									: runWriteTool(o.ws, o.wsDeps, name, call.arguments ?? {});
-						}
-					// 8/13 定案：稿件只在**被受理后**才上屏（转发器已不再生成时抢跑）——
-					// 被受理门拒掉的段落永远不流式，屏上正文 = 最终正文。
-					// 模型已走 text_delta 直出过的（先写正文再交稿）不重复转发，避免双份。
-					if ((name === "draft_append" || name === "draft_write") && r.ok !== false) {
-						const content = name === "draft_append" ? call.arguments?.segment : call.arguments?.content;
-						if (typeof content === "string" && content.trim()) {
-							const curText = (last.content ?? [])
-								.filter(
-									(c): c is { type: "text"; text: string } =>
-										c.type === "text" && typeof (c as { text?: unknown }).text === "string",
-								)
-								.map((c) => c.text)
-								.join("");
-							const shown = `${o.directText}${text}${curText}`;
-							if (!shown.includes(content.trim())) {
-								ev.onDelta?.("text", content, true, name === "draft_write");
-							}
-						}
-					}
 					// 媒体交付要落成 toolResult 条目（wire 只认树上的 toolResult 出媒体帧）——
 					// 台上引擎默认剥离工具轨迹，故在此单独收集，谢幕后随正文一起落树。
 					const mediaDetails = (r as MediaStageResult).details;
 					if (MEDIA_TOOLS.has(name) && mediaDetails && (r as MediaStageResult).isError !== true) {
 						o.ws.mediaDeliveries = o.ws.mediaDeliveries ?? [];
 						o.ws.mediaDeliveries.push({ toolName: name, details: mediaDetails, text: r.text });
-					}
-					// 必定读取受理门：本条路标勾掉了 → 清空已读、下一条路标重新计门
-					// （8/16：原先挂在 draft_append 上＝按段计费；改挂 beat_step_done＝按路标计费。）
-					if (name === "beat_step_done" && r.ok !== false) {
-						readThisStep.clear();
-						forcedNudgedForStep = false;
-					}
-					// 重复读瘦身：名单内 skill 首读成功后记名（未知名回落直写不记，避免把 miss 记成已读）
-					if (skillReadName && o.skillNames.includes(skillReadName) && r.ok !== false) {
-						skillReadDone.add(skillReadName);
-					}
-					// 每轮修复可见性（8/09 输出形式定案）：draft_edit 修改后**分段重同步**——
-					// 前端把全部稿段原位替换成修后分段，该段原地变新，无重复、不塌段。
-					// （旧做法发「全稿 + reset」只替换末段，前面稿段还在屏上 → 正文重复。）
-					if (name === "draft_edit" && r.ok !== false && o.ws.draft.trim()) {
-						ev.onDraftResync?.(splitDraftSegments(o.ws.draft));
 					}
 					// 时间线：工具按调用位置入档（draft_write/edit 的正文另由 #recordDraft 记）
 					recordSegment(o.ws, { kind: "tool", activity: { kind: "tool_start", name, detail: r.activity ?? "" } });
@@ -1350,44 +1242,10 @@ export class StageEngine {
 				)}`.trim();
 			}
 
-			// 五注入日程（工具轮后半程）：seal 之后记账→谢幕；未封笔注进度/判定（§2.3）。
-			// 停手轮的日程已在上方分支处理；这里只管模型还在干活的轮。
-			if (calls.length > 0) {
-				if (o.ws.sealed) {
-					if (!ledgerDone) {
-						if (!ledgerInjected) {
-							// 本拍已有落账（结构信号：patch 队列/面板写入）→ 跳过记账注入
-							if (o.ws.patches.length > 0 || o.ws.panelWrites > 0) ledgerDone = true;
-							else {
-								ledgerInjected = true;
-								convo.push(inject(LEDGER_INJECTION));
-							}
-						} else if (!ledgerCallThisRound) {
-							ledgerDone = true; // 记账轮结束（模型停止调用写账工具）
-						}
-					}
-				} else if (o.ws.plan.length > 0 || o.ws.draft.trim()) {
-					const allDone = o.ws.plan.length > 0 && o.ws.plan.every((s) => s.done);
-					// 判定以稿非空为门（8/10 实弹：0 字连勾两条也触发了判定＝勾选表演）；
-					// 勾完但没落笔 → 继续进度行，判定等正文真出现
-					if (allDone && !verdictInjected && draftBodyCharsOf(o.ws) > 0) {
-						verdictInjected = true;
-						convo.push(inject(verdictInjection(o.ws, o.wsDeps.userName, o.wsDeps.rules.wordRange)));
-					} else {
-						replaceProgressLine(convo, progressLine(o.ws, o.wsDeps.rules.wordRange, o.skillNames, o.forcedSkills));
-					}
-				}
-				// 工作区仍空（纯探索轮）：不注入——规划卡已随首轮末端注入送达
-			}
-
 			// 安全阀最后一轮撤掉工具：模型只能收笔（触阀后以现稿/直出定稿）
 			const lastRound = round >= MAX_ROUNDS - 1;
 			const ctx: Record<string, unknown> = { systemPrompt: o.systemPrompt, messages: convo };
 			if (!lastRound) ctx.tools = o.tools;
-			else {
-				// 触阀收场（D16）：只收场，不点名任何格式块——输出格式归卡/预设作者的散文与正则
-				convo.push(inject("【收场】本拍轮次已达上限，工具已收起，就此收场。"));
-			}
 
 			const s = this.#deps.streamFn(o.model, ctx as never, o.options);
 			let final: AssistantMsgLike | null = null;
@@ -1466,28 +1324,32 @@ export class StageEngine {
 				return "";
 			}
 		};
+		// 世界书写侧宿主件：给出则全族可用（含用户的书），不给则退回「只写补充设定集」的旧行为
+		const lh = this.#deps.loreHost;
 		return {
 			searchLore: (query, limit) => {
 				const m = loadStageMaterials(cwd);
-				// 语料 = 世界书 + 补充设定集（materials 已剥离外部插件协议条目）+ 当前分支挂载的知识库。
-				// 知识库此前只有扩展侧搜得到，台上描述却一直承诺「已挂载知识库」——M-D1 补齐（PLAN-RP-TOOLING）。
-				const codex: LorebookEntry[] = [];
-				for (const name of codexNamesFromBranch(sm.getBranch() as BranchEntryLike[])) {
-					try {
-						codex.push(...(loadCodexEntries(cwd, name) ?? []));
-					} catch {
-						// 单个库读不出不该拖垮整次检索
+				// 语料 = 世界书（已挂载的独立书）+ 补充设定集；materials 已剥离外部插件协议条目。
+				return searchEntries(m.entries, query, limit);
+			},
+			// ---- M-D2 写侧 / M-D7 改删与书一级：有宿主件走宿主件，否则退回 overlay ----
+			writeLore: lh
+				? lh.write
+				: (input) => {
+						const overlay = overlayOf();
+						if (!overlay) return null;
+						return appendOverlayEntry(overlay, input);
+					},
+			listLore: lh ? lh.listMarked : () => loadStageMaterials(cwd).entries,
+			...(lh
+				? {
+						updateLore: lh.update,
+						deleteLore: (fp: string) => lh.remove(fp),
+						listBooks: lh.listBooks,
+						createBook: lh.createBook,
+						mountBook: lh.mountBook,
 					}
-				}
-				return searchEntries(codex.length > 0 ? [...m.entries, ...codex] : m.entries, query, limit);
-			},
-			// ---- M-D2 世界书族 ----
-			writeLore: (input) => {
-				const overlay = overlayOf();
-				if (!overlay) return null;
-				return appendOverlayEntry(overlay, input);
-			},
-			listLore: () => loadStageMaterials(cwd).entries,
+				: {}),
 			fingerprint: loreFingerprint,
 			...(this.#deps.setDisabledLore ? { toggleLore: this.#deps.setDisabledLore } : {}),
 			gate: () => ({ lastUserText, creationMode: loadStageConfig(cwd).creationMode }),
@@ -1506,7 +1368,7 @@ export class StageEngine {
 			...(this.#deps.deleteMemory
 				? { deleteMemory: (storeId: string, id: string) => this.#deps.deleteMemory!(sm.getSessionId(), storeId, id) }
 				: {}),
-			// ---- M-D4 角色库：只读卡面 ----
+			// ---- M-D4 角色库：读卡面 / M-D7 改卡（改的是用户的卡文件，宿主负责热重载） ----
 			readCard: () => {
 				const m = loadStageMaterials(cwd);
 				const c = m.card;
@@ -1524,6 +1386,7 @@ export class StageEngine {
 					alternateGreetings: c.alternateGreetings,
 				};
 			},
+			...(this.#deps.updateCard ? { updateCard: this.#deps.updateCard } : {}),
 			// ---- M-D5 面板：读/写/关（依赖由宿主按 session 注入） ----
 			...(this.#deps.loadPanels
 				? {
@@ -1531,6 +1394,20 @@ export class StageEngine {
 						writePanel: (input: { name: string; kind: string; content: string }) =>
 							this.#deps.writePanel!(sm.getSessionId(), input),
 						closePanel: (name: string) => this.#deps.closePanel!(sm.getSessionId(), name),
+					}
+				: {}),
+			// ---- M-D5 世界线：读存档表；store 推迟到封笔后（见 src/tools/worldline.ts 文件头） ----
+			...(this.#deps.loadWorldline
+				? { loadWorldline: () => this.#deps.loadWorldline!(sm.getSessionId()) }
+				: {}),
+			...(this.#deps.storeSave
+				? {
+						storeSave: (name: string) => {
+							// 本拍内只登记意图：此刻叶位还是用户那条输入，钉在这儿的存档回退过去
+							// 只有输入没有回复。真正钉档在 performTurn 的场记之后。
+							this.#pendingSave = name.trim() || defaultSaveName();
+							return { id: "", name: this.#pendingSave, worldlineName: "", deferred: true };
+						},
 					}
 				: {}),
 			getState: () => stateFromBranch(sm.getBranch() as BranchEntryLike[]),
@@ -1552,6 +1429,37 @@ export class StageEngine {
 				return body;
 			},
 		};
+	}
+
+	/**
+	 * 每拍被动召回（【剧情记忆】块）：宿主未注入 recallMemory、开关关闭、查询过短、
+	 * 超时或报错，一律返回 undefined——该块不出现，扮演照常进行（降级不阻断）。
+	 */
+	async #recallForBeat(sessionId: string, query: string): Promise<string | undefined> {
+		const recall = this.#deps.recallMemory;
+		if (!recall || !query.trim()) return undefined;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		try {
+			const hits = await Promise.race([
+				recall(sessionId, query),
+				new Promise<null>((resolve) => {
+					timer = setTimeout(() => resolve(null), RECALL_TIMEOUT_MS);
+				}),
+			]);
+			if (hits === null) {
+				console.warn(`[stage] 剧情记忆召回超时（>${RECALL_TIMEOUT_MS}ms），本拍不注入【剧情记忆】`);
+				return undefined;
+			}
+			if (hits.length === 0) return undefined;
+			return hits
+				.map((h) => `- ${h.meta?.title ? `【${h.meta.title}】` : ""}${h.text.trim()}`)
+				.join("\n");
+		} catch (e) {
+			console.warn("[stage] 剧情记忆召回失败，本拍不注入【剧情记忆】", e);
+			return undefined;
+		} finally {
+			if (timer) clearTimeout(timer);
+		}
 	}
 
 	/** 装配报告写盘（.liyuan/preset-assembly.json）——每块预设去向可查；内容不变不写 */

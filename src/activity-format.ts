@@ -81,27 +81,6 @@ export function formatToolStartDetail(toolName: string, args: unknown): string {
 			const n = str(a.name) || str(a.title) || str(a.id);
 			return n ? `收起面板「${clip(n, 40)}」` : "收起面板";
 		}
-		case "codex_write": {
-			const lib = str(a.library) || str(a.codex) || str(a.name);
-			const title = str(a.title) || str(a.comment) || str(a.key);
-			const body = str(a.content) || str(a.text);
-			if (lib && title) return `写入知识库「${clip(lib, 24)}」·${clip(title, 32)}`;
-			if (title) return `写入知识库条目「${clip(title, 40)}」`;
-			if (body) return `写入知识库：${firstLine(body, 50)}`;
-			return "写入知识库";
-		}
-		case "codex_create": {
-			const n = str(a.name) || str(a.title);
-			return n ? `创建知识库「${clip(n, 40)}」` : "创建知识库";
-		}
-		case "codex_mount": {
-			const n = str(a.name) || str(a.title);
-			return n ? `挂载知识库「${clip(n, 40)}」` : "列出/挂载知识库";
-		}
-		case "codex_unmount": {
-			const n = str(a.name) || str(a.title);
-			return n ? `卸下知识库「${clip(n, 40)}」` : "卸下知识库";
-		}
 		case "show_image":
 		case "show_audio":
 		case "show_video": {

@@ -22,8 +22,26 @@
  * M-D3 追加 `memory_add`/`memory_delete`：向量库虽只活在本对话（不跨会话），
  * 但**回音室风险比世界书更隐蔽**——模型自作主张灌进去的内容，下一拍 `memory_search`
  * 又当「既定事实」捞回来，而条目要翻管理面板才看得见。
+ *
+ * M-D7 追加 `lorebook_update`/`lorebook_delete`/`lorebook_create`：改删与 `lorebook_write`
+ * 是同一份用户资料，不可逆程度只高不低（删条目直接改源文件、无备份）；
+ * 建书是往项目里落文件。
+ * **`lorebook_mount` 不在列**——它跟 `lorebook_toggle` 一样是开关不是写入，
+ * 改的是「用哪些料」而不是料本身，且完全可逆。
+ *
+ * ⚠ 与铁律三的关系：本表列的是**梨园自己发行的工具名**（自家协议），
+ * 不是「别人发明的名字」——铁律三禁的是 FOLD_NAME_RE / cardStatusBarFormats 那类
+ * 追着卡作者/预设作者措辞跑的识别器。此表正是铁律三的替代所要的那份
+ * 「看得见、改得动的数据」：加一件受管工具就在这里加一行，不写进任何分支里。
  */
-export const GATED_TOOLS = ["lorebook_write", "codex_write", "memory_add", "memory_delete"] as const;
+export const GATED_TOOLS = [
+	"lorebook_write",
+	"lorebook_update",
+	"lorebook_delete",
+	"lorebook_create",
+	"memory_add",
+	"memory_delete",
+] as const;
 
 /**
  * 用户主动要求记录的信号。**宽松匹配是刻意的**（原注释：宁可放行用户明确要求的写入，
@@ -41,9 +59,19 @@ export const WRITE_REQUEST_RE =
 export const DELETE_REQUEST_RE =
 	/(忘掉|忘记|忘了|删掉|删除|删了|去掉|清除|清掉|移除|撤掉|不要了|记错|搞错|弄错|不对|作废|forget|delete|remove|drop)/i;
 
-/** 工具名 → 该工具认哪一套用户信号 */
-function signalFor(toolName: string): RegExp {
-	return toolName === "memory_delete" ? DELETE_REQUEST_RE : WRITE_REQUEST_RE;
+/**
+ * 工具名 → 该工具认哪些用户信号。删除类一律认删除信号（不按具体族点名）；
+ * **改类两套都认**——「改」的诉求既可能说成写入侧（「把那条改成…」），也可能说成
+ * 否定侧（「那条记错了/不对」），取并集是宽松方向，符合本模块的成本不对称。
+ *
+ * ⚠ 已记漏网，**不修**：两套里都没有「改／修改／更正」本身。补它就是往
+ * WRITE_REQUEST_RE 里添行（铁律三禁的正是这种「出了问题再加一条」）。
+ * 漏网的后果是模型被拦一次并被告知别追问，用户改口即可——比堆一层启发式便宜。
+ */
+function signalMatches(toolName: string, text: string): boolean {
+	if (/_delete$/.test(toolName)) return DELETE_REQUEST_RE.test(text);
+	if (/_update$/.test(toolName)) return WRITE_REQUEST_RE.test(text) || DELETE_REQUEST_RE.test(text);
+	return WRITE_REQUEST_RE.test(text);
 }
 
 /** 门禁判定结果：allow=放行；block 带 reason（原样回给模型，别让它转头去问用户） */
@@ -51,7 +79,7 @@ export type GateVerdict = { allow: true } | { allow: false; reason: string };
 
 /** 被拦时回给模型的话术（搬自原实现：明确禁止「转头问用户要不要写」） */
 export const GATE_BLOCK_REASON =
-	"写入设定集/知识库需用户明确要求：本轮用户并未要求记录，本次写入已拒绝。" +
+	"写入设定集需用户明确要求：本轮用户并未要求记录，本次写入已拒绝。" +
 	"不要写、也不要询问「是否写入」；若用户后续明确要求再执行。";
 
 /**
@@ -79,9 +107,9 @@ export interface GateInput {
 export function checkWriteGate(input: GateInput): GateVerdict {
 	if (input.creationMode !== "ask") return { allow: true };
 	if (!(GATED_TOOLS as readonly string[]).includes(input.toolName)) return { allow: true };
-	if (signalFor(input.toolName).test(input.lastUserText)) return { allow: true };
+	if (signalMatches(input.toolName, input.lastUserText)) return { allow: true };
 	return {
 		allow: false,
-		reason: input.toolName === "memory_delete" ? GATE_DELETE_BLOCK_REASON : GATE_BLOCK_REASON,
+		reason: /_delete$/.test(input.toolName) ? GATE_DELETE_BLOCK_REASON : GATE_BLOCK_REASON,
 	};
 }

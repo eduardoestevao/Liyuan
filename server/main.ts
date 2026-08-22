@@ -41,7 +41,7 @@ import {
 } from "../src/access.ts";
 import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
 import { streamSimple } from "@liyuan/ai/compat";
-import { loadCardFile } from "../src/card.ts";
+import { loadCardFile, updateCardFields } from "../src/card.ts";
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
@@ -72,9 +72,13 @@ import {
 	buildAncestryIndex,
 	buildWorldlineView,
 	extractSaves,
+	flattenWorldlineSaves,
+	latestSaveOnBranch,
 	loadWorldlineMeta,
 	metaPath,
+	planNewSave,
 	renameWorldline as renameWorldlineMeta,
+	RP_SAVE_TYPE,
 	saveWorldlineMeta,
 	softDeleteSave,
 	type TreeEntryLite,
@@ -90,10 +94,26 @@ import {
 	memoryDeleteChunk,
 	memoryListChunks,
 	memoryManualAdd,
+	memoryRecallForTurn,
 	memorySearch,
 	onNarrativeTurnEnd,
 } from "../src/memory/index.ts";
-import { handleApiRequest, loadCardFrontSnapshot, type CurrentModelInfo, type RestHost } from "./rest.ts";
+import {
+	createLorebookWithEntry,
+	currentCardPath,
+	deleteLoreEntryAnywhere,
+	handleApiRequest,
+	loadCardFrontSnapshot,
+	loadConfig,
+	loadMergedLoreMarked,
+	lorebookShelf,
+	loreWriteTargets,
+	patchLoreEntryAnywhere,
+	selectCard,
+	setLorebookMounted,
+	type CurrentModelInfo,
+	type RestHost,
+} from "./rest.ts";
 
 // 用户级 agent 目录 → ~/.liyuan/agent（须在 getAgentDir / 建会话之前）
 // 并合并 fork 改名后遗留的 ~/.pi/agent（会话/配置，不覆盖更新的新树）
@@ -115,7 +135,12 @@ import {
 import { createAssistantHost, type AssistantHost, type StoryBridge } from "./assistant.ts";
 import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
-import { toggleDisabledLore } from "../src/lorebook.ts";
+import {
+	appendLorebookFileEntry,
+	appendOverlayEntry,
+	overlayPathFor,
+	toggleDisabledLore,
+} from "../src/lorebook.ts";
 import { syncStoryPanelsFromDisk, syncStoryStateFromDisk } from "../src/story-sync.ts";
 import { applyPendingBackupRestore } from "../src/backup.ts";
 import { toolStartDetail } from "../src/activity-format.ts";
@@ -1247,26 +1272,6 @@ const restHost: RestHost = {
 		const saved = r.panels[name];
 		return { name: saved.name, kind: saved.kind, updatedAt: saved.updatedAt };
 	},
-	// 挂载知识库：与扩展 restoreCodexFromBranch 同规则——当前分支上最近的 rp-codex 快照
-	mountedCodexes() {
-		try {
-			const branch = session.sessionManager.getBranch() as Array<{
-				type: string;
-				customType?: string;
-				data?: { mounted?: unknown };
-			}>;
-			for (let i = branch.length - 1; i >= 0; i--) {
-				const e = branch[i];
-				if (e.type === "custom" && e.customType === "rp-codex") {
-					const mounted = e.data?.mounted;
-					return Array.isArray(mounted) ? mounted.filter((n): n is string => typeof n === "string") : [];
-				}
-			}
-		} catch {
-			// 树读取失败按无挂载处理
-		}
-		return [];
-	},
 	// ---- 世界状态编辑（PLAN-PANELS §2.11）：用户主权 applyPatch，落盘即广播，命令桥收编进树 ----
 	async applyStatePatch(patch) {
 		const file = join(stateDir, `${session.sessionId}.json`);
@@ -1560,6 +1565,15 @@ const storyBridge: StoryBridge = {
 	worldState: () => currentState(),
 	applyStatePatch: (patch) => restHost.applyStatePatch(patch),
 	softRefreshConfig: () => restHost.softRefreshConfig(),
+	switchStoryCard: async (path) => {
+		const r = await selectCard(cwd, restHost, path);
+		broadcast({
+			type: "notify",
+			level: "info",
+			text: `${r.result === "switched" ? `已切换到「${r.name}」的最近会话` : `已为「${r.name}」新建会话`}${r.persona ? `（身份：${r.persona}）` : ""}`,
+		});
+		return { name: r.name, result: r.result };
+	},
 	listModels: () => {
 		const r = restHost.listModels();
 		return {
@@ -1578,7 +1592,7 @@ const storyBridge: StoryBridge = {
 	// 当前剧情会话 + 当前卡**路径**（scopeId 按路径 hash，只给卡名会落到另一个空作用域）。
 	memoryScope: () => ({ sessionId: session.sessionId, card: cardPath || undefined }),
 	// 世界线视图（M-D5 助手侧 worldline_list 工具用）：从剧情会话树拉存档点
-	worldlineView: () => restHost.worldlineView(),
+	worldlineSaves: () => flattenWorldlineSaves(restHost.worldlineView()),
 	// 面板（M-D5 助手侧 panel_* 工具用）：当前剧情会话的面板读写
 	storyPanels: () => ({
 		load() {
@@ -1634,9 +1648,6 @@ const storyBridge: StoryBridge = {
 		});
 	},
 	refreshStoryMaterials: () => restHost.softRefreshConfig(),
-	mountCodex: (name, on) => {
-		restHost.queueCommand(`/codexmount ${on ? "mount" : "unmount"} ${name}`);
-	},
 };
 
 let assistantHost: AssistantHost | null = null;
@@ -2096,6 +2107,10 @@ const stage = new StageEngine({
 		]);
 		return [...narrative, ...external].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 6);
 	},
+	// 【剧情记忆】每拍被动召回：与 memory_search 同一套 scope 绑定，但走 memoryRecallForTurn——
+	// 那里管着设置面板的「每轮自动检索并注入模型」开关（关 = 返回空 = 不出块）。
+	recallMemory: (sessionId, query) =>
+		memoryRecallForTurn(cwd, { sessionId, card: cardPath || undefined }, query).catch(() => []),
 	// 向量库写侧三件（M-D3）：MemoryScope 一律在此绑定（当前对话 + 当前卡），**不经模型**。
 	// 写侧恒落 external——服务层 assertExtraStore 禁止手写剧情库，故工具不给 store 参数。
 	addMemory: (sessionId, input) =>
@@ -2126,6 +2141,41 @@ const stage = new StageEngine({
 		const r = closePanelInMap(panels, name);
 		if (r.ok) { savePanels(file, r.panels); syncStoryPanelsFromDisk(); }
 		return r;
+	},
+	// worldline_list 工具：树形视图摊平成存档表（工具面要表不要树）。
+	// 只给读——存档点必须钉在封笔之后，台上没有那个执行位（见 src/tools/worldline.ts 文件头）。
+	loadWorldline: () => flattenWorldlineSaves(restHost.worldlineView()),
+	// worldline_store（M-D7）：引擎在**场记之后**调这里，此刻叶＝刚落的 assistant 条目，
+	// rp-state 也刚写完——回退到此点账本/面板才对得齐（扩展的 /store 要自己先补两份快照，
+	// 这里不用）。分线与否交给 planNewSave 按当下树形算，模型说了不算。
+	storeSave: (_sessionId, name) => {
+		const sm = session.sessionManager;
+		const meta = loadWorldlineMeta(metaPath(cwd, session.sessionId));
+		const entries: TreeEntryLite[] = sm.getEntries().map((e) => ({
+			id: e.id,
+			parentId: e.parentId,
+			type: e.type,
+			...("customType" in e && typeof (e as { customType?: string }).customType === "string"
+				? { customType: (e as { customType: string }).customType }
+				: {}),
+			...("data" in e ? { data: (e as { data?: unknown }).data } : {}),
+			...(typeof e.timestamp === "string" ? { timestamp: e.timestamp } : {}),
+		}));
+		const leafId = sm.getLeafId();
+		if (!leafId) return null;
+		const saves = extractSaves(entries, meta);
+		const { ancestorsOf, branchIdsFromLeaf } = buildAncestryIndex(entries);
+		const branchIds = branchIdsFromLeaf(leafId);
+		const data = planNewSave({
+			name,
+			prevOnBranch: latestSaveOnBranch(saves, branchIds),
+			branchEntryIds: branchIds,
+			allSaves: saves,
+			ancestorsOf,
+		});
+		sm.appendCustomEntry(RP_SAVE_TYPE, data);
+		broadcast({ type: "notify", level: "info", text: `已存档「${data.name}」（${data.worldlineName}）` });
+		return { id: data.id, name: data.name, worldlineName: data.worldlineName };
 	},
 	// MCP 外设（8/06 重接）：009e22e 换引擎时 MCP 只留在扩展路径（pi.registerTool）+
 	// 已删除的 director.ts，台上从此看不见——hub 连得上，模型无工具可用。此处补上注入。
@@ -2168,21 +2218,83 @@ const stage = new StageEngine({
 	},
 	// lorebook_toggle 工具（M-D2）：写 config.disabledLore 并软刷新素材。
 	// 复用 M-C2 协议禁用的同一条指纹通道（PLAN-RP-TOOLING M-D2 明示不得另起一套）。
+	//
+	// 8/22 修：原实现引用了 `configPath` 与 `cfg`——那两个名字只活在 hostSwitchGreeting 的函数体里，
+	// 这里根本不在作用域内，每次调用必抛 ReferenceError（被工具的 try 兜住，模型只看到「启停失败」）。
+	// 现取 resolveConfigPath(cwd)；`cfg = {...}` 那句一并删掉：本处没有可更新的快照，
+	// 重装由 softRefreshConfig 负责。
 	setDisabledLore: (fingerprints, enabled) => {
-		const disk = existsSync(configPath)
-			? (JSON.parse(readFileSync(configPath, "utf8")) as Record<string, unknown>)
-			: {};
+		const file = resolveConfigPath(cwd);
+		const disk = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>) : {};
 		const prev = Array.isArray(disk.disabledLore)
 			? disk.disabledLore.filter((f): f is string => typeof f === "string")
 			: [];
 		const next = toggleDisabledLore(prev, fingerprints, enabled);
 		if (next.length > 0) disk.disabledLore = next;
 		else delete disk.disabledLore;
-		writeFileSync(configPath, `${JSON.stringify(disk, null, "\t")}\n`, "utf8");
-		cfg = { ...cfg, disabledLore: next };
+		writeFileSync(file, `${JSON.stringify(disk, null, "\t")}\n`, "utf8");
 		// constant 条目影响 system prompt，素材需重装（与 REST /api/lorebook/toggle 同）
 		void restHost.softRefreshConfig();
 		return fingerprints.length;
+	},
+	// 世界书写侧宿主件（M-D7）：条目改/删 + 书一级列/建/挂载。
+	// 全部经 rest.ts 的共用寻址（书单全部 + 补充设定集）——面板与两个 agent 面同一套语义，
+	// 且 disabledLore 指纹迁移在那里统一善后。写完 softRefreshConfig：constant/挂载都影响注入。
+	loreHost: {
+		write: (input) => {
+			const config = loadConfig(cwd);
+			if (input.book) {
+				const [abs] = loreWriteTargets(cwd, config, input.book);
+				const entry = appendLorebookFileEntry(abs, {
+					comment: input.title,
+					keys: input.keys,
+					content: input.content,
+					...(input.constant !== undefined ? { constant: input.constant } : {}),
+				});
+				if (entry) void restHost.softRefreshConfig();
+				return entry;
+			}
+			const card = loadCardFile(isAbsolute(config.card) ? config.card : join(cwd, config.card));
+			return appendOverlayEntry(overlayPathFor(cwd, card.name), input);
+		},
+		update: (fingerprint, patch) => {
+			const r = patchLoreEntryAnywhere(cwd, loadConfig(cwd), fingerprint, {
+				...(patch.title !== undefined ? { comment: patch.title } : {}),
+				...(patch.keys !== undefined ? { keys: patch.keys } : {}),
+				...(patch.content !== undefined ? { content: patch.content } : {}),
+				...(patch.constant !== undefined ? { constant: patch.constant } : {}),
+			});
+			if (r) void restHost.softRefreshConfig();
+			return r;
+		},
+		remove: (fingerprint) => {
+			const r = deleteLoreEntryAnywhere(cwd, loadConfig(cwd), fingerprint);
+			if (r) void restHost.softRefreshConfig();
+			return r;
+		},
+		listMarked: () => loadMergedLoreMarked(cwd, loadConfig(cwd)),
+		listBooks: () => lorebookShelf(cwd, loadConfig(cwd)),
+		createBook: (name, first) => {
+			const r = createLorebookWithEntry(cwd, loadConfig(cwd), name, {
+				comment: first.title,
+				keys: first.keys,
+				content: first.content,
+				...(first.constant !== undefined ? { constant: first.constant } : {}),
+			});
+			if (r) void restHost.softRefreshConfig();
+			return r;
+		},
+		mountBook: (path, mounted) => {
+			const next = setLorebookMounted(cwd, loadConfig(cwd), path, mounted);
+			void restHost.softRefreshConfig();
+			return next;
+		},
+	},
+	// card_update 工具（M-D7）：改用户的卡文件。PNG 卡改 tEXt 内嵌 JSON，立绘像素不动。
+	// 卡字段进 system prompt，写完必须重装——与 setDisabledLore 同一条理由归宿主。
+	updateCard: (patch) => {
+		updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch);
+		void restHost.softRefreshConfig();
 	},
 	streamFn: streamSimple as unknown as StageStreamFn,
 	events: {

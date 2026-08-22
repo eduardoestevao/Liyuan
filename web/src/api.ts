@@ -44,7 +44,6 @@ function invalidateAfterWrite(writePath: string): void {
 		{ test: /^\/api\/cards?/, prefixes: ["/api/card", "/api/cards", "/api/cardfront"] },
 		{ test: /^\/api\/persona/, prefixes: ["/api/personas", "/api/config"] },
 		{ test: /^\/api\/lorebook/, prefixes: ["/api/lorebook", "/api/lorebooks", "/api/config"] },
-		{ test: /^\/api\/codex/, prefixes: ["/api/codex"] },
 		{ test: /^\/api\/preset/, prefixes: ["/api/preset", "/api/presets"] },
 		{ test: /^\/api\/mcp/, prefixes: ["/api/mcp"] },
 		{ test: /^\/api\/skills/, prefixes: ["/api/skills"] },
@@ -128,7 +127,6 @@ export function apiGetCacheClearForPanel(panelId: string): void {
 	const map: Record<string, string[]> = {
 		card: ["/api/card", "/api/cards", "/api/cardfront"],
 		lorebook: ["/api/lorebook", "/api/lorebooks", "/api/config"],
-		codex: ["/api/codex"],
 		persona: ["/api/personas", "/api/config"],
 		preset: ["/api/preset", "/api/presets"],
 		connect: ["/api/models", "/api/agent-config", "/api/agent-profiles"],
@@ -162,7 +160,6 @@ export function prefetchPanelApis(): void {
 		"/api/lorebooks",
 		"/api/preset",
 		"/api/presets",
-		"/api/codex",
 		"/api/skills",
 		"/api/mcp",
 		"/api/models",
@@ -414,26 +411,6 @@ export interface CommandMeta {
 	usage: string;
 	description: string;
 	takesArgs: boolean;
-}
-
-export interface CodexInfo {
-	name: string;
-	description: string;
-	entryCount: number;
-	mounted: boolean;
-}
-
-export interface CodexEntryView {
-	/** 内容指纹，删除用 */
-	fingerprint: string;
-	/** 展示用名字（= comment） */
-	name: string;
-	comment: string;
-	keys: string[];
-	constant: boolean;
-	/** 信息正文 */
-	content: string;
-	chars: number;
 }
 
 export interface SkillInfo {

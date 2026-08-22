@@ -16,9 +16,27 @@
  */
 
 /** 能力域——按板块分族，用于按消费者取子集 */
-export type ToolDomain = "lore" | "memory" | "card" | "worldline" | "draft" | "state" | "panel" | "preset";
+export type ToolDomain =
+	| "lore"
+	| "memory"
+	| "card"
+	| "persona"
+	| "worldline"
+	| "draft"
+	| "state"
+	| "panel"
+	| "skill"
+	| "preset";
 
-/** 消费者面 */
+/**
+ * 消费者面。
+ *
+ * ⚠ `"extension"` **目前没有消费者**：`src/tools/adapters/` 下只有 `stage.ts`，
+ * `.liyuan/extensions/roleplay.ts` 自己手写注册 16 件工具、只从 `src/tools/` 取 `gate.ts`。
+ * 6 个 spec（lorebook_search/write、memory_search、panel_*）声明了这个面，
+ * 那是**待接的设计意图**（测试里以「三面共用」钉着），不是已经接上的事实——
+ * 别照着 surfaces 就以为扩展侧拿得到它们。
+ */
 export type ToolSurface = "stage" | "assistant" | "extension";
 
 /** 装配上下文：描述/schema 按面与语言裁剪 */

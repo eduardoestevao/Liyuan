@@ -53,16 +53,6 @@ import {
 	setSkinEnabled,
 	type CardFrontSnapshot,
 } from "../src/cardfront.ts";
-import {
-	appendCodexEntry,
-	createCodex,
-	deleteCodexEntry,
-	findCodex,
-	keysFromTitle,
-	listCodexes,
-	loadCodexEntries,
-	userEntryToCodexInput,
-} from "../src/codex.ts";
 import { RP_COMMANDS } from "../src/commands.ts";
 import {
 	getMemoryStatus,
@@ -87,6 +77,7 @@ import {
 	applyDisabledLore,
 	deleteLorebookFileEntry,
 	exportStLorebook,
+	keysFromTitle,
 	loadLorebookFile,
 	loreFingerprint,
 	mergeEntries,
@@ -97,6 +88,7 @@ import {
 	searchEntries,
 	setMountedLorebooks,
 	type LoreEntryPatch,
+	type NewLoreEntryInput,
 } from "../src/lorebook.ts";
 import {
 	clearPersonaAvatar,
@@ -117,6 +109,7 @@ import {
 	presetDocView,
 	type PresetBlockPatch,
 	type PresetDoc,
+	type PresetPatch,
 } from "../src/preset-doc.ts";
 import {
 	allocateServerId,
@@ -240,8 +233,6 @@ export interface RestHost {
 		content: string;
 		kind?: string;
 	}): Promise<{ name: string; kind: string; updatedAt: number }>;
-	/** 当前剧情分支上挂载的知识库名（会话树 rp-codex 快照，随 rewind/fork 走） */
-	mountedCodexes(): string[];
 	// ---- 会话管理（PLAN-PANELS §2.1，main.ts 实现） ----
 	sessions(): Promise<SessionInfoLite[]>;
 	renameSession(path: string, name: string): Promise<void>;
@@ -857,6 +848,103 @@ function listPresetFiles(cwd: string): Array<{ file: string; name: string }> {
 	return out;
 }
 
+// ---------- 预设：面板与助手工具共用（M-D8 工具化）----------
+//
+// 写侧一律两段式：先落运行时草稿（.liyuan/preset-override.json，下一拍生效但不动用户文件），
+// `savePresetDraft(true)` 才落盘。面板本来就是这套，工具沿用同一套——否则会出现
+// 「agent 改了预设、用户在面板点撤销却撤不掉」。
+
+/** 预设库 + 当前用哪份（`preset_list` 与 GET /api/presets 同源） */
+export function presetLibrary(cwd: string): { presets: Array<{ file: string; name: string }>; active: string | null } {
+	return { presets: listPresetFiles(cwd), active: loadConfig(cwd).preset ?? null };
+}
+
+/** 把补丁打进**运行时草稿**（不落盘）。返回改了几块、新增了哪些 id */
+export function writePresetDraft(cwd: string, patch: PresetPatch): { blocks: number; added: string[] } {
+	const config = loadConfig(cwd);
+	if (!config.preset) throw new Error("当前未配置预设文件");
+	const base = loadEffectivePreset(cwd).doc ?? loadDiskPreset(cwd)?.doc;
+	if (!base) throw new Error(`预设文件不存在：${config.preset}`);
+	const beforeIds = new Set(presetDocView(base).map((b) => b.id));
+	const next = patchPresetRaw(base, patch);
+	const ovr = presetOverridePath(cwd);
+	mkdirSync(join(cwd, ".liyuan"), { recursive: true });
+	writeFileSync(ovr, `${JSON.stringify(next, null, "\t")}\n`, "utf8");
+	const added = presetDocView(loadPresetDoc(next, base.name))
+		.map((b) => b.id)
+		.filter((id) => !beforeIds.has(id));
+	return { blocks: patch.blocks?.length ?? 0, added };
+}
+
+/** 草稿落盘（save=true）或整份丢弃（save=false） */
+export function savePresetDraft(cwd: string, save: boolean): void {
+	if (!save) {
+		clearPresetOverride(cwd);
+		return;
+	}
+	const config = loadConfig(cwd);
+	if (!config.preset) throw new Error("当前未配置预设文件");
+	const doc = loadEffectivePreset(cwd).doc ?? loadDiskPreset(cwd)?.doc;
+	if (!doc) throw new Error(`预设文件不存在：${config.preset}`);
+	writeJsonWithBackup(resolvePath(cwd, config.preset), doc.raw);
+	clearPresetOverride(cwd);
+}
+
+/**
+ * 新建一份**可用的**空白预设并选用。
+ * 骨架必须带 `chatHistory` 槽位——没有它历史无处可插，装配出来的预设是废的。
+ */
+export function createBlankPreset(cwd: string, name: string): { file: string } | null {
+	const file = `${PRESETS_DIR}/${presetSlug(name)}.json`;
+	const abs = resolvePath(cwd, file);
+	if (existsSync(abs)) return null;
+	const raw = {
+		prompts: [
+			{ identifier: "main", name: "主提示词", role: "system", content: "", system_prompt: true, marker: false },
+			{ identifier: "chatHistory", name: "Chat History", marker: true },
+		],
+		prompt_order: [
+			{
+				character_id: 100001,
+				order: [
+					{ identifier: "main", enabled: true },
+					{ identifier: "chatHistory", enabled: true },
+				],
+			},
+		],
+	};
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, `${JSON.stringify(raw, null, "\t")}\n`, "utf8");
+	selectPresetFile(cwd, file);
+	return { file };
+}
+
+/** 当前预设（含草稿）整份另存为新文件；不切换当前使用的那份 */
+export function saveAsPreset(cwd: string, name: string): { file: string } | null {
+	const file = `${PRESETS_DIR}/${presetSlug(name)}.json`;
+	const abs = resolvePath(cwd, file);
+	if (existsSync(abs)) return null;
+	const raw = loadEffectivePreset(cwd).doc?.raw ?? {};
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, `${JSON.stringify(raw, null, "\t")}\n`, "utf8");
+	return { file };
+}
+
+/** 换用某份预设（null = 不用预设）。与面板同语义：**丢弃未保存草稿**。false = 文件不存在 */
+export function selectPresetFile(cwd: string, file: string | null): boolean {
+	const config = loadConfig(cwd) as unknown as Record<string, unknown>;
+	clearPresetOverride(cwd);
+	if (file === null || file === "") {
+		delete config.preset;
+	} else {
+		const safe = validatePresetPath(file);
+		if (!existsSync(resolvePath(cwd, safe))) return false;
+		config.preset = safe;
+	}
+	writeJsonWithBackup(configPath(cwd), config);
+	return true;
+}
+
 // ---------- 世界书文件管理（PLAN-PANELS-V2 §2.3：选书/导入/删除） ----------
 
 const LOREBOOKS_DIR = "assets/lorebooks";
@@ -915,6 +1003,142 @@ function listLorebookFiles(cwd: string, config: RpConfig): Array<{ path: string;
 	return out;
 }
 
+// ---------- 条目写侧：面板 / 台上 / 助手三处共用一套寻址与善后 ----------
+//
+// 「改用户的书」这件事只能有一套实现。此前 PUT/DELETE 两个端点各抄一遍寻址 + 指纹迁移；
+// 工具化之后再抄两遍（台上、助手）就是四份追着彼此跑——2026-08-22 收成下面三个函数。
+
+/** 相对 cwd 的展示路径（回执里报「改了哪本」用） */
+function relToCwd(cwd: string, abs: string): string {
+	return abs.startsWith(cwd) ? abs.slice(cwd.length + 1).replace(/\\/g, "/") : abs;
+}
+
+/**
+ * 可写目标的寻址范围：书单里的全部世界书 + 本卡补充设定集。
+ * scope 可选：`"agent"` = 只认补充设定集；给路径 = 只认书单里的那一本
+ * （**不接受任意文件路径**——书单与面板展示同源，越界即报错）。
+ */
+export function loreWriteTargets(cwd: string, config: RpConfig, scope?: string): string[] {
+	const card = loadCardFile(resolvePath(cwd, config.card));
+	const overlay = overlayPathFor(cwd, card.name);
+	const p = (scope ?? "").replace(/\\/g, "/").trim();
+	if (p === "agent") return [overlay];
+	const known = listLorebookFiles(cwd, config).map((b) => b.path);
+	if (p) {
+		if (!known.includes(p)) throw new Error("不是已知的世界书文件");
+		return [resolvePath(cwd, p)];
+	}
+	return [...known.map((k) => resolvePath(cwd, k)), overlay];
+}
+
+/**
+ * 按指纹改一条：扫遍可写目标，命中哪本改哪本。
+ * 内容变了＝换身份（指纹是内容 md5），停用清单里的旧指纹必须跟着迁移，
+ * 否则用户亲手关掉的条目会静默复活。
+ */
+export function patchLoreEntryAnywhere(
+	cwd: string,
+	config: RpConfig,
+	fingerprint: string,
+	patch: LoreEntryPatch,
+	scope?: string,
+): { entry: LorebookEntry; newFingerprint: string; path: string } | null {
+	for (const abs of loreWriteTargets(cwd, config, scope)) {
+		if (!existsSync(abs)) continue;
+		const r = patchLorebookFileEntry(abs, fingerprint, patch);
+		if (!r) continue;
+		if (r.newFingerprint !== fingerprint && config.disabledLore?.includes(fingerprint)) {
+			const disabled = config.disabledLore.map((d) => (d === fingerprint ? r.newFingerprint : d));
+			writeJsonWithBackup(configPath(cwd), { ...config, disabledLore: disabled });
+		}
+		return { ...r, path: relToCwd(cwd, abs) };
+	}
+	return null;
+}
+
+/** 按指纹删一条：同一寻址；顺手清掉停用清单里的残留指纹（删掉的条目不该继续占位）。 */
+export function deleteLoreEntryAnywhere(
+	cwd: string,
+	config: RpConfig,
+	fingerprint: string,
+	scope?: string,
+): { entry: LorebookEntry; path: string } | null {
+	for (const abs of loreWriteTargets(cwd, config, scope)) {
+		if (!existsSync(abs)) continue;
+		const removed = deleteLorebookFileEntry(abs, fingerprint);
+		if (!removed) continue;
+		if (config.disabledLore?.includes(fingerprint)) {
+			const disabled = config.disabledLore.filter((d) => d !== fingerprint);
+			const next = { ...config } as Record<string, unknown>;
+			if (disabled.length > 0) next.disabledLore = disabled;
+			else delete next.disabledLore;
+			writeJsonWithBackup(configPath(cwd), next);
+		}
+		return { entry: removed, path: relToCwd(cwd, abs) };
+	}
+	return null;
+}
+
+/** 书单 + 当前挂载（`lorebook_files` 工具与 GET /api/lorebooks 同源） */
+export function lorebookShelf(
+	cwd: string,
+	config: RpConfig,
+): { books: Array<{ path: string; name: string; entryCount: number }>; mounted: string[] } {
+	return { books: listLorebookFiles(cwd, config), mounted: mountedLorebookPaths(config) };
+}
+
+/**
+ * 挂载/卸载一本，返回挂载后的完整列表。
+ * 挂载方向校验「是不是有效世界书」——与 POST /api/lorebooks/select 同一条：空书挂不上。
+ */
+export function setLorebookMounted(cwd: string, config: RpConfig, path: string, mounted: boolean): string[] {
+	const p = path.replace(/\\/g, "/");
+	if (mounted) {
+		const abs = resolvePath(cwd, p);
+		if (!existsSync(abs) || loadLorebookFile(abs).length === 0) {
+			throw new Error(`不是有效的世界书文件（空书要先写入条目）：${p}`);
+		}
+	}
+	const cur = new Set(mountedLorebookPaths(config));
+	if (mounted) cur.add(p);
+	else cur.delete(p);
+	const next = [...cur];
+	writeJsonWithBackup(configPath(cwd), setMountedLorebooks(config, next));
+	return next;
+}
+
+/**
+ * 新建一本世界书：**连第一条一起写，写完直接挂载**。返回 null = 同名已存在。
+ *
+ * 为什么不支持「建空书」：空书在本系统里根本不成立——`listLorebookFiles` 按条目数过滤
+ * （0 条＝同目录混进来的卡/预设，跳过），挂载校验也拒空书。于是空书既列不出、挂不上，
+ * 连 `loreWriteTargets` 都寻址不到它，建了等于没建（8/22 探针实测撞上这个死胡同）。
+ */
+export function createLorebookWithEntry(
+	cwd: string,
+	config: RpConfig,
+	name: string,
+	first: NewLoreEntryInput,
+): { path: string; mounted: string[] } | null {
+	const safe = `${name.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\.json$/i, "")}.json`;
+	if (safe === ".json") throw new Error("书名无效");
+	const rel = `${LOREBOOKS_DIR}/${safe}`;
+	const abs = join(cwd, LOREBOOKS_DIR, safe);
+	if (existsSync(abs)) return null;
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, `${JSON.stringify({ name: name.trim(), entries: {} }, null, "\t")}\n`, "utf8");
+	if (!appendLorebookFileEntry(abs, first)) {
+		unlinkSync(abs); // 首条没写进去 = 建出来的是挂不上的空书，不留盘
+		throw new Error("首条内容为空，未建书");
+	}
+	return { path: rel, mounted: setLorebookMounted(cwd, config, rel, true) };
+}
+
+/** 合并语料 + 「这条是 agent 自己写下的」标记（列举据此标「补充」） */export function loadMergedLoreMarked(cwd: string, config: RpConfig): Array<LorebookEntry & { agentWritten?: boolean }> {
+	const { entries, sourceOf } = loadMergedLoreWithSource(cwd, config);
+	return entries.map((e) => (sourceOf(e) === "agent" ? { ...e, agentWritten: true } : e));
+}
+
 // ---------- persona 投影（PLAN-PANELS-V2 §2.5：config.userName/userPersona=当前 persona 的镜像） ----------
 
 function projectPersonaToConfig(cwd: string, p: Persona): void {
@@ -922,6 +1146,91 @@ function projectPersonaToConfig(cwd: string, p: Persona): void {
 	config.userName = p.name;
 	config.userPersona = p.persona;
 	writeJsonWithBackup(configPath(cwd), config);
+}
+
+// ---------- 卡库 / 身份：面板与两个 agent 面共用（M-D7 工具化）----------
+
+/** 卡库列表 + 当前卡（`card_list` 工具与 GET /api/cards 同源） */
+export function cardLibrary(cwd: string, config: RpConfig): { cards: CardLibItem[]; current: string } {
+	return { cards: listCardLibrary(cwd, config), current: config.card };
+}
+
+/**
+ * 换卡：验卡 → 写 config（清掉随卡走的 displayName/greetingIndex）→ 按卡投影身份 → 切/建会话。
+ * **世界书与角色卡解耦**：不碰 lorebooks / disabledLore（条目启停跨卡保留）。
+ * POST /api/card/switch 与 `card_switch` 工具共用此函数。
+ */
+export async function selectCard(
+	cwd: string,
+	host: RestHost,
+	cardPath: string,
+): Promise<{ name: string; path: string; result: "switched" | "created"; embeddedLoreCount: number; persona: string | null }> {
+	const card = loadCardFile(resolvePath(cwd, cardPath)); // 先验卡，坏卡不落盘
+	const config = loadConfig(cwd) as unknown as Record<string, unknown>;
+	delete config.displayName;
+	delete config.greetingIndex;
+	config.card = cardPath;
+	writeJsonWithBackup(configPath(cwd), config);
+	const persona = personaForCard(loadPersonas(cwd), cardPath);
+	if (persona) projectPersonaToConfig(cwd, persona);
+	const result = await host.switchToCard();
+	return {
+		name: card.name,
+		path: cardPath,
+		result,
+		embeddedLoreCount: card.book.length,
+		persona: persona?.name ?? null,
+	};
+}
+
+/** 当前卡的绝对路径（开场白等卡文件写侧共用） */
+export function currentCardPath(cwd: string, config: RpConfig): string {
+	return resolvePath(cwd, config.card);
+}
+
+/**
+ * 身份一览（`persona_list` 工具与 GET /api/personas 同源，含首次使用时的单人设收编迁移）。
+ * activeId = 当前卡实际生效的那个（卡锁定优先于全局默认）。
+ */
+export function personaOverview(cwd: string): {
+	personas: Persona[];
+	activeId: string | null;
+	lockedForCard: string | null;
+} {
+	let store = loadPersonas(cwd);
+	const config = loadConfig(cwd);
+	if (store.personas.length === 0 && config.userName) {
+		const r = createPersona(store, { name: config.userName, persona: config.userPersona });
+		store = { ...r.store, current: r.id };
+		savePersonas(cwd, store);
+	}
+	const active = personaForCard(store, config.card);
+	return { personas: store.personas, activeId: active?.id ?? null, lockedForCard: store.byCard[config.card] ?? null };
+}
+
+/** 选用身份：lockToCard=true 锁到当前卡，否则设为全局默认。投影进 config（热载归调用方） */
+export function usePersonaFor(cwd: string, id: string, lockToCard: boolean): boolean {
+	const store = loadPersonas(cwd);
+	const p = findPersona(store, id);
+	if (!p) return false;
+	const config = loadConfig(cwd);
+	const byCard = { ...store.byCard };
+	if (lockToCard) byCard[config.card] = p.id;
+	else delete byCard[config.card];
+	savePersonas(cwd, { ...store, current: lockToCard ? store.current : p.id, byCard });
+	projectPersonaToConfig(cwd, p);
+	return true;
+}
+
+/** 改身份；改到的若正是当前生效的那个，一并投影（热载归调用方）。false = id 不存在 */
+export function updatePersonaFor(cwd: string, id: string, patch: { name?: string; persona?: string }): boolean {
+	const store = loadPersonas(cwd);
+	if (!findPersona(store, id)) return false;
+	const next = updatePersona(store, id, patch);
+	savePersonas(cwd, next);
+	const active = personaForCard(next, loadConfig(cwd).card);
+	if (active?.id === id) projectPersonaToConfig(cwd, active);
+	return true;
 }
 
 // ---------- 路由 ----------
@@ -1039,108 +1348,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (!existsSync(abs)) throw new Error("文件不存在");
 				unlinkSync(abs);
 				sendJson(res, 200, { ok: true });
-				return true;
-			}
-
-			// ---- 知识库（柱 3）：面板只读展示 + 挂载状态；建库/挂载/写入经由对话（agent 是入口） ----
-			case "GET /api/codex": {
-				const mounted = new Set(host.mountedCodexes());
-				sendJson(res, 200, {
-					mounted: [...mounted],
-					codexes: listCodexes(host.cwd).map((c) => ({
-						name: c.name,
-						description: c.description,
-						entryCount: c.entryCount,
-						mounted: mounted.has(c.name),
-					})),
-				});
-				return true;
-			}
-			case "GET /api/codex/entries": {
-				const name = query.get("name") ?? "";
-				const entries = loadCodexEntries(host.cwd, name);
-				if (!entries) throw new Error(`知识库不存在：${name}`);
-				sendJson(res, 200, {
-					entries: entries.map((e) => ({
-						fingerprint: loreFingerprint(e.content),
-						/** 前端主标题：名字 */
-						name: e.comment || e.keys[0] || "（未命名）",
-						comment: e.comment,
-						keys: e.keys,
-						constant: e.constant,
-						/** 前端正文：信息 */
-						content: e.content,
-						chars: e.content.length,
-					})),
-				});
-				return true;
-			}
-			/**
-			 * 用户添加条目：只收 name（名字）+ info（信息），后端译为标准 lore 条目
-			 * （comment/keys/content；keys 从名字自动派生，可被检索）。
-			 */
-			case "POST /api/codex/entries": {
-				if (refuseWhileStreaming()) return true;
-				const body = JSON.parse(await readBody(req)) as {
-					codex?: string;
-					name?: string;
-					info?: string;
-					/** 兼容旧字段 / agent 同形 */
-					title?: string;
-					content?: string;
-					keys?: string[];
-				};
-				const codexName = (body.codex ?? "").trim();
-				if (!codexName) throw new Error("缺少知识库名 codex");
-				const title = (body.name ?? body.title ?? "").trim();
-				const info = (body.info ?? body.content ?? "").trim();
-				if (!title) throw new Error("名字不能为空");
-				if (!info) throw new Error("信息不能为空");
-				const input = userEntryToCodexInput(
-					title,
-					info,
-					Array.isArray(body.keys) ? body.keys.filter((k): k is string => typeof k === "string") : undefined,
-				);
-				const r = appendCodexEntry(host.cwd, codexName, input);
-				if (!r.ok) throw new Error(r.error);
-				if (!r.entry) {
-					sendJson(res, 200, { ok: true, duplicate: true, fingerprint: loreFingerprint(input.content) });
-					return true;
-				}
-				if (host.mountedCodexes().some((n) => n.toLowerCase() === codexName.toLowerCase())) {
-					await host.reloadSession();
-				}
-				host.notify("info", `已写入「${codexName}」：${r.entry.comment}`);
-				sendJson(res, 200, {
-					ok: true,
-					duplicate: false,
-					fingerprint: loreFingerprint(r.entry.content),
-					name: r.entry.comment,
-				});
-				return true;
-			}
-			case "DELETE /api/codex/entries": {
-				if (refuseWhileStreaming()) return true;
-				const codexName = (query.get("codex") ?? query.get("name") ?? "").trim();
-				const fp = (query.get("fp") ?? query.get("fingerprint") ?? "").trim();
-				if (!codexName) throw new Error("缺少知识库名");
-				if (!fp) throw new Error("缺少条目 fingerprint");
-				const r = deleteCodexEntry(host.cwd, codexName, fp);
-				if (!r.ok) throw new Error(r.error);
-				if (!r.removed) throw new Error("条目不存在（可能已删除）");
-				if (host.mountedCodexes().some((n) => n.toLowerCase() === codexName.toLowerCase())) {
-					await host.reloadSession();
-				}
-				host.notify("info", `已从「${codexName}」删除一条`);
-				sendJson(res, 200, { ok: true });
-				return true;
-			}
-			// 导出知识库为世界书 JSON（公开格式，可互通酒馆等；柱 3）
-			case "GET /api/codex/export": {
-				const name = query.get("name") ?? "";
-				const entries = loadCodexEntries(host.cwd, name);
-				if (!entries) throw new Error(`知识库不存在：${name}`);
-				sendJson(res, 200, { name, json: exportStLorebook(name, entries) });
 				return true;
 			}
 
@@ -2106,17 +2313,8 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			case "POST /api/presets/select": {
 				if (refuseWhileStreaming()) return true;
 				const body = JSON.parse(await readBody(req)) as { file?: string | null };
-				const config = loadConfig(host.cwd) as unknown as Record<string, unknown>;
-				// 切换预设：丢弃未保存草稿
-				clearPresetOverride(host.cwd);
-				if (body.file === null || body.file === "") {
-					delete config.preset; // 不用预设
-				} else {
-					const file = validatePresetPath(body.file ?? "");
-					if (!existsSync(resolvePath(host.cwd, file))) throw new Error("预设文件不存在");
-					config.preset = file;
-				}
-				writeJsonWithBackup(configPath(host.cwd), config);
+				// 切换（含“丢弃未保存草稿”）归 selectPresetFile，与 preset_select 工具共用
+				if (!selectPresetFile(host.cwd, body.file ?? null)) throw new Error("预设文件不存在");
 				await host.softRefreshConfig();
 				sendJson(res, 200, { ok: true });
 				return true;
@@ -2308,57 +2506,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					await host.softRefreshConfig();
 				}
 				sendJson(res, 200, { ok: true });
-				return true;
-			}
-
-			// ---- 知识库管理（PLAN-PANELS-V2 §2.4：建库/改名/删除/挂载按钮，用户主权） ----
-			case "POST /api/codex": {
-				const body = JSON.parse(await readBody(req)) as { name?: string; description?: string };
-				const r = createCodex(host.cwd, body.name ?? "", body.description ?? "");
-				if (!r.ok) throw new Error(r.error);
-				host.notify("info", `知识库「${r.meta.name}」已创建`);
-				sendJson(res, 200, { ok: true, name: r.meta.name });
-				return true;
-			}
-			case "POST /api/codex/rename": {
-				const body = JSON.parse(await readBody(req)) as { name?: string; newName?: string };
-				const meta = findCodex(host.cwd, body.name ?? "");
-				if (!meta) throw new Error(`知识库不存在：${body.name}`);
-				const newName = (body.newName ?? "").trim();
-				if (!newName) throw new Error("缺少新名字");
-				if (host.mountedCodexes().some((n) => n.toLowerCase() === meta.name.toLowerCase())) {
-					throw new Error("该库已挂载到当前对话，先卸载再改名");
-				}
-				if (findCodex(host.cwd, newName)) throw new Error(`已存在同名知识库：${newName}`);
-				const r = createCodex(host.cwd, newName, meta.description);
-				if (!r.ok) throw new Error(r.error);
-				// 搬条目：读旧文件原始 entries 写入新文件（保 uid 与灯法字段）
-				const oldRaw = JSON.parse(readFileSync(meta.file, "utf8")) as Record<string, unknown>;
-				const newRaw = JSON.parse(readFileSync(r.meta.file, "utf8")) as Record<string, unknown>;
-				writeFileSync(r.meta.file, `${JSON.stringify({ ...newRaw, entries: oldRaw.entries ?? [] }, null, "\t")}\n`, "utf8");
-				unlinkSync(meta.file);
-				sendJson(res, 200, { ok: true, name: newName });
-				return true;
-			}
-			case "DELETE /api/codex": {
-				const name = query.get("name") ?? "";
-				const meta = findCodex(host.cwd, name);
-				if (!meta) throw new Error(`知识库不存在：${name}`);
-				if (host.mountedCodexes().some((n) => n.toLowerCase() === meta.name.toLowerCase())) {
-					throw new Error("该库已挂载到当前对话，先卸载再删除");
-				}
-				unlinkSync(meta.file);
-				host.notify("info", `知识库「${meta.name}」已删除`);
-				sendJson(res, 200, { ok: true });
-				return true;
-			}
-			// 挂载/卸载：经命令桥走扩展 /codexmount（与 codex_mount 工具同一内存+树快照路径）
-			case "POST /api/codex/mount": {
-				const body = JSON.parse(await readBody(req)) as { name?: string; mounted?: boolean };
-				const meta = findCodex(host.cwd, body.name ?? "");
-				if (!meta) throw new Error(`知识库不存在：${body.name}`);
-				const queued = host.queueCommand(`/codexmount ${body.mounted ? "mount" : "unmount"} ${meta.name}`);
-				sendJson(res, 200, { ok: true, queued });
 				return true;
 			}
 
@@ -2944,28 +3091,17 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const body = JSON.parse(await readBody(req)) as { card?: string };
 				const cardPath = (body.card ?? "").trim();
 				if (!cardPath) throw new Error("缺少 card 路径");
-				const card = loadCardFile(resolvePath(host.cwd, cardPath)); // 先验卡，坏卡不落盘
-				const config = loadConfig(host.cwd) as unknown as Record<string, unknown>;
-				// 卡专属字段随卡走：显示名/开场白选择清掉。
-				// 世界书与角色卡解耦：换卡不碰 lorebooks / disabledLore（条目启停跨卡保留）。
-				delete config.displayName;
-				delete config.greetingIndex;
-				config.card = cardPath;
-				writeJsonWithBackup(configPath(host.cwd), config);
-				// persona 按卡自动选用（卡锁定→全局默认）：投影进 config 一并生效
-				const pstore = loadPersonas(host.cwd);
-				const persona = personaForCard(pstore, cardPath);
-				if (persona) projectPersonaToConfig(host.cwd, persona);
-				const result = await host.switchToCard();
+				// 验卡 / 写盘 / 清随卡字段 / 身份投影 / 切会话 都在 selectCard 里（与 card_switch 工具共用）
+				const r = await selectCard(host.cwd, host, cardPath);
 				host.notify(
 					"info",
-					`${result === "switched" ? `已切换到「${card.name}」的最近会话` : `已为「${card.name}」新建会话`}${persona ? `（身份：${persona.name}）` : ""}`,
+					`${r.result === "switched" ? `已切换到「${r.name}」的最近会话` : `已为「${r.name}」新建会话`}${r.persona ? `（身份：${r.persona}）` : ""}`,
 				);
 				sendJson(res, 200, {
-					result,
-					name: card.name,
-					path: cardPath,
-					embeddedLoreCount: card.book.length,
+					result: r.result,
+					name: r.name,
+					path: r.path,
+					embeddedLoreCount: r.embeddedLoreCount,
 				});
 				return true;
 			}
@@ -3211,13 +3347,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const fp = (body.fingerprint ?? "").trim();
 				if (!fp) throw new Error("缺少 fingerprint");
 				const config = loadConfig(host.cwd);
-				const card = loadCardFile(resolvePath(host.cwd, config.card));
-				// 写回：扫描全部世界书文件 + 补充设定（不限当前挂载，浏览哪本改哪本）
-				const candidates: string[] = [];
-				for (const b of listLorebookFiles(host.cwd, config)) {
-					candidates.push(resolvePath(host.cwd, b.path));
-				}
-				candidates.push(overlayPathFor(host.cwd, card.name));
 
 				const patch: LoreEntryPatch = {};
 				if (typeof body.constant === "boolean") patch.constant = body.constant;
@@ -3233,25 +3362,9 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (typeof body.content === "string") patch.content = body.content;
 				if (Object.keys(patch).length === 0) throw new Error("没有可更新的字段");
 
-				let result: { entry: LorebookEntry; newFingerprint: string } | null = null;
-				let wrotePath = "";
-				for (const abs of candidates) {
-					if (!existsSync(abs)) continue;
-					const r = patchLorebookFileEntry(abs, fp, patch);
-					if (r) {
-						result = r;
-						wrotePath = abs;
-						break;
-					}
-				}
+				// 寻址（书单全部 + 补充设定）与 disabledLore 指纹迁移都在 patchLoreEntryAnywhere 里
+				const result = patchLoreEntryAnywhere(host.cwd, config, fp, patch);
 				if (!result) throw new Error("未找到可写条目（世界书可能已更换，或条目不在挂载书/补充设定中）");
-
-				// 内容变更时迁移 disabledLore 指纹
-				if (result.newFingerprint !== fp && config.disabledLore?.includes(fp)) {
-					const disabled = config.disabledLore.map((d) => (d === fp ? result!.newFingerprint : d));
-					const next = { ...config, disabledLore: disabled } as Record<string, unknown>;
-					writeJsonWithBackup(configPath(host.cwd), next);
-				}
 
 				// constant / order / content 影响注入，重装会话
 				await host.softRefreshConfig();
@@ -3261,7 +3374,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					fingerprint: result.newFingerprint,
 					constant: result.entry.constant,
 					order: result.entry.order,
-					path: wrotePath.startsWith(host.cwd) ? wrotePath.slice(host.cwd.length + 1).replace(/\\/g, "/") : wrotePath,
+					path: result.path,
 				});
 				return true;
 			}
@@ -3276,46 +3389,12 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (!fp) throw new Error("缺少条目 fingerprint");
 				const pathQ = (query.get("path") ?? "").replace(/\\/g, "/").trim();
 				const config = loadConfig(host.cwd);
-				const card = loadCardFile(resolvePath(host.cwd, config.card));
-				const known = listLorebookFiles(host.cwd, config).map((b) => b.path);
-				const candidates: string[] = [];
-				if (pathQ === "agent") {
-					candidates.push(overlayPathFor(host.cwd, card.name));
-				} else if (pathQ) {
-					// 只认书单里的路径（与面板展示同源），不接受任意文件路径
-					if (!known.includes(pathQ)) throw new Error("不是已知的世界书文件");
-					candidates.push(resolvePath(host.cwd, pathQ));
-				} else {
-					for (const p of known) candidates.push(resolvePath(host.cwd, p));
-					candidates.push(overlayPathFor(host.cwd, card.name));
-				}
-				let removed: LorebookEntry | null = null;
-				let fromPath = "";
-				for (const abs of candidates) {
-					if (!existsSync(abs)) continue;
-					const r = deleteLorebookFileEntry(abs, fp);
-					if (r) {
-						removed = r;
-						fromPath = abs;
-						break;
-					}
-				}
-				if (!removed) throw new Error("未找到该条目（世界书可能已更换，或条目不在可写文件中）");
-				// 清理停用清单里的残留指纹
-				if (config.disabledLore?.includes(fp)) {
-					const disabled = config.disabledLore.filter((d) => d !== fp);
-					const next = { ...config } as Record<string, unknown>;
-					if (disabled.length > 0) next.disabledLore = disabled;
-					else delete next.disabledLore;
-					writeJsonWithBackup(configPath(host.cwd), next);
-				}
+				// 寻址（含 path=agent 只删补充设定）与停用清单清理都在 deleteLoreEntryAnywhere 里
+				const r = deleteLoreEntryAnywhere(host.cwd, config, fp, pathQ || undefined);
+				if (!r) throw new Error("未找到该条目（世界书可能已更换，或条目不在可写文件中）");
 				await host.softRefreshConfig();
-				host.notify("info", `已删除条目「${removed.comment || removed.keys[0] || fp}」`);
-				sendJson(res, 200, {
-					ok: true,
-					comment: removed.comment,
-					path: fromPath.startsWith(host.cwd) ? fromPath.slice(host.cwd.length + 1).replace(/\\/g, "/") : fromPath,
-				});
+				host.notify("info", `已删除条目「${r.entry.comment || r.entry.keys[0] || fp}」`);
+				sendJson(res, 200, { ok: true, comment: r.entry.comment, path: r.path });
 				return true;
 			}
 			case "GET /api/lorebook/search": {
@@ -3483,7 +3562,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			/** 丢弃未保存草稿，从磁盘重载 */
 			case "POST /api/preset/revert": {
 				if (refuseWhileStreaming()) return true;
-				clearPresetOverride(host.cwd);
+				savePresetDraft(host.cwd, false); // 与 preset_save(save=false) 共用一份
 				await host.softRefreshConfig();
 				sendJson(res, 200, { ok: true, dirty: false });
 				return true;

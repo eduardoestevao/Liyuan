@@ -53,7 +53,6 @@ export const DIRS = {
 	/** 右栏「助手」的独立会话树（绝不进剧情会话列表/世界线） */
 	assistant: ".liyuan-assistant",
 	cache: ".liyuan-cache",
-	codex: ".liyuan-codex",
 	lore: ".liyuan-lore",
 	media: ".liyuan-media",
 	audio: ".liyuan-audio",
@@ -69,7 +68,6 @@ const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 	artifacts: ".rp-artifacts",
 	assistant: ".rp-assistant", // 从未存在过（2026-07 新增目录），迁移恒空转
 	cache: ".rp-cache",
-	codex: ".rp-codex",
 	lore: ".rp-lore",
 	media: ".rp-media",
 	audio: ".rp-audio",
@@ -97,7 +95,6 @@ export function normalizeDataPath(p: string): string {
 	if (p.startsWith(UPLOAD_PREFIX_LEGACY)) return UPLOAD_PREFIX + p.slice(UPLOAD_PREFIX_LEGACY.length);
 	if (p.startsWith(MEDIA_PREFIX_LEGACY)) return MEDIA_PREFIX + p.slice(MEDIA_PREFIX_LEGACY.length);
 	if (p.startsWith(".rp-skills/")) return `${DIRS.skills}/${p.slice(".rp-skills/".length)}`;
-	if (p.startsWith(".rp-codex/")) return `${DIRS.codex}/${p.slice(".rp-codex/".length)}`;
 	if (p.startsWith(".rp-lore/")) return `${DIRS.lore}/${p.slice(".rp-lore/".length)}`;
 	return p;
 }

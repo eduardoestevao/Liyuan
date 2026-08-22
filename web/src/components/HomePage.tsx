@@ -10,7 +10,6 @@ import { BrandLogo } from "./BrandLogo.tsx";
 import {
 	IconApi,
 	IconCard,
-	IconCodex,
 	IconGithub,
 	IconLorebook,
 	IconPersona,
@@ -49,7 +48,7 @@ export interface WelcomePanelProps {
 	onOpen: (path: string) => void;
 	onNew: () => void;
 	onBrowseAll: () => void;
-	onOpenPanel: (id: "connect" | "card" | "powers" | "sessions" | "lorebook" | "preset" | "persona" | "codex") => void;
+	onOpenPanel: (id: "connect" | "card" | "powers" | "sessions" | "lorebook" | "preset" | "persona") => void;
 }
 
 export function WelcomePanel({
@@ -277,10 +276,6 @@ export function WelcomePanel({
 				<button type="button" className="welcome-quick-btn" onClick={() => onOpenPanel("persona")}>
 					<IconPersona size={15} />
 					用户角色
-				</button>
-				<button type="button" className="welcome-quick-btn" onClick={() => onOpenPanel("codex")}>
-					<IconCodex size={15} />
-					知识库
 				</button>
 				<button type="button" className="welcome-quick-btn" onClick={() => onOpenPanel("powers")}>
 					<IconPuzzle size={15} />

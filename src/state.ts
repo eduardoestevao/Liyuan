@@ -252,37 +252,33 @@ function registerRoster(next: WorldState): void {
 	};
 }
 
-/** 名录索引单节的字符预算（超出按条目边界截断，补「等 N 项」） */
+/** 名录索引单节的简述预算（超出则该节退成纯名字表——名字不截断） */
 const ROSTER_SECTION_MAX_CHARS = 240;
 
 function rosterSection(label: string, entries: Array<[string, string]>): string | undefined {
 	if (entries.length === 0) return undefined;
-	const titles = entries.map(([name, blurb]) => (blurb ? `${name}（${blurb}）` : name));
-	const shown: string[] = [];
-	let used = 0;
-	for (const t of titles) {
-		if (used + t.length + 1 > ROSTER_SECTION_MAX_CHARS) break;
-		shown.push(t);
-		used += t.length + 1;
-	}
-	const rest = titles.length - shown.length;
-	return `${label}：${shown.join("、")}${rest > 0 ? `……等 ${titles.length} 项` : ""}`;
+	const withBlurb = entries.map(([name, blurb]) => (blurb ? `${name}（${blurb}）` : name));
+	// 名字必须全量出：「名录之外的名字才是新登场」这条推断只有在名录完整时才成立，
+	// 按条目截断会让被截掉的角色变成「新人」。装不下就整节退成纯名字，牺牲简述不牺牲完整性。
+	// 规模有界：ROSTER_CAPS 已把条目数封在 100/100/60。
+	const total = withBlurb.reduce((n, t) => n + t.length + 1, 0);
+	const titles = total <= ROSTER_SECTION_MAX_CHARS ? withBlurb : entries.map(([name]) => name);
+	return `${label}：${titles.join("、")}`;
 }
 
 /**
- * 名录索引渲染：只列**已不在当前状态**的条目（离场人物/失去的物品/已了结或改写的剧情线）——
- * 活跃条目已在【世界状态】全量可见，索引只补「曾经存在」这一层。全空返回 undefined。
+ * 名录索引渲染：**全量**列出本局登记过的人物/物品/剧情线（在场的也列）。
+ * 与【世界状态】的分工是详略而非有无——状态给当前详情，名录给「出现过什么」的完整名字表，
+ * 模型据此判断一个名字是旧识还是新登场，细节靠 memory_search 召回。全空返回 undefined。
  */
 export function formatRosterIndex(state: WorldState): string | undefined {
 	const r = state.roster;
 	if (!r) return undefined;
-	const gone = (reg: Record<string, string>, active: Set<string>): Array<[string, string]> =>
-		Object.entries(reg).filter(([k]) => !active.has(k));
 
 	const sections = [
-		rosterSection("已离场人物", gone(r.characters, new Set(Object.keys(state.characters)))),
-		rosterSection("曾持有物品", gone(r.items, new Set(state.inventory))),
-		rosterSection("旧剧情线", gone(r.events, new Set(state.plot_threads))),
+		rosterSection("人物", Object.entries(r.characters)),
+		rosterSection("物品", Object.entries(r.items)),
+		rosterSection("剧情线", Object.entries(r.events)),
 	].filter((s): s is string => Boolean(s));
 	return sections.length ? sections.join("；") : undefined;
 }

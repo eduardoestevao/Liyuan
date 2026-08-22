@@ -5,7 +5,7 @@
  * 恢复 = 精确回到备份当时的项目状态（换机/搬家/灾备）。
  *
  * 范围（用户数据闭包，不含程序代码）：
- * - 项目根数据目录：.liyuan-{state,artifacts,assistant,codex,lore,memory,media,skills,uploads,audio,worldline}
+ * - 项目根数据目录：.liyuan-{state,artifacts,assistant,lore,memory,media,skills,uploads,audio,worldline}
  * - 素材：assets/{cards,lorebooks,presets,personas}、skills/（自建+预设生成）
  * - 配置：liyuan.config.json / liyuan.agent.json / liyuan.agent.meta.json / liyuan-preset.json /
  *   liyuan-profiles/ / .liyuan-personas.json / .liyuan-mcp.json
@@ -49,7 +49,6 @@ const PROJECT_DIR_SCOPES = [
 	".liyuan-state",
 	".liyuan-artifacts",
 	".liyuan-assistant",
-	".liyuan-codex",
 	".liyuan-lore",
 	".liyuan-memory",
 	".liyuan-media",

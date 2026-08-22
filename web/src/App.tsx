@@ -30,7 +30,6 @@ import { ArtifactPanel } from "./components/ArtifactPanel.tsx";
 import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
 import { CardPanel } from "./components/CardPanel.tsx";
-import { CodexPanel } from "./components/CodexPanel.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
 import { UpdateModal, UpdateToast } from "./components/UpdateFlow.tsx";
@@ -46,7 +45,6 @@ import {
 	IconCard,
 	IconChevronDown,
 	IconClose,
-	IconCodex,
 	IconDock,
 	IconLorebook,
 	IconPersona,
@@ -143,7 +141,6 @@ type PanelId =
 	| "settings"
 	| "card"
 	| "lorebook"
-	| "codex"
 	| "persona"
 	| "roster"
 	| "uploads"
@@ -161,12 +158,12 @@ const agentId = (name: string): AgentPanelId => `agent:${name}`;
  * 会话在底栏。
  */
 const LEFT_PANELS: PanelId[] = ["connect", "preset", "powers", "uploads"];
-const RIGHT_PANELS: PanelId[] = ["card", "lorebook", "codex", "persona"];
+const RIGHT_PANELS: PanelId[] = ["card", "lorebook", "persona"];
 /** 右栏可开面板全集：顶栏 4 入口 + 助手（入口在输入框发送钮右侧，不占顶栏） */
 const RIGHT_OPENABLE: PanelId[] = [...RIGHT_PANELS, "assistant"];
 
 /** 长文面板用宽档（横切基建 §1 面板宽度） */
-const WIDE_PANELS = new Set<PanelId>(["card", "lorebook", "codex"]);
+const WIDE_PANELS = new Set<PanelId>(["card", "lorebook"]);
 
 const PANEL_LABEL: Record<PanelId, string> = {
 	sessions: "会话",
@@ -177,7 +174,6 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	settings: "设置",
 	card: "角色卡",
 	lorebook: "世界书",
-	codex: "知识库",
 	persona: "用户角色",
 	roster: "登场名录",
 	uploads: "上传区",
@@ -194,7 +190,6 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 	settings: IconSettings,
 	card: IconCard,
 	lorebook: IconLorebook,
-	codex: IconCodex,
 	persona: IconPersona,
 	roster: IconRoster,
 	uploads: IconUploads,
@@ -1461,8 +1456,6 @@ export default function App() {
 				return <LorebookPanel toast={pushToast} />;
 			case "persona":
 				return <PersonaPanel toast={pushToast} />;
-			case "codex":
-				return <CodexPanel toast={pushToast} />;
 			case "roster":
 				return <RosterPanel state={worldState} toast={pushToast} />;
 			case "uploads":
@@ -1648,10 +1641,10 @@ export default function App() {
 	};
 
 	const openPanelFromWelcome = (
-		id: "connect" | "card" | "powers" | "sessions" | "lorebook" | "preset" | "persona" | "codex",
+		id: "connect" | "card" | "powers" | "sessions" | "lorebook" | "preset" | "persona",
 	) => {
 		// 不关欢迎区：面板与欢迎同屏
-		if (id === "card" || id === "lorebook" || id === "persona" || id === "codex") {
+		if (id === "card" || id === "lorebook" || id === "persona") {
 			openRight(id);
 			return;
 		}

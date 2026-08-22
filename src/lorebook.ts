@@ -19,6 +19,25 @@ export function loreFingerprint(content: string): string {
 	return createHash("md5").update(content.trim()).digest("hex").slice(0, 12);
 }
 
+/**
+ * 标题派生检索关键词：没给 keys 的条目至少能被标题及其分词命中，
+ * 否则写进去就永远检索不到。整串标题恒为第一个关键词，最多 8 个。
+ * （原住 src/codex.ts；知识库退役后搬来世界书族——它本就是世界书条目的助手函数。）
+ */
+export function keysFromTitle(title: string): string[] {
+	const t = title.trim();
+	if (!t) return [];
+	const parts = t
+		.split(/[\s·•,，、/|｜\-—_]+/)
+		.map((s) => s.trim())
+		.filter((s) => s.length >= 1);
+	const out: string[] = [t];
+	for (const p of parts) {
+		if (p !== t && !out.some((x) => x.toLowerCase() === p.toLowerCase())) out.push(p);
+	}
+	return out.slice(0, 8);
+}
+
 /** 应用用户停用清单：命中指纹的条目 enabled 置 false（不修改原数组） */
 export function applyDisabledLore(entries: LorebookEntry[], disabled: string[] | undefined): LorebookEntry[] {
 	if (!disabled || disabled.length === 0) return entries;
@@ -382,7 +401,11 @@ export function exportStLorebook(name: string, entries: LorebookEntry[]): Record
 /** 产品向别名（避免调用方文案绑 ST） */
 export const exportLorebook = exportStLorebook;
 
-// ---------- 补充设定集（agent 经 lorebook_write 固化的新正典；用户原始世界书永远只读） ----------
+// ---------- 补充设定集（agent 经 lorebook_write 固化的新正典；缺省落点，非唯一落点） ----------
+//
+// 8/22：原注写的是「用户原始世界书永远只读」——那条纪律已被用户推翻（agent 现在改得了、
+// 删得了用户自己的书，寻址见 server/rest.ts 的 loreWriteTargets）。overlay 仍是**缺省**落点：
+// 没指定 book 的写入落这里，与用户的原书分开存放，便于分辨哪些是 agent 写的。
 
 /** 补充设定集条目的 uid 起点（避开常见世界书的 uid 空间，别名缓存按 uid 键控） */
 const OVERLAY_UID_BASE = 9000;

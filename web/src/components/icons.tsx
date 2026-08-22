@@ -114,14 +114,6 @@ export const IconLorebook = (p: IconProps) => (
 	</Icon>
 );
 
-export const IconCodex = (p: IconProps) => (
-	<Icon {...p}>
-		<path d="m16 6 4 14" />
-		<path d="M12 6v14" />
-		<path d="M8 8v12" />
-		<path d="M4 4v16" />
-	</Icon>
-);
 
 export const IconPersona = (p: IconProps) => (
 	<Icon {...p}>

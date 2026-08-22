@@ -8,7 +8,7 @@
  * 本模块只读盘、不写盘、零 pi 依赖。
  */
 
-import { existsSync, readFileSync, readdirSync } from "node:fs";
+import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
 import { isAbsolute, join } from "node:path";
 
 import { loadCardFile, applyMacros, readCardRawJson } from "../card.ts";
@@ -22,7 +22,7 @@ import {
 	overlayPathFor,
 	setMountedLorebooks,
 } from "../lorebook.ts";
-import { addFoldTags, addHistoryStripTags, discoverFoldTagsFromTexts, resetDisplayTagExtras } from "../postprocess.ts";
+import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
 import {
 	assemble,
@@ -152,8 +152,68 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 }
 
 /** 装载一拍所需全部素材；卡缺失/损坏时抛错（引擎转告用户，不演） */
+/**
+ * 素材缓存（8/22）：按输入文件的 (mtime, size) 指纹缓存解析结果。
+ *
+ * **为什么值得**：本函数是「每拍现读」的——引擎里 7 个调用点（装配 1 处，
+ * 外加每个工具依赖闭包各 1 处：searchLore / listLore / overlayOf / readCard / getSkill）。
+ * 最贵的一步是整读并解析用户预设：狐神抚那份 5.1 MB，单次全量 ~27ms，
+ * 一拍跑满 20 轮光这一件就 500ms+。会话「打开一次、新建一次」各触发一次全量装载，
+ * 用户实测「加载太频繁」。
+ *
+ * **键**：全部输入文件的 (mtime, size)。文件新建/删除也算（不存在记 `-`），
+ * 所以 `lorebook_write` 落 overlay、面板改预设、编辑器存 skill 都会在下一次调用时
+ * 自动看到新内容——**没有任何调用方需要记得手动失效**（手动失效的通道必然被忘掉）。
+ *
+ * ⚠ 两条不进缓存：
+ * 1. `resetDisplayTagExtras()` / `addHistoryStripTags()` 改的是 postprocess 的模块级注册表，
+ *    扩展侧 session_start 也会重置它——**命中缓存时照样执行**，否则显示层标签随缓存漂移。
+ * 2. `skillFiles` 每次现扫（scanSkillFiles ~0.4ms），skill 编辑器存盘立刻可见。
+ *
+ * ⚠ 不变量：**返回的对象不许被调用方原地改**（现在没人改：constantEntries/withAliases
+ * 都是 map/filter 出新数组）。要改先复制。
+ */
+interface MaterialsCacheEntry {
+	stamp: string;
+	/** overlay 路径要卡名才推得出，缓存下来免得为算指纹再解析一次卡 */
+	overlayFile: string;
+	value: StageMaterials;
+}
+let materialsCache: { cwd: string; entry: MaterialsCacheEntry } | null = null;
+
+/** 单文件指纹；不存在记 `-`（否则「删掉」会被当成「没变」） */
+function fileStamp(abs: string): string {
+	try {
+		const s = statSync(abs);
+		return `${s.mtimeMs}:${s.size}`;
+	} catch {
+		return "-";
+	}
+}
+
+/** 除 overlay 外的全部输入指纹（overlay 单独拼，见 MaterialsCacheEntry.overlayFile） */
+function inputStamp(cwd: string, config: RpConfig): string {
+	const parts = [fileStamp(resolveConfigPath(cwd)), fileStamp(resolvePath(cwd, config.card))];
+	for (const rel of mountedLorebookPaths(config)) parts.push(fileStamp(resolvePath(cwd, rel)));
+	parts.push(fileStamp(join(cwd, ".liyuan", "preset-override.json")));
+	parts.push(fileStamp(config.preset ? resolvePath(cwd, config.preset) : join(cwd, "presets", "默认.json")));
+	// disabledLore 住在 config 里，已被 config 指纹覆盖
+	return parts.join("|");
+}
+
 export function loadStageMaterials(cwd: string): StageMaterials {
 	const config = loadStageConfig(cwd);
+
+	// 缓存命中：指纹一致即内容一致。副作用与 skill 扫描照常走（见上方 ⚠）。
+	const cached = materialsCache?.cwd === cwd ? materialsCache.entry : null;
+	if (cached) {
+		const stamp = `${inputStamp(cwd, config)}|${fileStamp(cached.overlayFile)}`;
+		if (stamp === cached.stamp) {
+			resetDisplayTagExtras();
+			if (cached.value.presetDoc) addHistoryStripTags(FORMAT_STACK_TAGS);
+			return { ...cached.value, skillFiles: scanSkillFiles(cwd) };
+		}
+	}
 
 	const cardAbs = resolvePath(cwd, config.card);
 	const card = loadCardFile(cardAbs);
@@ -237,19 +297,26 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	const presetActive = !!assembled && assembled.before.length + assembled.after.length + assembled.depth.length > 0;
 	const unsupported = new Set(assembled?.unsupported ?? []);
 
-	// 显示层折叠标签：预设约定的思维链/草稿标签在 UI 折叠（server 侧注册表）；
-	// 格式栈标签（catsay/w2g…）只注册到**历史剥**通道——它们是用户要看的产出，
+	// 显示层折叠标签：**猜名单已退役（8/19）**。
+	//
+	// 原本这里扫预设正文、猜「哪些标签是思维链脚手架」，猜中的登记成 fold ⇒ 显示层整块删。
+	// 实测它对狐神抚预设猜出 11 个：`draft fox_front fox_front_insert fox-front-view`
+	// **`content`** `ft_clock Fox正文前思考 think html head meta`——其中 `content` 正是
+	// 作者装**正文**的标签，于是每一拍的正文都被梨园自己整块删掉（用户实测「正文被删」的
+	// 真因，与作者正则无关）；`html/head/meta` 更说明这类猜测的污染面。
+	//
+	// 铁律三：识别「别人发明的名字」的名单只许冻结、收缩、删除。折不折叠归作者的
+	// regex_scripts（本预设自带：depth≤2 做成思维链卡、depth≥3 整块删），梨园不猜。
+	// 名称模式 FOLD_NAME_RE 仍在（thinking/draft/思考… 那批公有名，冻结不动）。
+	//
+	// 格式栈标签（catsay/w2g…）仍只注册到**历史剥**通道——它们是用户要看的产出，
 	// 混进 extraFold 会让显示层连内容一起删（8/05：模型写了咪咪点评，屏上没有）。
 	resetDisplayTagExtras();
 	if (presetDoc) {
-		const discovered = discoverFoldTagsFromTexts(
-			presetDoc.entries.filter((e) => e.enabled && !e.marker).map((e) => e.content),
-		);
-		if (discovered.length) addFoldTags(discovered);
 		addHistoryStripTags(FORMAT_STACK_TAGS);
 	}
 
-	return {
+	const materials: StageMaterials = {
 		config,
 		card,
 		entries,
@@ -267,6 +334,18 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		// 送模侧作者正则：预设 + 卡（与 cardfront 显示侧同源；promptOnly/破坏性规则）
 		promptRules: promptRules([...(presetDoc?.raw?.extensions?.regex_scripts ?? []), ...cardRegexScripts]),
 	};
+
+	// 指纹在**装载之后**取：装载期间若有人改文件，这次算出的指纹属于旧内容，
+	// 下一次调用会因指纹不符重算（宁可多算一次，不可缓存一份读了一半的世界）。
+	materialsCache = {
+		cwd,
+		entry: {
+			stamp: `${inputStamp(cwd, config)}|${fileStamp(overlayFile)}`,
+			overlayFile,
+			value: materials,
+		},
+	};
+	return materials;
 }
 
 /**

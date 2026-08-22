@@ -6,12 +6,22 @@
  *
  * ## 写侧语义
  *
- * - `worldline_store`：在当前叶位创建 rp-save 存档点。是**安全写**——只往树里追加
+ * - `worldline_store`：在当前剧情节点创建 rp-save 存档点。是**安全写**——只往树里追加
  *   `rp-save` custom 条目，不删不改任何现有条目。存档后继续演，不中断。
+ *   台上开放，但**落点推迟到封笔之后**：台上调用发生在本拍生成中，此刻叶位还是用户那条
+ *   输入，钉在这里的存档回退过去只有输入没有回复；且钉档要与账本/面板快照对齐，
+ *   那两件封笔后才有正确值。引擎把请求排到场记之后执行（场记刚写完 rp-state，
+ *   面板写入时已自快照）——那正是全局唯一对齐的时刻。
  * - `worldline_back`：导航到某个存档点。走 `navigateTree`（宿主 ctx 操作）---
  *   **不会删东西**（旧后续完整保留在树上，rewind 后走不同的路再 store 才分出新世界线）。
- *   仅**助手面**开放——台上 back 是侵入操作（导航树会打断当前生成回合），
- *   且留哪条时间线是用户的主权决定。`back` 被拒时提示用户用 `/back` 命令。
+ *   仅**助手面**开放——台上 back 即便推迟到封笔后也怪：模型刚写完一拍，树就跳走，
+ *   这一拍当场变成旁支。回退是「两拍之间」的动作，且留哪条时间线是用户的主权决定。
+ *
+ * ## 「新开世界线」是怎么发生的
+ *
+ * 没有「新建世界线」这个动作——`planNewSave` 按**树的形状**自动判：
+ * 回到旧存档、走出与既有后续不同的路、再 store，那一次 store 就自动分出新线。
+ * 所以 agent 能开世界线 = agent 能 store（分叉是结构结论，不是谁下的命令）。
  *
  * ## 门禁
  *
@@ -42,15 +52,17 @@ export interface WorldlineViewLite {
 export interface WorldlineDeps {
 	/**
 	 * 返回全部存档的世界线视图（含已软删过滤 + 分支归属）。
-	 * 内部调 `buildWorldlineView(extractSaves(...))`——
-	 * 只在助手面调用（从树里抽），台上若无注入则不注册本族写侧工具。
+	 * 宿主用 `flattenWorldlineSaves(buildWorldlineView(extractSaves(...)))` 摊平后注入——
+	 * 树形按线分组是展示面的形状，工具面要的是一张按时间排的表。
 	 */
 	loadWorldline?: () => WorldlineViewLite;
 	/**
 	 * 创建存档（在当前叶位写 rp-save 条目并落盘 meta）。
 	 * 返回新建的存档摘要；null = 无叶位可存。
+	 * `deferred: true` = 请求已受理但要等封笔后才真正钉下（台上如此），
+	 * 此时 worldlineName 尚不可知——分线与否由钉档那一刻的树形决定。
 	 */
-	storeSave?: (name: string) => { id: string; name: string; worldlineName: string } | null;
+	storeSave?: (name: string) => { id: string; name: string; worldlineName: string; deferred?: boolean } | null;
 	/**
 	 * 导航到某个存档点（navigateTree），不删旧内容。
 	 * 仅助手面注入——台上拿不到 navigateTree（StageSessionManager 无此能力）。
@@ -74,13 +86,13 @@ export const worldlineStore: ToolSpec<WorldlineDeps> = {
 	name: "worldline_store",
 	domain: "worldline",
 	mode: "write",
-	surfaces: ["assistant"],
+	surfaces: ["stage", "assistant"],
 	label: "创建存档",
-	description: () =>
-		"在当前剧情节点创建一个存档点（rp-save）。不删不改任何现有内容——" +
-		"存档后继续正常推进，之后再 store 会根据走向自动接续或分叉。" +
-		"存档名可选，缺省为自动时间戳。" +
-		"存档操作不产生新世界线——只有回退到旧存档后走出不同后续再存，才会分叉。",
+	description: (ctx) =>
+		"在当前剧情节点钉一个存档点。不删不改任何现有内容，存完继续正常推进。" +
+		(ctx.surface === "stage" ? "存档点落在本拍演完之后，先把正文写完。" : "") +
+		"用在关键抉择前后、篇章收束处，或用户说「在这里存个档」时。存档名可选，缺省为时间戳。" +
+		"存档本身不产生新世界线——只有回到旧存档、走出不同的后续、再存档，才会分出新线。",
 	parameters: () => ({
 		type: "object",
 		properties: {
@@ -88,11 +100,11 @@ export const worldlineStore: ToolSpec<WorldlineDeps> = {
 		},
 		required: [],
 	}),
-	async run(args, deps): Promise<ToolResult> {
+	async run(args, deps, ctx): Promise<ToolResult> {
 		if (!deps.storeSave) return { text: "本环境不支持创建存档。" };
 
 		const name = strArg(args, "name");
-		let r: { id: string; name: string; worldlineName: string } | null;
+		let r: { id: string; name: string; worldlineName: string; deferred?: boolean } | null;
 		try {
 			r = deps.storeSave(name);
 		} catch (err) {
@@ -100,8 +112,20 @@ export const worldlineStore: ToolSpec<WorldlineDeps> = {
 		}
 		if (!r) return { text: "无法创建存档（无当前叶位）。" };
 
+		// 台上是推迟执行（封笔后才钉），此刻分不分线尚未可知——回执就不能冒充「已存」
+		if (r.deferred) {
+			return {
+				text:
+					ctx.surface === "stage"
+						? `已受理：本拍演完后在这里钉下存档【${r.name}】。之后从这里走出不同的路再存档，会自动分出新世界线。`
+						: `已把存档【${r.name}】提交给剧情侧执行（正在生成中则排到本轮结束）。实际存档名与所属世界线以钉下那一刻为准——要确认随后调 worldline_list。`,
+				activity: `存档「${r.name}」`,
+				details: { name: r.name, deferred: true },
+			};
+		}
 		return {
-			text: `已存档【${r.name}】（${r.worldlineName}）。` +
+			text:
+				`已存档【${r.name}】（${r.worldlineName}）。` +
 				`之后走不同的路再存会自动分叉出新世界线；回退到旧存档用 /back 命令。`,
 			activity: `存档「${r.name}」`,
 			details: { id: r.id, name: r.name, worldlineName: r.worldlineName },
@@ -110,22 +134,25 @@ export const worldlineStore: ToolSpec<WorldlineDeps> = {
 };
 
 /**
- * 调用情境：诊断时间轴——用户问「我存了几个档/哪条世界线」或
+ * 调用情境（D-T3）：诊断时间轴——用户问「我存了几个档/哪条世界线」或
  * 要回退到某个存档点前先确认它的名字。
  *
- * 助手面可用：`surfaces: ["assistant"]`（台上拿不到分支树数据，
- * 且世界线是管理操作非生成内容）。
+ * 台上也开放：存档表是**只读**的，任何时刻取都对；台上此前一件世界线工具都没有，
+ * 用户在台上问「刚才存的那个档叫什么」时模型只能瞎猜。
+ * （原注「台上拿不到分支树数据」已不成立——`sm.getBranch()` 引擎里到处在用。）
  */
 export const worldlineList: ToolSpec<WorldlineDeps> = {
 	name: "worldline_list",
 	domain: "worldline",
 	mode: "read",
-	surfaces: ["assistant"],
+	surfaces: ["stage", "assistant"],
 	label: "列出世界线/存档",
-	description: () =>
+	description: (ctx) =>
 		"列出全部存档与世界线（按时间排序、标明当前分支归属）。" +
-		"用于诊断「有过哪些存档」「当前在哪个存档之后」。" +
-		"要看具体存档点的剧情内容请用 story_read（存档只是锚点，不含正文）。",
+		(ctx.surface === "stage"
+			? "用户问「存过哪些档」「现在在哪个存档之后」时调用；存档只是锚点，不含正文。"
+			: "用于诊断「有过哪些存档」「当前在哪个存档之后」。" +
+				"要看具体存档点的剧情内容请用 story_read（存档只是锚点，不含正文）。"),
 	parameters: () => ({
 		type: "object",
 		properties: {
@@ -133,7 +160,7 @@ export const worldlineList: ToolSpec<WorldlineDeps> = {
 		},
 		required: [],
 	}),
-	async run(args, deps): Promise<ToolResult> {
+	async run(args, deps, ctx): Promise<ToolResult> {
 		if (!deps.loadWorldline) return { text: "本环境不支持查看世界线。" };
 
 		let view: WorldlineViewLite;
@@ -142,7 +169,12 @@ export const worldlineList: ToolSpec<WorldlineDeps> = {
 		} catch (err) {
 			return { text: `读取世界线失败：${errText(err)}` };
 		}
-		if (!view.saves.length) return { text: "尚无存档（用 worldline_store 或 /store 创建第一个存档点）。" };
+		// 台上没有 worldline_store（见文件头「写侧语义」），别指一个它调不到的工具
+		if (!view.saves.length) {
+			return {
+				text: `尚无存档（用 ${ctx.surface === "stage" ? "/store 命令" : "worldline_store 或 /store"} 创建第一个存档点）。`,
+			};
+		}
 
 		// 倒序（最新在前），封顶
 		const limit = intArg(args, "limit", 20, 1, 100);

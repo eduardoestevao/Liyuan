@@ -32,19 +32,24 @@ import { loreTools, type LoreDeps } from "../src/tools/lore.ts";
 import { memoryTools, type MemoryDeps } from "../src/tools/memory.ts";
 import { memoryDeleteChunk, memoryListChunks, memoryManualAdd, memorySearch } from "../src/memory/index.ts";
 import { cardTools, type CardDeps } from "../src/tools/card.ts";
+import { personaTools, type PersonaDeps } from "../src/tools/persona.ts";
+import { stageSkillTools, type StageSkillDeps } from "../src/tools/skill.ts";
+import { presetTools, type PresetDeps } from "../src/tools/preset.ts";
+import { scanSkillFiles } from "../src/stage/materials.ts";
+import { deleteStageSkill as deleteStageSkillDir, saveStageSkill as saveStageSkillFile } from "../src/stage/skill-store.ts";
+import {
+	createPersona as createPersonaRecord,
+	deletePersona as deletePersonaRecord,
+	findPersona,
+	loadPersonas,
+	savePersonas,
+} from "../src/personas.ts";
 import { worldlineTools, type WorldlineDeps, type WorldlineViewLite } from "../src/tools/worldline.ts";
 import { panelTools, type PanelDeps } from "../src/tools/panels.ts";
 import type { PanelWriteOutput } from "../src/tools/panels.ts";
 import { assistantToolDefs } from "./tool-adapter.ts";
-import { loadCardFile } from "../src/card.ts";
-import {
-	appendCodexEntry,
-	createCodex,
-	findCodex,
-	listCodexes,
-	validateCodexName,
-} from "../src/codex.ts";
-import { appendOverlayEntry, loreFingerprint, overlayPathFor, searchEntries, toggleDisabledLore } from "../src/lorebook.ts";
+import { loadCardFile, addCardGreeting, deleteCardGreeting, updateCardFields, updateCardGreeting } from "../src/card.ts";
+import { appendLorebookFileEntry, appendOverlayEntry, loreFingerprint, overlayPathFor, searchEntries, toggleDisabledLore } from "../src/lorebook.ts";
 import { PANEL_KINDS } from "../src/panels.ts";
 import { dir, sameCardPath } from "../src/paths.ts";
 import { listSkills, saveSkill } from "../src/skills.ts";
@@ -62,12 +67,30 @@ import { formatState } from "../src/state.ts";
 import type { RpConfig, WorldState } from "../src/types.ts";
 import {
 	applyConfigPatch,
+	cardLibrary,
 	configPath,
+	createLorebookWithEntry,
+	currentCardPath,
+	deleteLoreEntryAnywhere,
 	loadConfig,
 	loadEffectivePreset,
 	loadMergedLore,
+	loadMergedLoreMarked,
+	lorebookShelf,
+	loreWriteTargets,
+	patchLoreEntryAnywhere,
+	personaOverview,
+	presetLibrary,
 	presetOverridePath,
+	savePresetDraft,
+	saveAsPreset,
+	selectPresetFile,
+	setLorebookMounted,
+	updatePersonaFor,
+	usePersonaFor,
 	writeJsonWithBackup,
+	writePresetDraft,
+	createBlankPreset,
 } from "./rest.ts";
 import { patchPresetRaw, presetDocView } from "../src/preset-doc.ts";
 import { parseCardFromSessionHead } from "./wire.ts";
@@ -86,6 +109,11 @@ export interface StoryBridge {
 	applyStatePatch(patch: Record<string, unknown>): Promise<{ applied: string[]; warnings: string[] }>;
 	/** 配置/预设变更后热载剧情会话（流式中自动排队） */
 	softRefreshConfig(): Promise<void>;
+	/**
+	 * 换卡（M-D7 `card_switch` 工具用）：验卡 → 写 config → 身份投影 → 切/建会话。
+	 * 与 POST /api/card/switch 共用 rest.ts 的 selectCard，不另起一套。
+	 */
+	switchStoryCard(path: string): Promise<{ name: string; result: "switched" | "created" }>;
 	/** 可用模型清单 + 当前剧情模型（/api/models 同源） */
 	listModels(): {
 		current: { provider: string; id: string; name: string } | null;
@@ -100,8 +128,12 @@ export interface StoryBridge {
 	 * 必须给路径而非卡名：scopeId 按路径 hash（src/memory/config.ts:36）。
 	 */
 	memoryScope(): { sessionId: string; card?: string };
-		/** 世界线视图（M-D5）：从当前剧情会话树抽存档点并组装视图 */
-		worldlineView(): unknown;
+		/**
+		 * 世界线存档表（M-D5）：从当前剧情会话树抽存档点、组装视图、**摊平成表**。
+		 * 摊平归 src/worldline.ts 一份（`flattenWorldlineSaves`）——此前这里手抄的那份
+		 * 读的是不存在的顶层 `view.saves`，worldline_list 恒回「尚无存档」。
+		 */
+		worldlineSaves(): WorldlineViewLite;
 		/** 面板读写（M-D5）：当前剧情会话的面板，读/写/关经盘 sync 与前端双工 */
 		storyPanels(): { load(): Record<string, { name: string; kind: "markdown" | "svg" | "html"; content: string; archived?: boolean }>; write(input: { name: string; kind: string; content: string }): { ok: true; created: boolean; reopened: boolean; activeCount: number; overLimit: boolean } | { ok: false; error: string }; close(name: string): { ok: boolean; error?: string }; };
 	/** 写面板（落盘 + await panelsync 收编剧情扩展内存） */
@@ -119,8 +151,6 @@ export interface StoryBridge {
 	emitStoryMedia?(media: { src: string; kind: "image" | "audio" | "video"; caption?: string }): void;
 	/** 收编世界书补充设定集改动进剧情会话（写文件后调，触发 /rprefresh 重载 lore） */
 	refreshStoryMaterials(): Promise<void>;
-	/** 收编知识库挂载变化（写文件后调，/codexmount 命令桥） */
-	mountCodex(name: string, on: boolean): void;
 }
 
 export interface AssistantModelSel {
@@ -458,56 +488,6 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 			},
 		}),
 		defineTool({
-			name: "preset_read",
-			label: "读预设",
-			description:
-				"Read the active preset: block list (id/name/channel/enabled/size) and samplers. Pass id to get one block's full content.",
-			parameters: Type.Object({
-				id: Type.Optional(Type.String({ description: "块 id（给出则返回该块全文）" })),
-			}),
-			async execute(_id, params) {
-				const { doc, path, fromOverride } = loadEffectivePreset(cwd);
-				if (!doc) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
-				const view = presetDocView(doc, { full: true });
-				if (params.id) {
-					const b = view.find((x) => x.id === params.id);
-					if (!b) return text(`找不到预设块：${params.id}`, true);
-					return text(
-						`「${b.name}」（id=${b.id}，${b.marker ? "酒馆内置槽位" : b.channel}，${b.enabled ? "启用" : "停用"}，role=${b.role}）\n\n${b.content ?? ""}`,
-					);
-				}
-				const blocks = view
-					.map((b) => `- [${b.enabled ? "开" : "关"}] ${b.id}「${b.name}」 ${b.marker ? "槽位" : b.channel} · ${b.chars} 字`)
-					.join("\n");
-				return text(
-					`预设「${doc.name}」${fromOverride ? "（含未保存草稿）" : ""}\n采样参数：${JSON.stringify(doc.samplers)}\n${blocks}`,
-				);
-			},
-		}),
-		defineTool({
-			name: "preset_toggle",
-			label: "开关预设块",
-			description:
-				"Enable/disable one preset block (writes the runtime draft, effective from the next story turn; the user can persist it later in the preset panel). Confirm with the user first.",
-			parameters: Type.Object({
-				id: Type.String({ description: "块 id" }),
-				enabled: Type.Boolean({ description: "true=启用 false=停用" }),
-			}),
-			async execute(_id, params) {
-				const { doc, path } = loadEffectivePreset(cwd);
-				if (!doc) return text(path ? `预设文件不存在：${path}` : "当前未配置预设文件", true);
-				if (!doc.entries.some((b) => b.identifier === params.id)) return text(`找不到预设块：${params.id}`, true);
-				const next = patchPresetRaw(doc, { blocks: [{ id: params.id, enabled: params.enabled }] });
-				const ovr = presetOverridePath(cwd);
-				mkdirSync(join(cwd, ".liyuan"), { recursive: true });
-				writeFileSync(ovr, `${JSON.stringify(next, null, "\t")}\n`, "utf8");
-				await bridge.softRefreshConfig();
-				return text(
-					`预设块 ${params.id} 已${params.enabled ? "启用" : "停用"}（运行时草稿，下一轮生效；持久保存需在预设面板点「保存」）。`,
-				);
-			},
-		}),
-		defineTool({
 			name: "world_read",
 			label: "读世界状态",
 			description: "Read the structured world state ledger (time, location, characters, inventory, flags, plot threads).",
@@ -616,66 +596,6 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 				};
 			},
 		}),
-		defineTool({
-			name: "codex_create",
-			label: "建知识库",
-			description:
-				"Create a new named knowledge codex (a lore database independent of the character card, mountable to any conversation). Then use codex_write to add entries and codex_mount to attach it to the story.",
-			parameters: Type.Object({
-				name: Type.String({ description: "库名（≤40 字）" }),
-				description: Type.Optional(Type.String({ description: "一句话说明这个库收集什么" })),
-			}),
-			async execute(_id, params) {
-				const err = validateCodexName(params.name);
-				if (err) return text(err, true);
-				const r = createCodex(cwd, params.name, params.description ?? "");
-				if (!r.ok) return text(r.error, true);
-				return text(`知识库「${r.meta.name}」已创建。可用 codex_write 写条目、codex_mount 挂到剧情。`);
-			},
-		}),
-		defineTool({
-			name: "codex_write",
-			label: "写知识库",
-			description:
-				"Add an entry to a named knowledge codex (dedup by content). The codex must already exist (codex_create). Entries become searchable once the codex is mounted to the story.",
-			parameters: Type.Object({
-				codex: Type.String({ description: "目标库名" }),
-				title: Type.String({ description: "条目标题" }),
-				keys: Type.Optional(Type.Array(Type.String(), { description: "检索关键词（省略则从标题派生）" })),
-				content: Type.String({ description: "条目正文" }),
-			}),
-			async execute(_id, params) {
-				if (!findCodex(cwd, params.codex)) {
-					const all = listCodexes(cwd).map((c) => c.name).join("、");
-					return text(`没有名为「${params.codex}」的知识库${all ? `（现有：${all}）` : "，先用 codex_create 建库"}。`, true);
-				}
-				const r = appendCodexEntry(cwd, params.codex, {
-					title: params.title,
-					keys: params.keys ?? [],
-					content: params.content,
-				});
-				if (!r.ok) return text(r.error, true);
-				if (r.entry === null) return text("内容与库中已有条目重复，未写入。");
-				return text(`已写入知识库「${params.codex}」：【${params.title}】。挂载到剧情后即可被检索命中。`);
-			},
-		}),
-		defineTool({
-			name: "codex_mount",
-			label: "挂/卸知识库",
-			description:
-				"Mount or unmount a knowledge codex onto the story conversation (mounted codex entries join the story's lorebook search). Call with on=false to unmount.",
-			parameters: Type.Object({
-				name: Type.String({ description: "库名" }),
-				on: Type.Optional(Type.Boolean({ description: "true=挂载（默认）false=卸载" })),
-			}),
-			async execute(_id, params) {
-				const meta = findCodex(cwd, params.name);
-				if (!meta) return text(`没有名为「${params.name}」的知识库。`, true);
-				const on = params.on !== false;
-				bridge.mountCodex(meta.name, on);
-				return text(`知识库「${meta.name}」已${on ? "挂载到" : "从"}剧情对话${on ? "" : "卸载"}（${meta.entryCount} 条）。`);
-			},
-		}),
 	);
 
 	// 统一工具层（PLAN-RP-TOOLING M-D1/M-D2）：与台上共用同一份实现，语料与能力按面注入。
@@ -690,11 +610,56 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 				searchLore: (query, limit) => searchEntries(loadMergedLore(cwd, loadConfig(cwd)), query, limit),
 				loreSize: () => loadMergedLore(cwd, loadConfig(cwd)).length,
 				writeLore: (input) => {
+					const config = loadConfig(cwd);
+					if (input.book) {
+						const [abs] = loreWriteTargets(cwd, config, input.book);
+						const entry = appendLorebookFileEntry(abs, {
+							comment: input.title,
+							keys: input.keys,
+							content: input.content,
+							...(input.constant !== undefined ? { constant: input.constant } : {}),
+						});
+						if (entry) void bridge.refreshStoryMaterials();
+						return entry;
+					}
 					const entry = appendOverlayEntry(overlayPathFor(cwd, bridge.cardName()), input);
 					if (entry) void bridge.refreshStoryMaterials();
 					return entry;
 				},
-				listLore: () => loadMergedLore(cwd, loadConfig(cwd)),
+				// 寻址（书单全部 + 补充设定集）与 disabledLore 指纹迁移都归 rest.ts 那一份，
+				// 与面板、台上同一套语义——「改用户的书」这件事只能有一个实现。
+				updateLore: (fingerprint, patch) => {
+					const r = patchLoreEntryAnywhere(cwd, loadConfig(cwd), fingerprint, {
+						...(patch.title !== undefined ? { comment: patch.title } : {}),
+						...(patch.keys !== undefined ? { keys: patch.keys } : {}),
+						...(patch.content !== undefined ? { content: patch.content } : {}),
+						...(patch.constant !== undefined ? { constant: patch.constant } : {}),
+					});
+					if (r) void bridge.softRefreshConfig();
+					return r;
+				},
+				deleteLore: (fingerprint) => {
+					const r = deleteLoreEntryAnywhere(cwd, loadConfig(cwd), fingerprint);
+					if (r) void bridge.softRefreshConfig();
+					return r;
+				},
+				listLore: () => loadMergedLoreMarked(cwd, loadConfig(cwd)),
+				listBooks: () => lorebookShelf(cwd, loadConfig(cwd)),
+				createBook: (name, first) => {
+					const r = createLorebookWithEntry(cwd, loadConfig(cwd), name, {
+						comment: first.title,
+						keys: first.keys,
+						content: first.content,
+						...(first.constant !== undefined ? { constant: first.constant } : {}),
+					});
+					if (r) void bridge.softRefreshConfig();
+					return r;
+				},
+				mountBook: (path, mounted) => {
+					const next = setLorebookMounted(cwd, loadConfig(cwd), path, mounted);
+					void bridge.softRefreshConfig();
+					return next;
+				},
 				fingerprint: loreFingerprint,
 				toggleLore: (fps, enabled) => {
 					const config = loadConfig(cwd);
@@ -751,6 +716,36 @@ tools.push(
 					tags: c.tags, alternateGreetings: c.alternateGreetings,
 				};
 			},
+			// ---- M-D7 写侧与卡库：改卡 / 卡库 / 换卡 / 开场白 ----
+			// 卡文件写侧一律先解析出绝对路径（config.card 是相对的，进程 cwd 未必等于项目 cwd）。
+			updateCard: (patch) => {
+				updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch);
+				void bridge.softRefreshConfig(); // 卡字段进 system prompt，必须重装
+			},
+			listCards: () => cardLibrary(cwd, loadConfig(cwd)),
+			switchCard: async (path) => {
+				const r = await bridge.switchStoryCard(path);
+				return { name: r.name, result: r.result };
+			},
+			greetings: {
+				list: () => {
+					const c = loadCardFile(currentCardPath(cwd, loadConfig(cwd)));
+					return [c.firstMes ?? "", ...c.alternateGreetings];
+				},
+				add: (text) => {
+					const i = addCardGreeting(currentCardPath(cwd, loadConfig(cwd)), text);
+					void bridge.softRefreshConfig();
+					return i;
+				},
+				edit: (index, text) => {
+					updateCardGreeting(currentCardPath(cwd, loadConfig(cwd)), index, text);
+					void bridge.softRefreshConfig();
+				},
+				remove: (index) => {
+					deleteCardGreeting(currentCardPath(cwd, loadConfig(cwd)), index);
+					void bridge.softRefreshConfig();
+				},
+			},
 			createCard: (input) => {
 				const safe = input.name.replace(/[\\/<>:"|?*]/g, "_").slice(0, 120).trim();
 				if (!safe) throw new Error("卡名无效");
@@ -791,26 +786,14 @@ tools.push(
 	...assistantToolDefs<WorldlineDeps>(
 		worldlineTools,
 		{
-			loadWorldline: () => {
-				const raw = bridge.worldlineView() as Record<string, unknown>;
-				const saves = Array.isArray(raw.saves) ? raw.saves as Array<Record<string, unknown>> : [];
-				return {
-					saves: saves.map((s) => ({
-						id: String(s.id ?? ""),
-						name: String(s.name ?? ""),
-						worldlineId: String(s.worldlineId ?? ""),
-						worldlineName: String(s.worldlineName ?? ""),
-						createdAt: typeof s.createdAt === "number" ? s.createdAt : 0,
-						onCurrentBranch: s.onCurrentBranch === true,
-						entryId: String(s.entryId ?? ""),
-					})),
-					currentSaveId: typeof raw.currentSaveId === "string" ? raw.currentSaveId : null,
-				} satisfies WorldlineViewLite;
-			},
+			loadWorldline: () => bridge.worldlineSaves(),
 			storeSave: (name) => {
+				// 经命令桥排给剧情侧执行——**结果此刻不可知**（生成中会排到本轮结束，
+				// 且分不分线由钉档那一刻的树形决定）。故只回 deferred，不编造存档名与线名：
+				// 早先这里硬写 `worldlineName: "当前线"` / `name: "自动命名"`，回执是假的。
 				const cmd = name.trim() ? `/store ${name.trim()}` : "/store";
-				const queued = bridge.queueStoryCommand(cmd);
-				return queued ? { id: "", name: name.trim() || "自动命名", worldlineName: "当前线" } : null;
+				bridge.queueStoryCommand(cmd); // 返回值只说明「是否排队」，两种情况都是异步执行
+				return { id: "", name: name.trim() || "（自动命名）", worldlineName: "", deferred: true };
 			},
 			navigateToSave: (saveId) => {
 				const queued = bridge.queueStoryCommand(`/back ${saveId}`);
@@ -830,6 +813,107 @@ tools.push(
 			loadPanels: () => bridge.storyPanels().load(),
 			writePanel: (input) => bridge.storyPanels().write(input) as PanelWriteOutput,
 			closePanel: (name) => bridge.storyPanels().close(name),
+		},
+		loadConfig(cwd).language,
+	),
+);
+
+// 用户身份族（M-D7）：合一前三面皆零——身份的增删改选全是面板 + REST。
+// 选用/修改后要投影进 config 并热载（否则改了等于没改），投影归 rest.ts 的共用函数。
+tools.push(
+	...assistantToolDefs<PersonaDeps>(
+		personaTools,
+		{
+			listPersonas: () => personaOverview(cwd),
+			createPersona: (input) => {
+				const store = loadPersonas(cwd);
+				const r = createPersonaRecord(store, { name: input.name, persona: input.persona });
+				// 第一个身份自动成为全局默认（与 POST /api/personas 同）
+				savePersonas(cwd, r.store.current === null ? { ...r.store, current: r.id } : r.store);
+				return { id: r.id };
+			},
+			updatePersona: (id, patch) => {
+				const ok = updatePersonaFor(cwd, id, patch);
+				if (ok) void bridge.softRefreshConfig();
+				return ok;
+			},
+			usePersona: (id, lockToCard) => {
+				const ok = usePersonaFor(cwd, id, lockToCard);
+				if (ok) void bridge.softRefreshConfig();
+				return ok;
+			},
+			deletePersona: (id) => {
+				const store = loadPersonas(cwd);
+				// 至少保留一个身份：删空了 {{user}} 就无处可取（与 DELETE /api/personas 同）
+				if (!findPersona(store, id) || store.personas.length <= 1) return false;
+				savePersonas(cwd, deletePersonaRecord(cwd, store, id));
+				return true;
+			},
+		},
+		loadConfig(cwd).language,
+	),
+);
+
+// 台上 skill 库族（M-D7）：管 skills/<目录>/SKILL.md——剧情模型每拍现读的那一份方法论骨架。
+// 与 `.liyuan-skills`（助手自己的服务笔记，skill_save 那套）是两套同名不同物，故带 stage_ 前缀。
+tools.push(
+	...assistantToolDefs<StageSkillDeps>(
+		stageSkillTools,
+		{
+			listStageSkills: () =>
+				scanSkillFiles(cwd).map((s) => ({
+					dir: s.dir ?? s.name,
+					name: s.name,
+					description: s.description,
+					resident: s.resident,
+					everyBeat: s.everyBeat,
+					body: s.body,
+				})),
+			saveStageSkill: (input) => saveStageSkillFile(cwd, input),
+			deleteStageSkill: (dir) => deleteStageSkillDir(cwd, dir),
+		},
+		loadConfig(cwd).language,
+	),
+);
+
+// 预设族（M-D8）：读/列/改/存/建/另存/切换。写侧一律先落运行时草稿，preset_save 才落盘——
+// 与预设面板同一条两段式，免得 agent 改完用户在面板撤不掉。
+tools.push(
+	...assistantToolDefs<PresetDeps>(
+		presetTools,
+		{
+			readPreset: () => {
+				const { doc, fromOverride } = loadEffectivePreset(cwd);
+				if (!doc) return null;
+				return {
+					name: doc.name,
+					kind: doc.kind,
+					samplers: doc.samplers,
+					blocks: presetDocView(doc, { full: true }),
+					dirty: fromOverride,
+				};
+			},
+			listPresets: () => presetLibrary(cwd),
+			writePreset: (patch) => {
+				const r = writePresetDraft(cwd, patch as never);
+				void bridge.softRefreshConfig(); // 草稿下一拍生效
+				return r;
+			},
+			savePreset: (save) => {
+				savePresetDraft(cwd, save);
+				void bridge.softRefreshConfig();
+			},
+			createPreset: (name) => {
+				const r = createBlankPreset(cwd, name);
+				if (r) void bridge.softRefreshConfig();
+				return r;
+			},
+			saveAsPreset: (name) => saveAsPreset(cwd, name), // 另存不切换，无需热载
+			selectPreset: (file) => {
+				const ok = selectPresetFile(cwd, file);
+				if (ok) void bridge.softRefreshConfig();
+				return ok;
+			},
 		},
 		loadConfig(cwd).language,
 	),
