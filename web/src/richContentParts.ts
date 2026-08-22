@@ -17,7 +17,7 @@
 
 import type { DisplayRule } from "../../src/cardfront.ts";
 import { isHtmlDisplayPayload } from "../../src/postprocess.ts";
-import { applyCardSkin } from "./cardSkin.ts";
+import { applySkinKeepingBody } from "./cardSkin.ts";
 import { findFencedHtmlDocument, looksLikeHtmlDocument, splitHtmlParts } from "./htmlEmbed.ts";
 
 export type RichPart =
@@ -46,7 +46,7 @@ function alreadyDisplayHtml(text: string): boolean {
  */
 export function splitRichContentParts(text: string, skin?: SkinMacros | null): RichPart[] {
 	const needSkin = Boolean(skin && skin.rules.length > 0 && !alreadyDisplayHtml(text));
-	const skinned = needSkin ? applyCardSkin(text, skin!.rules, skin!) : text;
+	const skinned = needSkin ? applySkinKeepingBody(text, skin!.rules, skin!) : text;
 
 	// 围栏整页 / 短 ```html / 顶层 div —— 全由 splitHtmlParts 认领（可递归多帧）
 	const htmlClaimed = splitHtmlParts(skinned);

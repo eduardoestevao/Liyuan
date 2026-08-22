@@ -87,157 +87,20 @@ export function skillReadTool(language: string, names: string[]): StageTool {
 }
 
 /**
- * 写侧五件（M-A 三件 + M-B 的 draft_edit/read/search）。
- * schema 在此，执行在 workspace.ts（工作区状态归引擎单拍持有）。
+ * 写侧只剩 `ask`（第三步：draft 族与 world_state_update 先后撤出模型视野）。
+ * 记账归封笔后的场记旁路（scribe-run.ts），台上零世界写入工具。
  */
 export function writeTools(language: string): StageTool[] {
 	return [
-		{
-			name: "beat_plan",
-			description:
-				`列出这一拍要演的几步（${language}）——落笔前先在这里构思。` +
-				`每条写**这一步发生什么**，一句话的**抽象路标**，` +
-				`不写这一步怎么演（留给演到那个路标时再想），也不写字数。` +
-				`2~8 条。列路标时按本拍总字数把篇幅分配到各步（几步分几份，每个路标心里有数）。` +
-				`这是草图不是剧本：演到中途剧情走岔了，随时重调本工具改写剩下的步骤。`,
-			parameters: {
-				type: "object",
-				properties: {
-					steps: {
-						type: "array",
-						description: "本拍的步骤清单，每条一句话路标（不超过 60 字）",
-						items: { ...STR, description: "一步：一个动作或一个转折" },
-					},
-				},
-				required: ["steps"],
-			},
-		},
-		{
-			name: "beat_step_done",
-			description:
-				"勾掉计划里已经演完的一条（演完一个路标就勾一条；一段盖过几条就连着勾几条，不必分轮）。" +
-				"返回更新后的清单与剩余条数。",
-			parameters: {
-				type: "object",
-				properties: {
-					step: { type: "number", description: "要勾掉的步骤序号（从 1 开始）" },
-				},
-				required: ["step"],
-			},
-		},
-		{
-			name: "draft_append",
-			description:
-				`往下演一个路标（${language}）——你落笔的方式。` +
-				`在现稿末尾追加，不覆盖已写部分：交出去的就是已经发生的事，不会被打回。` +
-				`落笔前先思考剧情、构思文字，再书写正文。随后判断：` +
-				`接下来要不要 ask 用户、剩余路标是否需要重拟、戏是否到停点。` +
-				`演完一个路标就交。全部演完调用 draft_seal 收笔。`,
-			parameters: {
-				type: "object",
-				properties: {
-					segment: {
-						...STR,
-						description: "这一个路标的正文（不含状态栏等格式区块）",
-					},
-				},
-				required: ["segment"],
-			},
-		},
-		{
-			name: "draft_write",
-			description:
-				`一次交完整拍正文（${language}），全量替换语义（覆盖上一稿）。` +
-				`只用于**这一拍没有戏**的时候：用户只是寒暄、确认、应一声，场面没有动。` +
-				`有戏的一拍用 draft_append 一个路标一个路标演。` +
-				`先落笔，再按验收报告改。` +
-				`**已有稿之后的局部修改一律用 draft_edit 定点改，不要重交全文。**`,
-			parameters: {
-				type: "object",
-				properties: { content: { ...STR, description: "完整正文（纯剧情文字，不含状态栏等格式区块）" } },
-				required: ["content"],
-			},
-		},
-		{
-			name: "draft_seal",
-			description:
-				"封笔：声明正文已全部写完，返回完整稿的验收事实（字数/文面/主权）。" +
-				"分路标续写（draft_append）结束后必须调用本工具，否则本拍没有最终正文。",
-			parameters: { type: "object", properties: {}, required: [] },
-		},
-		{
-			name: "draft_edit",
-			description:
-				"对现稿做定点替换（改稿的**首选方式**，不要为改几句话重交全文）。" +
-				"edits 可一次给多处，一并套用后自动复验。" +
-				"每处的 old 必须逐字引用现稿原文且在全文中唯一——不唯一就前后多带一句；" +
-				"引不准可先用 draft_search 取回精确原文。" +
-				"**任一处定位失败则整批不套用**，按返回的说明修正后重新提交整批。",
-			parameters: {
-				type: "object",
-				properties: {
-					edits: {
-						type: "array",
-						description: "定点替换列表（可多处）",
-						items: {
-							type: "object",
-							properties: {
-								old: { ...STR, description: "现稿中要被替换的原文（须唯一）" },
-								new: { ...STR, description: "替换成的新文字（传空串即删除该片段）" },
-							},
-							required: ["old", "new"],
-						},
-					},
-				},
-				required: ["edits"],
-			},
-		},
-		{
-			name: "draft_read",
-			description:
-				"读回当前稿全文，附稿次与**验收口径字数**（与字数规则同一口径，不含标签模块）。" +
-				"改了多轮后拿不准现稿长什么样、或要给 draft_edit 取原文时调用。",
-			parameters: { type: "object", properties: {}, required: [] },
-		},
-		{
-			name: "draft_search",
-			description:
-				"在**当前稿**中查找文字，返回命中处的上下文引用——供 draft_edit 取精确的 old。" +
-				"（查历史剧情用 memory_search，两者不是一回事。）",
-			parameters: {
-				type: "object",
-				properties: { query: { ...STR, description: "要查找的文字片段" } },
-				required: ["query"],
-			},
-		},
-		{
-			name: "world_state_update",
-			description:
-				"提交世界状态账本补丁（合并语义）：time/location 字符串整体替换；characters 按角色名合并字段" +
-				"（affinity 数值/status/notes，传 null 删除该角色）；flags 按键合并（null 删除）；" +
-				"inventory/plot_threads 传**字符串数组**整体替换（如 [\"补气丹（已服用）\"]，元素不能是对象）。" +
-				"本拍剧情改变了世界（时间流逝/移动/关系变化/" +
-				"获得失去物品/剧情推进）就在定稿前提交——你是唯一知道现场发生了什么的人，不提交账本就会漂移。",
-			parameters: {
-				type: "object",
-				properties: {
-					patch: {
-						type: "object",
-						description: '合并补丁，如 {"time":"入夜","characters":{"林霜":{"affinity":35}}}',
-					},
-				},
-				required: ["patch"],
-			},
-		},
 		{
 			name: "ask",
 			description:
 				"剧情共创决策（P7 接回）：把该由用户拍板的选择交给用户。三种触发：\n" +
 				"① **主动触发**（随时，含第 1 轮）：用户输入本身在求方向/递笔（「接下来去找谁」「怎么办」" +
 				"「给个选项」「让我选」）——这不需要上文支撑，直接问。\n" +
-				"② **开局收集**（规划阶段、列路标之前）：用户这句输入引出的未定变量——取不同值这拍走向会" +
+				"② **开局收集**（开场第一拍）：用户这句输入引出的未定变量——取不同值这拍走向会" +
 				"明显分岔（如：买下用户的人性格温和还是残暴，决定整拍怎么演）、且卡与世界书查不到——" +
-				"先问用户定下来再规划。一次一问，多个变量只问最关键的。" +
+				"先问用户定下来再演。一次一问，多个变量只问最关键的。" +
 				"判断是**动态的**：变量不因「新」而重要——新人物的性格/身份不是全都要问，洞府里不是每件资源" +
 				"都值得问；不分岔的自己顺着演，不事事上报。禁止代写用户身份的完整档案、禁止替用户定重大变量。\n" +
 				"③ **续写触发**（路标演完之后）：续写的自然下文涉及用户的行动或选择。\n" +

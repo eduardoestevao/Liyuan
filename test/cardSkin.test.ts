@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { applyCardSkin } from "../web/src/cardSkin.ts";
+import { applyCardSkin, requiredLiteral } from "../web/src/cardSkin.ts";
 
 const M = { charName: "青梧", userName: "旅人" };
 const wrapOpen = { name: "状态栏", source: "<StatusBlock>", flags: "gs", replace: '<div style="x"><status>' };
@@ -87,4 +87,44 @@ test("长替换串仍展开有效 $2（LWS 状态栏 rawData=`$2`）", () => {
 	const out = applyCardSkin(`<state1>\n${body}\n</state1>`, [rule], M);
 	assert.ok(!out.includes("`$2`") && !out.includes("rawData = `$2`"), "不得残留字面 $2");
 	assert.ok(out.includes("明月") && out.includes("想逃"), "捕获正文须注入模板");
+});
+
+// ——— 字面量预筛（8/19 性能修复）：不改语义，只跳过不可能匹配的规则 ———
+test("预筛：从作者正则提取必须出现的字面串", () => {
+	// CoT 隐藏成语：闭合标签就是必要条件
+	assert.equal(requiredLiteral(String.raw`([\s\S]*?)<\/think_fox~>\s*?`), "</think_fox~>");
+	assert.equal(requiredLiteral(String.raw`<state2>([\s\S]*?)<\/state2>`), "</state2>");
+	// 拿不准一律 null（照旧全跑）：分支 / 否定断言 / 可选组
+	assert.equal(requiredLiteral(String.raw`(<a>|<b>)x`), null);
+	assert.equal(requiredLiteral(String.raw`(?!<keep>)<drop_this>`), null);
+	assert.equal(requiredLiteral(String.raw`abc(?=xyz)def`), null); // 断言内外不连续，不筛
+	// 标签名在分组里：字面串必须跨组拼接成 `</think`——只提 `think` 太弱（卡的 HTML/JS 满是 think
+	// 字样），预筛会放行这条贪婪正则继续 O(n²) 空扫（8/19 CPU profile：单条 11 秒）
+	assert.equal(requiredLiteral(String.raw`([\s\S]*)<\/(think_?fox~?)>`), "</think");
+	assert.equal(requiredLiteral(String.raw`([\s\S]*?)<\/(think_?fox~?)>\s*?`), "</think");
+	assert.equal(requiredLiteral(String.raw`(<opt_group>)?<x>`), null);
+	// 纯字符类/量词构成的正则没有必要字面量
+	assert.equal(requiredLiteral(String.raw`[0-9]+`), null);
+	// 可选的字面量不算必要
+	assert.equal(requiredLiteral(String.raw`<abc>?<defgh>`), "<defgh>"); // ? 只作用于前一个 >
+});
+
+test("预筛：不改变匹配结果——命中的照样命中，且大小写规则各自成立", () => {
+	const hide = { name: "h", source: String.raw`([\s\S]*?)<\/think_fox~>\s*?`, flags: "g", replace: "" };
+	const M = { charName: "", userName: "" };
+	// 含闭合标签 → 照旧删掉思维链
+	assert.equal(applyCardSkin("<think_fox~>思考</think_fox~>正文", [hide] as never, M), "正文");
+	// 不含闭合标签 → 规则被跳过，文本原样（与老实现同结果，只是不再 O(n²) 空扫）
+	const noTag = "只有正文没有思维链标签。".repeat(20);
+	assert.equal(applyCardSkin(noTag, [hide] as never, M), noTag);
+	// i 标记：大写标签也要命中（预筛比对必须同样忽略大小写）
+	const hideI = { ...hide, flags: "gi" };
+	assert.equal(applyCardSkin("<THINK_FOX~>思考</THINK_FOX~>正文", [hideI] as never, M), "正文");
+});
+
+test("预筛：前一条规则造出的标记，后一条规则仍能命中（缓存不得失效误跳）", () => {
+	const M = { charName: "", userName: "" };
+	const make = { name: "make", source: String.raw`占位`, flags: "g", replace: "<mark_x>值</mark_x>" };
+	const eat = { name: "eat", source: String.raw`<mark_x>([\s\S]*?)<\/mark_x>`, flags: "gi", replace: "[$1]" };
+	assert.equal(applyCardSkin("前占位后", [make, eat] as never, M), "前[值]后");
 });

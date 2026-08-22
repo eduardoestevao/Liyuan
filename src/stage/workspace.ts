@@ -1,49 +1,22 @@
 /**
  * 回合工作区（PLAN-RP-AGENT-EXEC M-A §2.2）——正文成为工件的落点。
  *
- * 一拍一个工作区：模型经稿纸工具写正文、world_state_update 记账，
+ * 一拍一个工作区：模型直出正文由引擎代收落稿，
  * harness 只执行与验证，不替模型生成任何内容（控制反转的落地处）。
  *
  * 三条铁律：
- * - draft_write 是唯一交稿入口（宽进严出：直出正文由引擎代为收稿，见 engine #agentLoop）；
- *   已有稿之后的局部修改归 draft_edit（定点补丁，批量原子：任一处定位失败则整批不改）；
- * - world_state_update 只验不改：patch 先在投影账本上干跑，合格才入队，定稿后统一套用；
+ * - draft_write 是唯一交稿入口，且已不是模型可调工具——引擎「直出代收」按名调它落地正文；
+ * - 记账不在台上：world_state_update 已撤出，账本归封笔后的场记旁路（scribe-run.ts）；
  * - 工作区只活在引擎单拍内，不跨模块共享（jiti 二象性红线，不触 globalThis）。
  *
  * 纯函数 + 注入依赖，零 pi 依赖、可单测（执行器全部复用 draft.ts / state.ts 现成代码）。
  */
 
-import {
-	applyDraftEdits,
-	searchDraft,
-	type DraftEditItem,
-	type DraftRules,
-} from "../draft.ts";
-import { applyPatch, canonicalizeCharacterKeys } from "../state.ts";
-import type { WorldState } from "../types.ts";
-
-/** 拍内计划的一条：一个动作/一个转折，不是正文 */
-export interface BeatStep {
-	text: string;
-	done: boolean;
-}
+import { type DraftRules } from "../draft.ts";
 
 export interface TurnWorkspace {
 	/** 当前稿（draft_write 全量替换语义；draft_append 追加语义） */
 	draft: string;
-	/**
-	 * 本拍计划清单（beat_plan）——首轮构思的落点。
-	 *
-	 * 构思若只活在思考里，要么被逐轮回放固化成剧本，要么在切断回放后蒸发；
-	 * 落成清单则是工件：模型每轮面对的是「现稿 + 剩余待办」而非旧思考。
-	 * 条目粒度由 MAX_STEP_LEN 挡住——写得下路标，写不下正文，
-	 * 于是「构思」与「脑内排练整拍初稿」在结构上被分开。
-	 *
-	 * 拍内临时：随工作区谢幕即弃，不跨拍（跨拍大纲＝长期剧本，是另一种病）。
-	 */
-	plan: BeatStep[];
-	/** beat_plan 调用次数（KPI：构思是否真被推翻重拟过） */
-	planWrites: number;
 	/** 已封笔（M-E）：正文写完了（8/10 起封笔只是状态切换，不触发任何检验） */
 	sealed: boolean;
 	/** 交稿次数（含宽进严出代收） */
@@ -59,13 +32,8 @@ export interface TurnWorkspace {
 	 * 事，那这一拍本该一段一段演。draft_write 的门禁据此判定（见 runWriteTool）。
 	 */
 	lookups: number;
-	/** world_state_update 已验证入队的 patch（定稿后按序统一套用） */
-	patches: Record<string, unknown>[];
 	/**
 	 * 本拍面板写入次数（panel_write / panel_close 调用计数，engine 维护）。
-	 *
-	 * 记账注入的跳过判据（PLAN-RECTIFY §2.3：本拍已有落账时可跳过）必须是结构信号，
-	 * 禁止文本识别——patches 与本计数就是那个结构信号。
 	 */
 	panelWrites: number;
 	/**
@@ -102,14 +70,11 @@ export type TurnSegment =
 export function createWorkspace(): TurnWorkspace {
 	return {
 		draft: "",
-		plan: [],
-		planWrites: 0,
 		sealed: false,
 		writes: 0,
 		appends: 0,
 		edits: 0,
 		lookups: 0,
-		patches: [],
 		panelWrites: 0,
 		timeline: [],
 	};
@@ -217,34 +182,10 @@ export function splitDraftSegments(draft: string): string[] {
 	return draft.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
 }
 
-/**
- * 定点改稿后同步时间线（M-E）：分段续写时**保持分段**，只把整稿重新切回各段。
- *
- * 续写形态下屏上是「一段段长出来的故事」，若改一处就塌成一整块，
- * 已经上屏的部分会在用户眼前重排——那正是 draft_append 要消除的体验。
- * 故按段落边界重切：稿件以 `\n\n` 分段，逐段替换已记的稿段。
- */
-function resyncDraftSegments(ws: TurnWorkspace): void {
-	const firstIdx = ws.timeline.findIndex((s) => s.kind === "text" && s.draft === true);
-	ws.timeline = ws.timeline.filter((s) => !(s.kind === "text" && s.draft === true));
-	const segs: TurnSegment[] = splitDraftSegments(ws.draft).map((p) => ({ kind: "text" as const, text: p, draft: true }));
-	if (firstIdx >= 0) ws.timeline.splice(Math.min(firstIdx, ws.timeline.length), 0, ...segs);
-	else ws.timeline.push(...segs);
-}
-
 export interface WorkspaceDeps {
 	rules: DraftRules;
 	userName: string;
 	charName: string;
-	/** 本拍开演前的账本（= f(分支)）；patch 验证在其投影上干跑 */
-	baseState: WorldState;
-}
-
-/** 已入队 patch 依序套在基准账本上的投影——后续 patch 的验证与定稿看到同一个世界 */
-export function projectedState(ws: TurnWorkspace, base: WorldState): WorldState {
-	let s = base;
-	for (const p of ws.patches) s = applyPatch(s, p).state;
-	return s;
 }
 
 export interface WriteToolResult {
@@ -254,24 +195,6 @@ export interface WriteToolResult {
 	activity?: string;
 	/** true = 本次调用是有效交稿/记账（引擎统计与流转用） */
 	ok: boolean;
-}
-
-/** 单条计划的长度上限：路标写得下，正文写不下（构思／排练的结构性分界） */
-export const MAX_STEP_LEN = 60;
-/** 一拍的计划条数上限：够铺一拍，多了就是在写大纲 */
-export const MAX_STEPS = 8;
-
-/** 渲染清单：方框 + 待办，已完成的打勾划掉（□/☑ 与删除线同构于用户看到的任务列表） */
-export function formatPlan(plan: BeatStep[]): string {
-	if (plan.length === 0) return "（本拍还没有计划）";
-	return plan
-		.map((s, i) => (s.done ? `${i + 1}. ☑ ~~${s.text}~~` : `${i + 1}. □ ${s.text}`))
-		.join("\n");
-}
-
-/** 剩余未完成条数 */
-function pendingSteps(plan: BeatStep[]): number {
-	return plan.filter((s) => !s.done).length;
 }
 
 /**
@@ -304,187 +227,24 @@ export function runWriteTool(
 	 */
 	internal = false,
 ): WriteToolResult {
-	if (name === "beat_plan") {
-		const raw = args.steps;
-		if (!Array.isArray(raw) || raw.length === 0) {
-			return { text: 'steps 需为非空字符串数组，如 ["推门进院","被值守弟子拦下","亮出师门信物"]。', ok: false };
-		}
-		const texts = raw.map((s) => (typeof s === "string" ? s.trim() : "")).filter((s) => s.length > 0);
-		if (texts.length === 0) return { text: "steps 里没有有效条目。", ok: false };
-		if (texts.length > MAX_STEPS) {
-			return {
-				text: `未记计划：最多 ${MAX_STEPS} 条（收到 ${texts.length} 条）。合并后重新提交。`,
-				ok: false,
-			};
-		}
-		// 粒度门禁：条目是路标不是正文（通道形状约束，详见 beat_plan 工具描述）
-		const tooLong = texts.filter((t) => t.length > MAX_STEP_LEN);
-		if (tooLong.length > 0) {
-			return {
-				text: `未记计划：有 ${tooLong.length} 条超过 ${MAX_STEP_LEN} 字（路标上限）。压成一句话后重新提交。`,
-				activity: "计划过细被拦下",
-				ok: false,
-			};
-		}
-		// 重拟保留已完成条目的勾选状态：文字一致者视为同一步，不因改写后半段而丢进度。
-		const doneTexts = new Set(ws.plan.filter((s) => s.done).map((s) => s.text));
-		ws.plan = texts.map((t) => ({ text: t, done: doneTexts.has(t) }));
-		ws.planWrites++;
-		const verb = ws.planWrites > 1 ? "计划已更新（重拟）" : "计划已接受";
-		return {
-			text: `计划已接受（${ws.plan.length} 条路标）。`,
-			activity: `${verb} · ${ws.plan.length} 条`,
-			ok: true,
-		};
-	}
-
-	if (name === "beat_step_done") {
-		if (ws.plan.length === 0) return { text: "本拍还没有计划。", ok: false };
-		const idx = typeof args.step === "number" ? args.step : Number.NaN;
-		if (!Number.isInteger(idx) || idx < 1 || idx > ws.plan.length) {
-			return { text: `step 需为 1~${ws.plan.length} 的序号（当前计划 ${ws.plan.length} 条）。`, ok: false };
-		}
-		const target = ws.plan[idx - 1]!;
-		if (target.done) {
-			return { text: `第 ${idx} 条已经勾过了。`, ok: false };
-		}
-		target.done = true;
-		const left = pendingSteps(ws.plan);
-		return {
-			text: `已勾掉第 ${idx} 条「${target.text}」，还剩 ${left} 条。`,
-			activity: `勾掉「${target.text}」· 剩 ${left} 条`,
-			ok: true,
-		};
-	}
-
+	// draft_write / draft_seal 不再是模型可调工具（第三步：撤出模型视野）——但 handler 保留：
+	// 引擎在「直出代收」时按名调 draft_write(internal=true) 落地正文（engine #agentLoop），
+	// 收束时兜底调 draft_seal。append/edit/read/search 是「分段续写/改稿」工作流，随预设主导
+	// 一次性输出而整体退役（打磨回到思考里），连 handler 一并删。
 	if (name === "draft_write") {
 		const content = typeof args.content === "string" ? args.content : "";
-		if (!content.trim()) return { text: "content 为空——请提交完整正文。", ok: false };
-		// 门禁：draft_write 只留给「这一拍没有戏」。查过世界（设定/旧账/账本）
-		// 说明中途确实遇到了要停下来处理的事——那这拍本该一段一段演。
-		// 已经在续写中（appends>0）则不拦：那是分段写到一半改用全量重交。
-		if (!internal && ws.lookups > 0 && ws.appends === 0 && ws.draft === "") {
-			return {
-				text: `未收稿：本拍已查过 ${ws.lookups} 次世界（有戏的拍）。用 draft_append 一个路标一个路标演。`,
-				activity: "一次交完被拦下（这拍有戏）",
-				ok: false,
-			};
-		}
+		if (!content.trim()) return { text: "content 为空。", ok: false };
 		ws.draft = content;
 		ws.writes++;
 		ws.sealed = true; // 全量交稿即完整稿，天然封笔
-		// 时间线：正文按交稿位置入档。重交是**替换**不是追加——
-		// 末段若已是本工作区写过的正文，改写它，避免多稿在屏上叠成几份。
 		replaceDraftSegment(ws, content);
-		return {
-			text: `已收稿（第 ${ws.writes} 稿）。${sealFacts(ws)}`,
-			activity: `交稿 ${content.length} 字`,
-			ok: true,
-		};
-	}
-
-	if (name === "draft_append") {
-		const seg = typeof args.segment === "string" ? args.segment : "";
-		if (!seg.trim()) return { text: "segment 为空——请提交要续写的段落。", ok: false };
-		const sep = ws.draft.trim().length > 0 ? "\n\n" : "";
-		ws.draft += sep + seg;
-		ws.appends++;
-		// 续写的正文入时间线：追加一段（不是替换——已写的部分是已经发生的事，不推翻）
-		ws.timeline.push({ kind: "text", text: seg, draft: true });
-		// 回执只留事实（§2.4）：进度与判定由轮次注入承载
-		return {
-			text: `已续写（第 ${ws.appends} 段）。`,
-			activity: `演完第 ${ws.appends} 个路标`,
-			ok: true,
-		};
+		return { text: `已收稿（第 ${ws.writes} 稿）。${sealFacts(ws)}`, activity: `交稿 ${content.length} 字`, ok: true };
 	}
 
 	if (name === "draft_seal") {
-		if (!ws.draft.trim()) return { text: "工作区还没有稿件——先用 draft_write / draft_append 写正文。", ok: false };
+		if (!ws.draft.trim()) return { text: "工作区还没有稿件。", ok: false };
 		ws.sealed = true;
-		return {
-			text: `已封笔。${sealFacts(ws)}`,
-			activity: "封笔",
-			ok: true,
-		};
-	}
-
-	if (name === "draft_edit") {
-		if (!ws.draft.trim()) return { text: "尚无稿件——先写正文（draft_append 续写 / draft_write 全量交稿），再定点修改。", ok: false };
-		const raw = args.edits;
-		if (!Array.isArray(raw) || raw.length === 0) {
-			return { text: 'edits 需为非空数组，如 [{"old":"原文","new":"新文"}]。', ok: false };
-		}
-		const edits = raw as DraftEditItem[];
-		const r = applyDraftEdits(ws.draft, edits);
-		if (!r.ok || r.text === undefined) {
-			// 整批未套用：现稿一字未动，回报每处失败原因供模型修正
-			return { text: `改稿未套用：\n${r.details.join("\n")}`, activity: "改稿未套用", ok: false };
-		}
-		ws.draft = r.text;
-		ws.edits++;
-		// 时间线：定点改稿后正文原地更新（改的是同一份稿，不新开一段）。
-		// 续写形态下按段重切，保住「一段段长出来」的形态不塌成一整块。
-		if (ws.appends > 0) resyncDraftSegments(ws);
-		else replaceDraftSegment(ws, ws.draft);
-		return {
-			text: `已改 ${edits.length} 处：\n${r.details.join("\n")}`,
-			activity: `定点改稿 ${edits.length} 处`,
-			ok: true,
-		};
-	}
-
-	if (name === "draft_read") {
-		if (!ws.draft.trim()) return { text: "工作区还没有稿件——先用 draft_write 提交初稿。", ok: false };
-		return {
-			text: `当前稿（第 ${ws.writes} 稿，已定点改 ${ws.edits} 次）：\n\n${ws.draft}`,
-			activity: "读回现稿",
-			ok: true,
-		};
-	}
-
-	if (name === "draft_search") {
-		if (!ws.draft.trim()) return { text: "工作区还没有稿件——先用 draft_write 提交初稿。", ok: false };
-		const query = typeof args.query === "string" ? args.query.trim() : "";
-		if (!query) return { text: "缺少 query 参数。", ok: false };
-		const { hits, total } = searchDraft(ws.draft, query);
-		if (total === 0) {
-			return { text: `现稿中找不到「${query}」。可用 draft_read 通读现稿确认。`, activity: `查现稿「${query}」· 无命中`, ok: true };
-		}
-		const more = total > hits.length ? `\n（共 ${total} 处，以上仅列前 ${hits.length}）` : "";
-		const uniq =
-			total > 1 ? `\n\n注意：命中 ${total} 处——draft_edit 的 old 必须唯一，请前后多带一句再引用。` : "";
-		return {
-			text: `命中 ${total} 处：\n${hits.map((h, i) => `${i + 1}. ${h}`).join("\n")}${more}${uniq}`,
-			activity: `查现稿「${query}」· ${total} 处`,
-			ok: true,
-		};
-	}
-
-	if (name === "world_state_update") {
-		const raw = args.patch;
-		if (!raw || typeof raw !== "object" || Array.isArray(raw)) {
-			return { text: "patch 需为对象（合并补丁语义），例如 {\"location\":\"藏经阁\"}。", ok: false };
-		}
-		const knownNames = [
-			deps.charName,
-			deps.userName,
-			...Object.keys(projectedState(ws, deps.baseState).characters),
-		];
-		const patch = canonicalizeCharacterKeys(raw as Record<string, unknown>, knownNames);
-		// 只验不改：投影上干跑，合格才入队；真正落账在定稿后（叶守卫下统一套用）
-		const dry = applyPatch(projectedState(ws, deps.baseState), patch);
-		if (dry.applied.length === 0) {
-			const why = dry.warnings.length > 0 ? dry.warnings.join("；") : "补丁未产生任何变更";
-			return { text: `记账被拒：${why}。核对字段语义后重试。`, ok: false };
-		}
-		ws.patches.push(patch);
-		const warn = dry.warnings.length > 0 ? `\n警告（相应字段已忽略）：${dry.warnings.join("；")}` : "";
-		return {
-			text: `已记账（定稿后生效）：\n${dry.applied.map((a) => `- ${a}`).join("\n")}${warn}`,
-			activity: `记账 ${dry.applied.length} 项`,
-			ok: true,
-		};
+		return { text: `已封笔。${sealFacts(ws)}`, activity: "封笔", ok: true };
 	}
 
 	return { text: `未知写侧工具 ${name}。`, ok: false };}

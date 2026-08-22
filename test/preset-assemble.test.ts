@@ -187,12 +187,12 @@ test("旧梨园格式：全 system 通道也补末尾 chatHistory，after 为空
 	assert.deepEqual(r.after, []);
 });
 
-test("装配：清单外宏剥除并上报，不发字面量", () => {
+test("装配：清单外宏原样保留并上报，不静默删作者的字", () => {
 	const r = assemble(
 		stEntries({
 			prompts: [{ identifier: "a", name: "A", role: "system", content: "前{{noSuchMacro::x}}后" }],
 		}),
 	);
-	assert.equal(r.before[0]?.text, "前后");
+	assert.equal(r.before[0]?.text, "前{{noSuchMacro::x}}后");
 	assert.deepEqual(r.unsupported, ["nosuchmacro"]);
 });

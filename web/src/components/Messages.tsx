@@ -6,9 +6,9 @@
  * 过程条是元信息层（agent 工作过程），与正文明确区隔。
  */
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { attachmentUrl, splitAttachments } from "../attachments.ts";
-import { applyCardSkin } from "../cardSkin.ts";
+import { applySkinKeepingBody } from "../cardSkin.ts";
 import { isFullInterface } from "../htmlEmbed.ts";
 import { splitRichContentParts, type SkinMacros } from "../richContentParts.ts";
 import { splitMarkdownParts, splitRpInline } from "../markdown.ts";
@@ -69,10 +69,11 @@ export const TOOL_LABELS: Record<string, string> = {
 	world_state_get: "核对账本",
 	world_state_update: "记下变化",
 	lorebook_write: "固化设定",
-	codex_create: "建知识库",
-	codex_mount: "挂知识库",
-	codex_unmount: "卸知识库",
-	codex_write: "写入知识库",
+	knowledge_create: "建知识库",
+	knowledge_mount: "挂/卸知识库",
+	knowledge_list: "列知识库",
+	knowledge_delete: "删知识库条目",
+	knowledge_write: "写入知识库",
 	show_image: "展示插图",
 	show_audio: "展示音频",
 	show_video: "展示视频",
@@ -219,7 +220,9 @@ export function Paragraphs({ text }: { text: string }) {
  * 状态栏是作者正则产出的 HTML，走 html 分支；梨园不再按标签名抠「统一状态卡」。
  */
 export function RichContent({ text, skin }: { text: string; skin?: SkinProp | null }) {
-	const parts = splitRichContentParts(text, skin);
+	// 缓存切分（8/19）：每次重渲染都重跑一遍作者正则＋HTML 切分是白花钱——
+	// 流式期间父组件每个增量都会重渲染整列消息，未缓存时全列消息逐条重跑
+	const parts = useMemo(() => splitRichContentParts(text, skin), [text, skin]);
 	const first = parts[0];
 	if (parts.length === 1 && first.kind === "text") {
 		return <Paragraphs text={first.text} />;
@@ -740,7 +743,7 @@ export function Bubble({
 	 */
 	const timeline = !isUser && !editing && msg.segments && msg.segments.length > 1 ? msg.segments : null;
 	// 整楼界面：皮肤应用后整条消息即界面（spec §4 落位 1）
-	const skinnedBody = !isUser && skin && skin.rules.length > 0 ? applyCardSkin(body, skin.rules, skin) : body;
+	const skinnedBody = !isUser && skin && skin.rules.length > 0 ? applySkinKeepingBody(body, skin.rules, skin) : body;
 	const stage = !isUser && !editing && isFullInterface(skinnedBody);
 	return (
 		<div

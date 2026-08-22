@@ -30,7 +30,7 @@
 
 import type { DisplayRule } from "./cardfront.ts";
 import { hasDepthLimits, rulesAtDepth } from "./cardfront.ts";
-import { applyCardSkin } from "./cardSkin.ts";
+import { applySkinKeepingBody } from "./cardSkin.ts";
 
 export type TagPolicy = "fold" | "strip" | "unwrap";
 
@@ -394,7 +394,7 @@ export function prepareDisplayText(text: string, skin?: DisplaySkin | null): str
 	if (!text) return "";
 	let t = text;
 	if (skin?.rules?.length) {
-		t = applyCardSkin(t, skin.rules, { charName: skin.charName, userName: skin.userName });
+		t = applySkinKeepingBody(t, skin.rules, { charName: skin.charName, userName: skin.userName });
 	}
 	// 整段就是界面（前后无叙事）：原样交出，不拆
 	if (isFullPageHtmlPayload(t) && isBareFullPagePayload(t)) {

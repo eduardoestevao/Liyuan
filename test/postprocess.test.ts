@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-	addFoldTags,
+	addFoldTags,
 	classifyTag,
 	cleanAssistantText,
 	discoverFoldTagsFromTexts,
@@ -12,6 +12,7 @@ import {
 	prepareDisplayText,
 	resetDisplayTagExtras,
 } from "../src/postprocess.ts";
+import { applySkinKeepingBody } from "../src/cardSkin.ts";
 
 test("结构块：分析 fold 删除，状态/plot unwrap 留正文（状态栏渲染归作者正则，非名单）", () => {
 	const raw = `<descriptive_analysis>
@@ -252,4 +253,80 @@ test("prepareDisplayText: 裸整份文档 + 文档外的过滤照常执行", () 
 	assert.ok(out.includes("<p>页</p>"), "文档内容完好");
 	assert.ok(!out.includes("内部盘算"), "文档之外的 thinking 仍被滤掉");
 	assert.ok(out.includes("收尾。"), "文档之外的正文保留");
+});
+
+// ——— 显示层正文守恒（8/19）：作者正则照跑，但不许把正文删没 ———
+// 用的是真预设里的作者成语（狐神抚 / TGbreak / 双人成行三家同形）：
+// 「从消息开头删到思维链闭合标签」+ /g + 替空。
+const foxHideCot = {
+	name: "隐藏思维链",
+	source: String.raw`([\s\S]*?)<\/(think_?fox~?)>\s*?`,
+	flags: "g",
+	replace: "",
+};
+const skinOf = (rules: Array<Record<string, unknown>>) => ({
+	rules: rules as never,
+	charName: "怀瑾",
+	userName: "明月",
+});
+const BODY = "她站在追光里，胶衣的凉意贴着脊背，报价声一层层压下来，像雨点砸在铁皮上。她没有动。";
+
+test("正文守恒：健康态（单思维链在前）——思维链被删、正文与状态栏原样，行为不变", () => {
+	resetDisplayTagExtras();
+	const raw = `<think_fox~>\n【开始思考】推演三步\n</think_fox~>\n${BODY}\n<state2>\n当前状态: "平静"\n</state2>`;
+	const out = prepareDisplayText(raw, skinOf([foxHideCot]));
+	assert.ok(out.includes("她站在追光里"), `正文必须在场，得到:${out}`);
+	assert.ok(out.includes("像雨点砸在铁皮上"), "正文末段也在");
+	assert.ok(!out.includes("推演三步"), "思维链照作者意图删掉");
+	assert.ok(out.includes('当前状态: "平静"'), "状态栏内容照旧");
+});
+
+test("正文守恒：夹心态（一条消息里两个思维链）——正则连坐会吃正文，梨园必须把正文放回", () => {
+	resetDisplayTagExtras();
+	const raw =
+		`<think_fox~>\n第一段思考\n</think_fox~>\n${BODY}\n` +
+		`<think_fox~>\n收笔自检：字数够了\n</think_fox~>\n<state2>\n当前状态: "平静"\n</state2>`;
+	// 先证「作者正则确实会把正文吃掉」——这是本修复要挡的那件事
+	const eaten = raw.replace(new RegExp(foxHideCot.source, foxHideCot.flags), "");
+	assert.ok(!eaten.includes("她站在追光里"), "前提：裸跑作者正则时正文确实被连坐删掉");
+	const out = prepareDisplayText(raw, skinOf([foxHideCot]));
+	assert.ok(out.includes("她站在追光里"), `正文必须被放回，得到:${out}`);
+	assert.ok(out.includes("像雨点砸在铁皮上"), "正文完整，不是只剩半截");
+	assert.ok(!out.includes("第一段思考") && !out.includes("收笔自检"), "两个思维链仍按作者意图删掉");
+	assert.ok(out.includes('当前状态: "平静"'), "界面块照旧");
+});
+
+test("正文守恒：健康态不夺权——作者对正文的美化规则照常生效", () => {
+	resetDisplayTagExtras();
+	const colorize = {
+		name: "引号上色",
+		source: String.raw`“([^”]+)”`,
+		flags: "g",
+		replace: `<font color="#B14EFF">“$1”</font>`,
+	};
+	const raw = `<think_fox~>思考</think_fox~>\n${BODY}她轻声应道：“是。”`;
+	const styled = applySkinKeepingBody(raw, [foxHideCot, colorize] as never, { charName: "", userName: "" });
+	assert.ok(styled.includes(`<font color="#B14EFF">`), `作者上色必须生效，得到:${styled}`);
+	assert.ok(styled.includes("她站在追光里"), "正文在场");
+	assert.ok(!styled.includes("思考"), "思维链仍按作者意图删掉");
+});
+
+test("正文守恒：纯界面消息（无散文正文）不触发，产物原样交出", () => {
+	resetDisplayTagExtras();
+	const raw = `<state2>\n当前状态: "平静"\n阶级与权限: "公民"\n</state2>`;
+	const rule = {
+		name: "状态栏变卡",
+		source: String.raw`<state2>([\s\S]*?)<\/state2>`,
+		flags: "g",
+		replace: `<div style="border:1px solid">$1</div>`,
+	};
+	const out = prepareDisplayText(raw, skinOf([rule]));
+	assert.ok(out.includes("<div style=") && out.includes('当前状态: "平静"'), `状态栏应成卡，得到:${out}`);
+});
+
+test("正文守恒：哨符不泄漏到产物里", () => {
+	resetDisplayTagExtras();
+	const raw = `<think_fox~>思考A</think_fox~>\n${BODY}\n<think_fox~>思考B</think_fox~>`;
+	const out = prepareDisplayText(raw, skinOf([foxHideCot]));
+	assert.ok(!/[\uE000-\uF8FF]/.test(out), `产物不得含私用区哨符，得到:${JSON.stringify(out)}`);
 });

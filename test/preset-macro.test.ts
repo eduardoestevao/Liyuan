@@ -71,10 +71,15 @@ test("lastusermessage 展开为本轮用户原文，缺省为空", () => {
 	assert.equal(evalPresetMacros("<m>{{lastusermessage}}</m>", env({ userText: undefined })).text, "<m></m>");
 });
 
-test("清单外宏剥除并记录名字（去重）", () => {
-	const r = evalPresetMacros("{{roll:d20}}A{{time}}B{{pick::x,y}}C{{time}}", env());
-	assert.equal(r.text, "ABC");
-	assert.deepEqual([...r.unsupported].sort(), ["pick", "roll", "time"]);
+test("清单外宏原样保留并记录名字（去重）；roll 已支持且同表达式恒同值", () => {
+	const src = "{{roll:d20}}A{{time}}B{{pick::x,y}}C{{time}}";
+	const r = evalPresetMacros(src, env());
+	// 酒馆 evaluateMacros 是「认识才替换」：清单外宏原样送模，只登记名字供降级告警
+	assert.ok(r.text.includes("{{time}}") && r.text.includes("{{pick::x,y}}"), `清单外宏应原样保留，得到:${r.text}`);
+	assert.deepEqual([...r.unsupported].sort(), ["pick", "time"]);
+	// roll 已进求值面：出数字，且内容寻址钉死（同表达式恒得同值，保 R3 前缀缓存）
+	assert.match(r.text.slice(0, r.text.indexOf("A")), /^[0-9]+$/);
+	assert.equal(evalPresetMacros(src, env()).text, r.text);
 });
 
 test("非宏的花括号文本不受影响", () => {
@@ -94,6 +99,7 @@ test("实战混合：双人成行式块求值", () => {
 	);
 	assert.ok(r.text.includes("用户角色第一人称"));
 	assert.ok(r.text.includes("1000-1500字"));
-	assert.ok(!r.text.includes("{{"));
+	assert.ok(r.text.includes("{{unknownmacro::x}}"), `清单外宏原样保留，得到:${r.text}`);
+	assert.ok(!r.text.includes("{{getvar"), "清单内宏照旧求值（未设变量得空）");
 	assert.deepEqual(r.unsupported, ["unknownmacro"]);
 });

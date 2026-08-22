@@ -35,12 +35,51 @@ export function HtmlFrame({
 }) {
 	const frameId = useId();
 	const ref = useRef<HTMLIFrameElement>(null);
+	const wrapRef = useRef<HTMLElement>(null);
+	/**
+	 * 视口门控（8/19）：**滚进视口才 boot 这一帧**。
+	 *
+	 * 由来：作者美化卡的实测重量是每帧 35KB CSS + 28KB JS + 10 处 backdrop-filter/blur
+	 * + 56 处动画 + 10 个定时器；作者规则 maxDepth=2 让最新 3 条各带 2 帧 ⇒ 刷新/切会话
+	 * 时 6 个独立文档同时 boot，浏览器当场卡住。梨园侧不碰作者的一个字，只是不在屏外 boot。
+	 *
+	 * 一旦进过视口就**不再卸载**：卡内有 localStorage 主题、折叠态等自持状态，来回卸载
+	 * 会把用户的交互清零，比省下的开销更烦。
+	 */
+	const [inView, setInView] = useState(false);
 	const programApp = useMemo(() => seamless && looksLikeProgramApp(html, scripts), [html, scripts, seamless]);
 	const [height, setHeight] = useState(() =>
 		programApp && typeof window !== "undefined" ? programViewportHeight(window) : minHeight,
 	);
 	const [showSource, setShowSource] = useState(false);
-	const srcDoc = buildSrcDoc(html, scripts, seamless, typeof window !== "undefined" ? window.innerHeight : undefined);
+	// 未进视口不建 srcdoc：整页卡的 srcdoc 可达数十 KB，没必要为屏外的帧逐次拼串
+	const srcDoc = inView
+		? buildSrcDoc(html, scripts, seamless, typeof window !== "undefined" ? window.innerHeight : undefined)
+		: "";
+
+	useEffect(() => {
+		if (inView) return;
+		const el = wrapRef.current;
+		if (!el) return;
+		// 环境不支持就直接放行（SSR/老浏览器）——门控是优化，不能变成不显示
+		if (typeof IntersectionObserver === "undefined") {
+			setInView(true);
+			return;
+		}
+		// 提前一屏 boot：滚到跟前时卡已经画好，用户看不出门控存在
+		const io = new IntersectionObserver(
+			(entries) => {
+				if (entries.some((e) => e.isIntersecting)) {
+					setInView(true);
+					io.disconnect();
+				}
+			},
+			{ rootMargin: "800px 0px" },
+		);
+		io.observe(el);
+		return () => io.disconnect();
+	}, [inView]);
+
 	/**
 	 * 沙箱矩阵：
 	 * - 静态 seamless：only same-origin（量高，无脚本）
@@ -137,6 +176,7 @@ export function HtmlFrame({
 
 	return (
 		<figure
+			ref={wrapRef}
 			className={`msg-html ${scripts ? "msg-html-scripts" : ""} ${seamless ? "msg-html-seamless" : ""} ${programApp ? "msg-html-program" : ""}`}
 		>
 			{!seamless && (
@@ -157,15 +197,20 @@ export function HtmlFrame({
 					</button>
 				</div>
 			)}
-			<iframe
-				ref={ref}
-				name={frameId}
-				className="msg-html-frame"
-				title={title || (seamless ? "界面" : "HTML")}
-				sandbox={sandbox}
-				srcDoc={srcDoc}
-				style={{ height }}
-			/>
+			{inView ? (
+				<iframe
+					ref={ref}
+					name={frameId}
+					className="msg-html-frame"
+					title={title || (seamless ? "界面" : "HTML")}
+					sandbox={sandbox}
+					srcDoc={srcDoc}
+					style={{ height }}
+				/>
+			) : (
+				// 占位：占住同样的高度，滚动条与布局不跳；进视口即换成真帧
+				<div className="msg-html-frame" style={{ height }} aria-hidden="true" />
+			)}
 			{showSource && <pre className="msg-html-source">{html}</pre>}
 			{!seamless && title?.trim() && !showSource && <figcaption className="msg-html-cap">{title}</figcaption>}
 		</figure>
