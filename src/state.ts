@@ -269,16 +269,20 @@ function rosterSection(label: string, entries: Array<[string, string]>): string 
 /**
  * 名录索引渲染：**全量**列出本局登记过的人物/物品/剧情线（在场的也列）。
  * 与【世界状态】的分工是详略而非有无——状态给当前详情，名录给「出现过什么」的完整名字表，
- * 模型据此判断一个名字是旧识还是新登场，细节靠 memory_search 召回。全空返回 undefined。
+ * 模型据此判断一个名字是旧识还是新登场，细节靠 memory_search 召回。
+ *
+ * **全空也出块**（「（尚无登记）」），与 formatState 的「（尚无记录）」同一口径：开场那拍
+ * 名录必然是空的，而那恰恰是最需要让模型看见「这里有可查的东西、现在是空的」的一拍——
+ * 空着不出块，模型根本不知道有这回事。给的是通道状态这条事实，不是「你去查」这条指令。
  */
-export function formatRosterIndex(state: WorldState): string | undefined {
+export function formatRosterIndex(state: WorldState): string {
 	const r = state.roster;
-	if (!r) return undefined;
-
-	const sections = [
-		rosterSection("人物", Object.entries(r.characters)),
-		rosterSection("物品", Object.entries(r.items)),
-		rosterSection("剧情线", Object.entries(r.events)),
-	].filter((s): s is string => Boolean(s));
-	return sections.length ? sections.join("；") : undefined;
+	const sections = r
+		? [
+				rosterSection("人物", Object.entries(r.characters)),
+				rosterSection("物品", Object.entries(r.items)),
+				rosterSection("剧情线", Object.entries(r.events)),
+			].filter((s): s is string => Boolean(s))
+		: [];
+	return sections.length ? sections.join("；") : "（尚无登记）";
 }

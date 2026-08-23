@@ -337,8 +337,7 @@ ${index}`,
 - 标注【世界状态】的消息是当前事实基准：剧情记忆与它冲突时，以状态为准并在叙事内自然圆回，绝不跳出剧情解释。
 - 标注【登场名录】的消息是本局登场过的人物/物品/剧情线全量名字${tools !== false ? "，细节可用 `memory_search` 查" : ""}；名录之外的名字才是新登场。
 - 标注【活跃面板】的消息是各面板的当前内容（用户可能手改过），其中事实为准。
-- 标注【相关设定】的消息是自动附上的世界书参考，按需取用。
-- 标注【设定集索引】的消息是设定条目的标题索引${tools !== false ? "，内容未出现在【相关设定】时可用 `lorebook_search` 取原文" : ""}。
+- 标注【相关设定】【设定集索引】的消息都是设定条目的标题（前者本拍关键词命中，后者全库）${tools !== false ? "，正文用 `lorebook_search` 取" : ""}。
 - 标注【剧情记忆】的消息是历史正文检索片段，按需取用，勿整段照抄。`,
 	);
 
@@ -351,14 +350,28 @@ ${index}`,
 
 // ---------------- 末端注入（每拍动态） ----------------
 
-/** 设定集索引单行渲染的字符预算（超出按条目边界截断，补「等 N 条」） */
-const LORE_INDEX_MAX_CHARS = 500;
+/**
+ * 设定集索引单行渲染的字符预算（超出按条目边界截断，补「等 N 条」）。
+ *
+ * 2000 ≈ 160 条标题（实测均长 12.5 字/条）。截断的代价是**永久性**的——名字没列出来，
+ * 那条设定对模型就等于不存在，也就永远不会被 `lorebook_search` 取到；而多送的字相对
+ * 蓝灯常驻每拍无条件的 25632 字只是零头。真超了还有 `lorebook_list` 兜底（台上可调）。
+ */
+const LORE_INDEX_MAX_CHARS = 2000;
 
-/** 设定集条目索引行：`共 N 条：标题A、标题B、……`；只出名字，无可列返回 undefined */
-export function formatLoreIndex(entries: Array<Pick<LorebookEntry, "comment" | "keys" | "enabled">>): string | undefined {
+/**
+ * 设定集条目索引行：`共 N 条：标题A、标题B、……`；只出名字，无可列返回 undefined。
+ *
+ * **蓝灯（constant）不进索引**：它们的全文每拍常驻 system（# 世界设定），在索引里再报一遍
+ * 名字是纯冗余，还挤占预算把绿灯挤出去——实测 LWS 那本 53 启用条目里蓝灯标题占 140 字，
+ * 正好顶掉 11 条绿灯。索引的用处是让模型知道**有什么是要检索才拿得到的**，蓝灯不属于那一类。
+ */
+export function formatLoreIndex(
+	entries: Array<Pick<LorebookEntry, "comment" | "keys" | "enabled" | "constant">>,
+): string | undefined {
 	const titles: string[] = [];
 	for (const e of entries) {
-		if (e.enabled === false) continue;
+		if (e.enabled === false || e.constant) continue;
 		const title = (e.comment || e.keys?.[0] || "").trim();
 		if (title) titles.push(title);
 	}
@@ -426,11 +439,15 @@ export function buildStageInjection({
 		blocks.push(`【活跃面板】\n${panelIndex}`);
 	}
 
+	// 绿灯命中给**位置**，不给全文（8/23 用户定案）。世界书这套是照抄酒馆的，而酒馆没有
+	// 模型主动检索这回事——关键词命中就把正文塞进上下文是那个前提下的正解。梨园有 lorebook_search，
+	// 白送正文等于替模型把检索做完了：实测模型读到【相关设定】/【设定集索引】就直接下结论
+	// 「查了也没有」而不再调工具。给标题＝给线索，正文由模型自己取，检索这一环才闭得上。
 	if (activatedLore.length > 0) {
-		const lore = activatedLore
-			.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${applyMacros(e.content, macro)}`)
-			.join("\n");
-		blocks.push(`【相关设定】\n${lore}`);
+		const titles = activatedLore.map((e) => (e.comment || e.keys?.[0] || "").trim()).filter(Boolean);
+		if (titles.length > 0) {
+			blocks.push(`【相关设定】本拍命中 ${titles.length} 条：${titles.join("、")}`);
+		}
 	}
 
 	if (loreIndex) {

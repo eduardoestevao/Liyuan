@@ -716,9 +716,12 @@ export class StageEngine {
 		//     convertClaudeMessages 同样只把**开头连续**的 system 收进 system 参数，其后
 		//     role==='system' 一律改成 'user'——故历史之后的 system 块在此作 user。
 		//  ② 连续同角色合并成一条（convertClaudeMessages 的 mergedMessages：轮次只支持 user/assistant）。
-		//  ③ 末条 assistant 就是预填位，但酒馆 addAssistantPrefix 有 hasAnyTools 门——挂了工具就不打预填。
-		//     梨园每拍挂着 draft_*，故同样不打：末尾的 assistant 降为 user 并入上一条。
-		//     （且当前 Claude 模型对末条 assistant 预填直接返回 400，此门同时是送模侧的保命闸。）
+		//  ③ 末条 assistant 是酒馆的预填位（addAssistantPrefix）。**梨园不要预填，整块丢弃**
+		//     （8/23 用户定案）。降级成 user 是假动作：role 变了，那段字仍顶在生成点前，模型照样
+		//     接着写——实测预填 `OUTPUT <think_fox~>` 让 provider 把整段输出（思维链+正文+状态栏）
+		//     判成思维链切进 reasoning_content，text 通道只剩切分边界后的残字，正文全丢。
+		//     丢弃后生成点前是预设自己的末块，模型从头写、自己打标签，正文回到 text 通道。
+		//     认的是**协议角色+位置**（历史之后的末条 assistant＝预填位），不认任何标签名（铁律三）。
 		const asUser = (text: string, timestamp = 0) => ({ role: "user", content: [{ type: "text", text }], timestamp });
 		const asAssistant = (text: string, timestamp = 0) => ({
 			role: "assistant",
@@ -739,9 +742,8 @@ export class StageEngine {
 				.filter((p) => p.text.trim().length > 0)
 				.map((p) => ({ role: p.role === "assistant" ? ("assistant" as const) : ("user" as const), text: p.text })),
 		];
-		if (tools.length > 0) {
-			for (let i = tailRuns.length - 1; i >= 0 && tailRuns[i].role === "assistant"; i--) tailRuns[i].role = "user";
-		}
+		// 预填位丢弃：末尾连续的 assistant 块整块不发（tailRuns[0] 恒为 user，循环不会掏空）。
+		while (tailRuns.length > 0 && tailRuns[tailRuns.length - 1].role === "assistant") tailRuns.pop();
 		const tailMerged: Array<{ role: "user" | "assistant"; text: string }> = [];
 		for (const run of tailRuns) {
 			const prev = tailMerged[tailMerged.length - 1];
