@@ -695,6 +695,8 @@ export class StageEngine {
 			loreIndex: formatLoreIndex(materials.entries),
 			rosterIndex: formatRosterIndex(state),
 			...(memoryRecall ? { memoryRecall } : {}),
+			// off 挡（无原生思考通道、不主动检索）：绿灯命中给正文兜底；其余档位给标题让模型自取。
+			passiveLore: (this.#deps.getThinking?.() ?? "off") === "off",
 		});
 
 		// 末端消息 = 梨园数据块 + 本拍用户原话 + 预设 after 段（各按自己的 role）。

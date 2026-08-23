@@ -385,6 +385,12 @@ export interface StageInjectionOptions {
 	activatedLore: LorebookEntry[];
 	card: CharacterCard;
 	config: RpConfig;
+	/**
+	 * off 挡：绿灯命中给**正文**而非标题。off 下模型没有原生思考通道、不会主动调
+	 * lorebook_search，「给标题让它自己取」这条对 off 走不通（实测：off 拍思考里说了要检索
+	 * 却零工具调用），只能用被动供料兜底——这正是酒馆原生的做法。thinking 挡不受影响。
+	 */
+	passiveLore?: boolean;
 	/** 上一拍台上叙事语言与配置不符（harness 检测） */
 	languageMismatch?: boolean;
 	/** 活跃面板全文快照（formatPanelSnapshot 产出）或一行速览 */
@@ -417,6 +423,7 @@ export function buildStageInjection({
 	loreIndex,
 	rosterIndex,
 	memoryRecall,
+	passiveLore,
 }: StageInjectionOptions): string {
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const blocks: string[] = [];
@@ -431,14 +438,25 @@ export function buildStageInjection({
 		blocks.push(`【活跃面板】\n${panelIndex}`);
 	}
 
-	// 绿灯命中给**位置**，不给全文（8/23 用户定案）。世界书这套是照抄酒馆的，而酒馆没有
-	// 模型主动检索这回事——关键词命中就把正文塞进上下文是那个前提下的正解。梨园有 lorebook_search，
-	// 白送正文等于替模型把检索做完了：实测模型读到【相关设定】/【设定集索引】就直接下结论
-	// 「查了也没有」而不再调工具。给标题＝给线索，正文由模型自己取，检索这一环才闭得上。
+	// 绿灯命中：**按档位分策略**（8/23 用户定案）。世界书这套是照抄酒馆的，而酒馆没有
+	// 模型主动检索这回事——关键词命中就把正文塞进上下文是那个前提下的正解。
+	// - thinking 挡：梨园有 lorebook_search，给正文＝替模型把检索做完了（实测模型读到就直接
+	//   下结论「查了也没有」不再调工具），故只给标题＝给线索，正文由模型自己取。
+	// - off 挡：模型没有原生思考通道、不会主动调工具（passiveLore），退回酒馆原生的被动供料，
+	//   直接给命中条目的正文。
 	if (activatedLore.length > 0) {
-		const titles = activatedLore.map((e) => (e.comment || e.keys?.[0] || "").trim()).filter(Boolean);
-		if (titles.length > 0) {
-			blocks.push(`【相关设定】本拍命中 ${titles.length} 条：${titles.join("、")}`);
+		if (passiveLore) {
+			// off 挡：给命中条目的正文（酒馆原生被动供料）——模型不主动检索时的兜底
+			const lore = activatedLore
+				.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${applyMacros(e.content, macro)}`)
+				.join("\n");
+			blocks.push(`【相关设定】\n${lore}`);
+		} else {
+			// thinking 挡：给标题＝给线索，正文由模型自己 lorebook_search 取，检索这一环才闭得上
+			const titles = activatedLore.map((e) => (e.comment || e.keys?.[0] || "").trim()).filter(Boolean);
+			if (titles.length > 0) {
+				blocks.push(`【相关设定】本拍命中 ${titles.length} 条：${titles.join("、")}`);
+			}
 		}
 	}
 
