@@ -218,7 +218,7 @@ export function formatState(state: WorldState): string {
 /** 名录各表容量上限（超出丢最旧——Record 保持插入序）。防剧情线改写措辞导致的近重复无限累积。 */
 const ROSTER_CAPS = { characters: 100, items: 100, events: 60 } as const;
 
-/** 名录登记时给人物的一句话预算 */
+/** 名录登记时给条目的标记预算（存首次登场的剧情时间，自由文本如「第二天清晨」） */
 const ROSTER_BLURB_MAX = 30;
 
 function capRoster(reg: Record<string, string>, cap: number): Record<string, string> {
@@ -230,20 +230,34 @@ function capRoster(reg: Record<string, string>, cap: number): Record<string, str
 }
 
 /**
- * 名录登记（applyPatch 咽喉点调用）：把当前活跃的人物/物品/剧情线并入名录。
- * 只增不改——已登记条目不追新鲜度（名录记「存在过」，细节靠 memory_search 召回）；
- * 活跃状态里删掉的条目名录保留。
+ * 名录登记（applyPatch 咽喉点调用）：把当前活跃的人物/物品/剧情线并入名录，
+ * 附上**首次登场时的剧情时间**（`state.time`，自由文本；为空则只留名字）。
+ *
+ * ## 为什么存时间而不是状态简述（8/23 改判）
+ *
+ * 原先人物存的是 `c.status`（如「奴隶」）——那是**当前状态**，而当前状态在
+ * 【世界状态】里已有全量新鲜版；名录存它必然过期（只增不改），改成跟着覆盖又会把
+ * 用户经 applyPatch 手改的简述当场冲掉。物品与剧情线更是一直存空串，白占结构。
+ *
+ * 换成登场时间后三件事一次性成立：
+ * 1. **时间是固定事实**——事件发生在哪一刻不会变，所以「只增不改」从缺陷变成正确设计；
+ * 2. 有时间就有先后——此前几十条剧情线平铺无序，模型无从判断进展到哪了；
+ * 3. 职责彻底分开：【世界状态】＝当前（覆盖式），【登场名录】＝出现过什么+何时（追加式）。
+ *
+ * 借鉴 st-memory-enhancement（木悠记忆表格）的表切分：它把「时空表格」（保持一行的
+ * 当前状态）与「重要事件历史表格」（带`日期`列的追加历史）分成两张表，日期只是普通一列。
  */
 function registerRoster(next: WorldState): void {
 	const r: StateRoster = next.roster ?? { characters: {}, items: {}, events: {} };
-	for (const [name, c] of Object.entries(next.characters)) {
-		if (!(name in r.characters)) r.characters[name] = (c.status || "").slice(0, ROSTER_BLURB_MAX);
+	const at = (next.time || "").slice(0, ROSTER_BLURB_MAX);
+	for (const name of Object.keys(next.characters)) {
+		if (!(name in r.characters)) r.characters[name] = at;
 	}
 	for (const it of next.inventory) {
-		if (it && !(it in r.items)) r.items[it] = "";
+		if (it && !(it in r.items)) r.items[it] = at;
 	}
 	for (const t of next.plot_threads) {
-		if (t && !(t in r.events)) r.events[t] = "";
+		if (t && !(t in r.events)) r.events[t] = at;
 	}
 	next.roster = {
 		characters: capRoster(r.characters, ROSTER_CAPS.characters),
@@ -252,8 +266,16 @@ function registerRoster(next: WorldState): void {
 	};
 }
 
-/** 名录索引单节的简述预算（超出则该节退成纯名字表——名字不截断） */
-const ROSTER_SECTION_MAX_CHARS = 240;
+/**
+ * 名录索引单节的预算（超出则该节退成纯名字表——名字不截断）。
+ *
+ * 1200 ≈ 30 条剧情线带时间。实测真实会话：剧情线名字均长 21.6 字（常是整句，如
+ * 「灵族大祭司求见，欲借大昭为靠山…」），加上登场时间后一节就要 ~317 字——旧预算 240
+ * **一加时间就触顶、整节退回纯名字**，等于白改。三节实测合计约 620 字/拍
+ * （人物 84 + 物品 220 + 剧情线 317），相对蓝灯常驻每拍无条件的 25632 字约 2.4%。
+ * 触顶时的降级仍是「牺牲时间不牺牲名字」——名字全量是「名录之外才是新登场」的前提。
+ */
+const ROSTER_SECTION_MAX_CHARS = 1200;
 
 function rosterSection(label: string, entries: Array<[string, string]>): string | undefined {
 	if (entries.length === 0) return undefined;
