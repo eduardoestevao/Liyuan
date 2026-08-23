@@ -45,6 +45,8 @@ export interface StateRoster {
 	characters: Record<string, string>;
 	items: Record<string, string>;
 	events: Record<string, string>;
+	/** 到过的地点（首次到达时间为值）；旧存档无此字段按空处理 */
+	places?: Record<string, string>;
 }
 
 /** 结构化世界状态（v0 schema，可扩展） */
@@ -72,6 +74,15 @@ export interface CharacterState {
 	status: string;
 	/** 备注（承诺、得知的秘密等） */
 	notes: string;
+	/**
+	 * 此刻所在地（与 `WorldState.location` 同一命名口径）。
+	 *
+	 * 「在场」＝ `at === location`，「离场」＝ 二者不同。此前 characters 是纯累积表、
+	 * 无任何位置维度，「谁在这儿」在数据层根本无法表达——离场/回到旧地这类判定无从成立，
+	 * 而预设只能每拍在思考里从头推导感知边界（狐神抚那份 3342 字模板里最长的一段
+	 * 【部分零·角色感知边界｜防全知】就是干这个的，且推导结果不落盘、下拍重来）。
+	 */
+	at?: string;
 }
 
 /** 项目配置（app/liyuan.config.json；旧名 rp.config.json 启动时迁移） */

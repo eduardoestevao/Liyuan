@@ -203,6 +203,13 @@ export function StatusStrip({
 							<div className="sp-char-line">
 								<Editable value={c.status} placeholder="（状态）" onSave={(v) => patch({ characters: { [name]: { status: v } } })} />
 							</div>
+							<div className="sp-char-line">
+								<Editable
+									value={c.at ?? ""}
+									placeholder="（所在地）"
+									onSave={(v) => patch({ characters: { [name]: { at: v } } })}
+								/>
+							</div>
 							<div className="sp-char-line sp-notes">
 								<Editable value={c.notes} placeholder="（备注）" onSave={(v) => patch({ characters: { [name]: { notes: v } } })} />
 							</div>

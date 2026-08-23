@@ -117,6 +117,7 @@ export function applyPatch(state: WorldState, patch: Record<string, unknown>): P
 						if (typeof p.affinity === "number") cur.affinity = clamp(Math.round(p.affinity), -100, 100);
 						if (typeof p.status === "string") cur.status = p.status;
 						if (typeof p.notes === "string") cur.notes = p.notes;
+						if (typeof p.at === "string") cur.at = p.at;
 						next.characters[name] = cur;
 						applied.push(`characters.${name} 已更新`);
 					}
@@ -163,23 +164,25 @@ export function applyPatch(state: WorldState, patch: Record<string, unknown>): P
 			}
 			case "roster": {
 				// 登场名录编辑（用户主权，REST 侧用；模型工具 schema 不含此键）：
-				// {characters/items/events: {名称: null(删除) | 字符串(改一句话)}}。
+				// {characters/places/items/events: {名称: null(删除) | 字符串(改登场时间)}}。
 				// 注意：删除**活跃**条目会被本函数末尾的 registerRoster 立即重新登记——名录必须覆盖在场条目。
 				if (value && typeof value === "object" && !Array.isArray(value)) {
 					const roster: StateRoster = next.roster ?? { characters: {}, items: {}, events: {} };
-					for (const table of ["characters", "items", "events"] as const) {
+					if (!roster.places) roster.places = {};
+					for (const table of ["characters", "places", "items", "events"] as const) {
 						const patchTable = (value as Record<string, unknown>)[table];
 						if (patchTable === undefined) continue;
 						if (!patchTable || typeof patchTable !== "object" || Array.isArray(patchTable)) {
 							warnings.push(`roster.${table} 需要对象，已忽略`);
 							continue;
 						}
+						const dest = table === "places" ? roster.places : roster[table];
 						for (const [name, v] of Object.entries(patchTable as Record<string, unknown>)) {
 							if (v === null) {
-								delete roster[table][name];
+								delete dest[name];
 								applied.push(`roster.${table}.${name} 已移除`);
 							} else if (typeof v === "string") {
-								roster[table][name] = v.slice(0, 60);
+								dest[name] = v.slice(0, 60);
 								applied.push(`roster.${table}.${name} 已更新`);
 							} else warnings.push(`roster.${table}.${name} 需要字符串或 null，已忽略`);
 						}
@@ -204,6 +207,9 @@ export function formatState(state: WorldState): string {
 	for (const [name, c] of Object.entries(state.characters)) {
 		const parts = [`好感 ${c.affinity}`];
 		if (c.status) parts.push(`状态：${c.status}`);
+		// 位置：与 location 相同＝在场，不同＝人在别处。给的是两个地名这条事实，
+		// 「他能不能看见这边」由模型自己判断（不替它下结论）。
+		if (c.at) parts.push(c.at === state.location ? "在场" : `在：${c.at}`);
 		if (c.notes) parts.push(`备注：${c.notes}`);
 		lines.push(`${name}：${parts.join("；")}`);
 	}
@@ -216,7 +222,7 @@ export function formatState(state: WorldState): string {
 // ---------- 登场名录（agent 索引表） ----------
 
 /** 名录各表容量上限（超出丢最旧——Record 保持插入序）。防剧情线改写措辞导致的近重复无限累积。 */
-const ROSTER_CAPS = { characters: 100, items: 100, events: 60 } as const;
+const ROSTER_CAPS = { characters: 100, items: 100, events: 60, places: 60 } as const;
 
 /** 名录登记时给条目的标记预算（存首次登场的剧情时间，自由文本如「第二天清晨」） */
 const ROSTER_BLURB_MAX = 30;
@@ -249,6 +255,7 @@ function capRoster(reg: Record<string, string>, cap: number): Record<string, str
  */
 function registerRoster(next: WorldState): void {
 	const r: StateRoster = next.roster ?? { characters: {}, items: {}, events: {} };
+	const places = r.places ?? {};
 	const at = (next.time || "").slice(0, ROSTER_BLURB_MAX);
 	for (const name of Object.keys(next.characters)) {
 		if (!(name in r.characters)) r.characters[name] = at;
@@ -259,10 +266,16 @@ function registerRoster(next: WorldState): void {
 	for (const t of next.plot_threads) {
 		if (t && !(t in r.events)) r.events[t] = at;
 	}
+	// 地点：当前场景 + 各角色所在地都算「到过」。此前名录三张表独缺地点，
+	// 「回到曾去过的地方」这类判定无从成立（而地点是剧情里最常复访的东西）。
+	for (const p of [next.location, ...Object.values(next.characters).map((c) => c.at ?? "")]) {
+		if (p && !(p in places)) places[p] = at;
+	}
 	next.roster = {
 		characters: capRoster(r.characters, ROSTER_CAPS.characters),
 		items: capRoster(r.items, ROSTER_CAPS.items),
 		events: capRoster(r.events, ROSTER_CAPS.events),
+		places: capRoster(places, ROSTER_CAPS.places),
 	};
 }
 
@@ -302,6 +315,7 @@ export function formatRosterIndex(state: WorldState): string {
 	const sections = r
 		? [
 				rosterSection("人物", Object.entries(r.characters)),
+				rosterSection("地点", Object.entries(r.places ?? {})),
 				rosterSection("物品", Object.entries(r.items)),
 				rosterSection("剧情线", Object.entries(r.events)),
 			].filter((s): s is string => Boolean(s))

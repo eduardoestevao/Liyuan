@@ -9,9 +9,10 @@ import { IconTrash } from "./icons.tsx";
 import { ConfirmButton, useAction } from "./kit.tsx";
 import { Editable } from "./StatusStrip.tsx";
 
-/** 三表的展示配置：label + 判断条目当前是否活跃 */
+/** 四表的展示配置：label + 判断条目当前是否活跃 */
 const ROSTER_TABLES = [
 	{ key: "characters", label: "人物", activeMark: "在场", goneMark: "已离场" },
+	{ key: "places", label: "地点", activeMark: "此处", goneMark: "去过" },
 	{ key: "items", label: "物品", activeMark: "持有", goneMark: "已失去" },
 	{ key: "events", label: "事件", activeMark: "进行中", goneMark: "已了结" },
 ] as const;
@@ -32,7 +33,15 @@ export function RosterPanel({
 
 	const roster = state?.roster;
 	const activeSets: Record<(typeof ROSTER_TABLES)[number]["key"], Set<string>> = {
-		characters: new Set(Object.keys(state?.characters ?? {})),
+		// 「在场」＝角色所在地与当前地点相同（CharacterState.at）。characters 是累积登记表，
+		// 靠它的键判断会让每个出场过的人永远算在场——有了 at 才判得准。
+		// 无 at 的旧数据按在场处理（不凭空把人判离场）。
+		characters: new Set(
+			Object.entries(state?.characters ?? {})
+				.filter(([, c]) => !c.at || c.at === state?.location)
+				.map(([name]) => name),
+		),
+		places: new Set(state?.location ? [state.location] : []),
 		items: new Set(state?.inventory ?? []),
 		events: new Set(state?.plot_threads ?? []),
 	};
@@ -61,7 +70,7 @@ export function RosterPanel({
 											<span className="roster-blurb">
 												<Editable
 													value={blurb}
-													placeholder="（一句话）"
+													placeholder="（登场时间）"
 													onSave={(v) => patch({ roster: { [t.key]: { [name]: v } } })}
 												/>
 											</span>
