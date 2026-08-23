@@ -253,8 +253,6 @@ export interface StageSystemOptions {
 	 * 否则旧格式预设（无 marker）会让角色卡整个丢失。
 	 */
 	declaredMarkers?: Set<string>;
-	/** skill 素材位（M-R2）：常驻包正文进 system；拉取包进 L1 索引 */
-	skills?: Array<{ name: string; description: string; resident: boolean; body: string }>;
 	/** false = 不声明工具协议（M1 前过渡形态；M3 起默认开） */
 	tools?: boolean;
 	/**
@@ -270,7 +268,6 @@ export function buildStageSystemPrompt({
 	constantLore,
 	presetBefore,
 	declaredMarkers,
-	skills,
 	tools,
 	mcpTools,
 }: StageSystemOptions): string {
@@ -306,13 +303,8 @@ export function buildStageSystemPrompt({
 		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
 	}
 
-	// skill 素材位（M-R2 §4.C）：常驻包正文随 system 送达（署名数据，零 harness 引导语）；
-		// 非驻留 skill 的清单不在这里——由「skill指导」每轮必读时动态生成（一张表），此处零重复。
-	if (skills && skills.length > 0) {
-		for (const sk of skills.filter((x) => x.resident)) {
-			sections.push(`# skill：${sk.name}（常驻）\n${sk.body}`);
-		}
-	}
+	// skill 全部走标准按需档（8/23）：名字+描述在 skill_read 的工具描述里，正文调了才加载。
+	// 此处零常驻——resident 档退役，system 不再无差别塞 skill 正文。
 
 	// MCP 外设（8/06 重接）：用户在「扩展能力 → MCP」接入的外部服务器。
 	// 工具已在清单里，这里只说明它们是什么、以及 RP 语境下的三条纪律。

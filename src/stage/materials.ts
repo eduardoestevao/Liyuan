@@ -97,12 +97,8 @@ export function loadStageConfig(cwd: string): RpConfig {
 /** skill 文件（agentskills.io 布局：skills/<name>/SKILL.md，frontmatter name+description 必填） */
 export interface SkillFile {
 	name: string;
-	/** L1 触发面（只写 when）；进 system `# 可用 skill` 索引 */
+	/** 模型判断「何时该读这条」的唯一依据；随 skill_read 工具描述送达 */
 	description: string;
-	/** 常驻档：正文随 system 送达（每拍都用的流程骨架）；拉取档走 skill_read */
-	resident: boolean;
-	/** 必定读取（每轮）：落笔前受理门强制先 skill_read（制造停顿=死磕燃料）；与 resident 互斥 */
-	everyBeat: boolean;
 	body: string;
 	/** 存储目录名（skills/<dir>/SKILL.md；编辑器按它定位文件，通常与 name 一致） */
 	dir?: string;
@@ -142,8 +138,6 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 		out.push({
 			name,
 			description: description.slice(0, 1024),
-			resident: meta.get("resident") === "true",
-			everyBeat: meta.get("每轮") === "true",
 			body: rawLines.slice(endIdx + 1).join("\n").trim(),
 			dir: dir.name,
 		});

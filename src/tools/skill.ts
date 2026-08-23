@@ -29,10 +29,6 @@ export interface StageSkillLike {
 	dir: string;
 	name: string;
 	description: string;
-	/** 常驻档：正文随 system 送达（每拍都用的流程骨架） */
-	resident: boolean;
-	/** 必定读取（每轮）：落笔前受理门强制先 skill_read */
-	everyBeat: boolean;
 	body: string;
 }
 
@@ -41,22 +37,17 @@ export interface StageSkillDeps {
 	listStageSkills?: () => StageSkillLike[];
 	/**
 	 * 新建或覆盖。给 dir = 编辑那一个；不给 = 新建（目录取名称，撞名会抛）。
-	 * resident 与 everyBeat 互斥由调用方保证。返回实际存储目录名。
+	 * 返回实际存储目录名。
 	 */
 	saveStageSkill?: (input: {
 		dir?: string;
 		name: string;
 		description: string;
-		resident: boolean;
-		everyBeat: boolean;
 		body: string;
 	}) => { dir: string };
 	/** 删除整个 skill 目录（含附件）；目录不存在时抛 */
 	deleteStageSkill?: (dir: string) => void;
 }
-
-/** 三档互斥的人话（resident / everyBeat / 按需） */
-const loadModeOf = (s: StageSkillLike): string => (s.resident ? "常驻" : s.everyBeat ? "每轮必读" : "按需");
 
 /**
  * 调用情境：用户问「现在有哪些 skill / 那条写作规矩写在哪」，
@@ -69,8 +60,8 @@ export const stageSkillList: ToolSpec<StageSkillDeps> = {
 	surfaces: ["assistant"],
 	label: "列出台上 skill",
 	description: () =>
-		"列出剧情模型的 skill 库（方法论骨架，skills/<目录>/SKILL.md）：名称/说明/装载档/字数。" +
-		"装载档三选一——常驻（正文随 system 每拍送达）、每轮必读（落笔前强制先读）、按需（模型自己决定读不读）。" +
+		"列出剧情模型的 skill 库（方法论骨架，skills/<目录>/SKILL.md）：名称/说明/字数。" +
+		"剧情模型按 description 自己决定读不读（标准按需档）。" +
 		"给 name 则返回那一条的全文。",
 	parameters: () => ({
 		type: "object",
@@ -96,12 +87,12 @@ export const stageSkillList: ToolSpec<StageSkillDeps> = {
 				?? all.find((s) => s.name.includes(want) || s.dir.includes(want));
 			if (!hit) return { text: `没有名为「${want}」的 skill（用不带参数的 stage_skill_list 看全部）。` };
 			return {
-				text: `「${hit.name}」（目录 ${hit.dir}，${loadModeOf(hit)}）\n说明：${hit.description}\n\n${hit.body}`,
+				text: `「${hit.name}」（目录 ${hit.dir}）\n说明：${hit.description}\n\n${hit.body}`,
 				activity: `读 skill「${hit.name}」`,
 			};
 		}
 
-		const lines = all.map((s) => `- ${s.name}｜${loadModeOf(s)}｜${s.body.length} 字｜目录 ${s.dir}\n  ${s.description}`);
+		const lines = all.map((s) => `- ${s.name}｜${s.body.length} 字｜目录 ${s.dir}\n  ${s.description}`);
 		return {
 			text: `台上 skill ${all.length} 条：\n${lines.join("\n")}`,
 			activity: `列 skill · ${all.length} 条`,
@@ -122,8 +113,6 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 	label: "写入台上 skill",
 	description: () =>
 		"新建或修改剧情模型的 skill（方法论骨架）。给 dir = 改那一条，不给 = 新建（撞名会被拒）。" +
-		"load 三选一：resident 正文随 system 每拍送达（只给每拍都用的流程骨架，滥用会挤占上下文）、" +
-		"every_beat 落笔前强制先读、on_demand 由模型按 description 自己决定读不读。" +
 		"description 是模型判断「何时该读这条」的唯一依据，写清触发场合。下一拍生效。",
 	parameters: () => ({
 		type: "object",
@@ -132,7 +121,6 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 			name: { type: "string", description: "skill 名称" },
 			description: { type: "string", description: "一句话说清「什么时候该读这条」" },
 			body: { type: "string", description: "正文（方法论本身，Markdown）" },
-			load: { type: "string", enum: ["resident", "every_beat", "on_demand"], description: "装载档，缺省 on_demand" },
 		},
 		required: ["name", "description", "body"],
 	}),
@@ -146,10 +134,6 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 		if (!description) return { text: "缺少 description 参数（模型靠它决定何时读这条）。" };
 		if (!body) return { text: "缺少 body 参数（正文）。" };
 
-		const load = strArg(args, "load") || "on_demand";
-		if (!["resident", "every_beat", "on_demand"].includes(load)) {
-			return { text: `未知 load「${load}」（可用：resident / every_beat / on_demand）。` };
-		}
 		const dir = strArg(args, "dir");
 
 		let r: { dir: string };
@@ -159,15 +143,12 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 				name,
 				description,
 				body,
-				resident: load === "resident",
-				everyBeat: load === "every_beat",
 			});
 		} catch (err) {
 			return { text: `写入 skill 失败：${errText(err)}` };
 		}
-		const mode = load === "resident" ? "常驻" : load === "every_beat" ? "每轮必读" : "按需";
 		return {
-			text: `已${dir ? "修改" : "新建"} skill「${name}」（目录 ${r.dir}，${mode}）。剧情模型下一拍装载即生效。`,
+			text: `已${dir ? "修改" : "新建"} skill「${name}」（目录 ${r.dir}）。剧情模型下一拍装载即生效。`,
 			activity: `${dir ? "改" : "建"} skill「${name}」`,
 			details: { dir: r.dir },
 		};
@@ -187,7 +168,7 @@ export const stageSkillDelete: ToolSpec<StageSkillDeps> = {
 	label: "删除台上 skill",
 	description: () =>
 		"删掉一条剧情模型的 skill（目录名从 stage_skill_list 取）。连同该目录下的附件一起删，不可撤销——" +
-		"**仅在用户明确要求删除时调用**。只是暂时不想让模型读它，就改成按需档而不是删。",
+		"**仅在用户明确要求删除时调用**。",
 	parameters: () => ({
 		type: "object",
 		properties: {

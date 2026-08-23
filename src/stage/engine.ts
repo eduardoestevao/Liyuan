@@ -640,10 +640,8 @@ export class StageEngine {
 		// M-A 工具组 + skill_read（M-R2 名称制：文件包+进口包非空才挂——不凭空点名）。
 		// 回合工作区 = 正文工件的落点；字数目标在此提取一次（数据，供末端注入）。
 		// 读侧依赖先建：统一层按注入情况决定哪些世界书工具上清单（M-D2）。
-		// 可读名单：拉取档 skill 文件（常驻档已随 system 全文送达，不重复上单）+ 进口 topic 包。
-		// 必定读取（每轮）skill：受理门强制落笔前先读（认 frontmatter `每轮` 标志，不认具体名字）
-		const forcedSkills = materials.skillFiles.filter((f) => f.everyBeat).map((f) => f.name);
-		const skillNames = materials.skillFiles.filter((f) => !f.resident).map((f) => f.name);
+		// skill 全部走标准按需档：名字+描述上 skill_read 清单，读不读归模型（8/23 定案）。
+		const skillList = materials.skillFiles.map((f) => ({ name: f.name, description: f.description }));
 		const readDeps = this.#toolDeps(lastUserText);
 		// MCP 外设（8/06 重接）：hub 里本会话已连接的工具并入清单。
 		// 空数组＝没启用/没连上，与「未注入 mcp 依赖」同效——都不上清单。
@@ -657,7 +655,7 @@ export class StageEngine {
 		const askEnabled = !!this.#deps.askUser;
 		const tools = [
 			...stageTools(config.language, readDeps),
-			...(skillNames.length > 0 ? [skillReadTool(config.language, skillNames)] : []),
+			...(skillList.length > 0 ? [skillReadTool(config.language, skillList)] : []),
 			...writeTools(config.language).filter((t) => t.name !== "ask" || askEnabled),
 			...mediaTools,
 			...(assistantTool ? [assistantTool] : []),
@@ -681,8 +679,6 @@ export class StageEngine {
 			// 预设装配段：原文原序，marker 已按预设作者的位置填入梨园材料
 			presetBefore: materials.presetBefore.map((p) => p.text),
 			declaredMarkers: materials.declaredMarkers,
-			// skill 素材位（M-R2）：常驻包全文 + 拉取包 L1 索引，无包零痕迹
-			skills: materials.skillFiles,
 			tools: tools.length > 0,
 			// MCP 外设索引进 system（不进每拍注入）：会话内字节稳定，不破前缀缓存。
 			// 与旧 director.ts 同一位置——工具清单里有 mcp__ 工具，这里说明它们是什么。
@@ -830,9 +826,6 @@ export class StageEngine {
 				language: config.language,
 				readDeps,
 				directText: text,
-				// skill_read 名单投影 + 必定读取（每轮）skill 集合（受理门用）
-				skillNames,
-				forcedSkills,
 				_blog,
 			});
 			if (turn.final) final = turn.final;
@@ -1054,10 +1047,6 @@ export class StageEngine {
 		readDeps: StageToolDeps;
 		/** 首轮直出正文（调用方已流式外发） */
 		directText: string;
-		/** skill_read 可读名单投影（让模型知道有哪些 skill 可用） */
-		skillNames: string[];
-		/** 必定读取（每轮）skill 名单：落笔前受理门强制先读（制造停顿=死磕燃料） */
-		forcedSkills: string[];
 		/** 全流程文字留档 */
 		_blog?: (event: string, data: string) => void;
 	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
@@ -1416,19 +1405,9 @@ export class StageEngine {
 			formatState,
 			getSkill: (name) => {
 				const m = loadStageMaterials(cwd);
-				const body = m.skillFiles.find((f) => f.name === name)?.body ?? m.skillPacks.get(name);
-				// 动态表格：skill 正文里的 {{可用skill}} 占位符 → 当前启用 skill 表（名/介绍/必读或按需）
-				if (body && body.includes("{{可用skill}}")) {
-					const rows = m.skillFiles
-						.filter((f) => f.name !== name && !f.resident)
-						.map((f) => `| ${f.name} | ${f.description.replace(/\|/g, "\\|").replace(/\s+/g, " ")} | ${f.everyBeat ? "必读" : "按需"} |`);
-					const table =
-						rows.length > 0
-							? ["| skill | 大致介绍 | 读取 |", "|---|---|---|", ...rows].join("\n")
-							: "（暂无其他 skill）";
-					return body.replace("{{可用skill}}", table);
-				}
-				return body;
+				// {{可用skill}} 动态表格随「skill指导」（8/19 拆循环时删除）一并退役——
+				// 标准形态下这张表就是 skill_read 的工具描述本身，不再由某条 skill 正文转发。
+				return m.skillFiles.find((f) => f.name === name)?.body ?? m.skillPacks.get(name);
 			},
 		};
 	}

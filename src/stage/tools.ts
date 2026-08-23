@@ -69,18 +69,28 @@ export function stageTools(language: string, deps?: StageToolDeps): StageTool[] 
 }
 
 /**
- * skill 读取工具（M-R2 §4.C，writing_guide 名称制改造）：按名读取 skill 内容。
- * 来源两层：skills/ 文件（一等素材位）优先，拆层 D/E 进口包（topic 制遗产）兜底。
+ * skill 读取工具：按名读取 skill 全文。**标准 agent skill 形态**（8/23 用户定案：
+ * 「回归最本初的模样，对梨园与 Claude Code 一般无二」）——列表给 `名字：描述`，模型看描述
+ * 自己决定读不读，读了才把全文加载进当拍。
+ *
+ * ⚠ 描述**必须带上**：此前只给名字（`可读：ask判断`），模型无从判断何时该读，实测 8/19
+ * 之后零调用。description 是它唯一的判断依据（frontmatter 里必填，扫描时早就解析了，
+ * 只是没传过来）。
+ *
  * 关键性质：工具结果**不落历史**（rebuildHistory 只留定稿正文）——内容只活在当拍，
- * 谢幕即蒸发＝按需加载、用完即走。names 为空时不要注册本工具（不凭空点名）。
+ * 谢幕即蒸发＝按需加载、用完即走。skills 为空时不要注册本工具（不凭空点名）。
  */
-export function skillReadTool(language: string, names: string[]): StageTool {
+export function skillReadTool(language: string, skills: Array<{ name: string; description: string }>): StageTool {
 	return {
 		name: "skill_read",
-		description: `按名读取一个 skill 的全文（${language}）。可读：${names.join(" / ")}。`,
+		description:
+			`按名读取一个 skill 的全文（${language}）。可读：\n` +
+			skills.map((s) => `- ${s.name}：${s.description}`).join("\n"),
 		parameters: {
 			type: "object",
-			properties: { name: { type: "string", enum: names, description: "要读取的 skill 名" } },
+			properties: {
+				name: { type: "string", enum: skills.map((s) => s.name), description: "要读取的 skill 名" },
+			},
 			required: ["name"],
 		},
 	};
@@ -95,7 +105,7 @@ export function writeTools(language: string): StageTool[] {
 		{
 			name: "ask",
 			description:
-				"剧情共创决策（P7 接回）：把该由用户拍板的选择交给用户。三种触发：\n" +
+				"剧情共创决策（P7 接回）：把该由用户拍板的选择交给用户。两种触发：\n" +
 				"① **主动触发**（随时，含第 1 轮）：用户输入本身在求方向/递笔（「接下来去找谁」「怎么办」" +
 				"「给个选项」「让我选」）——这不需要上文支撑，直接问。\n" +
 				"② **开局收集**（开场第一拍）：用户这句输入引出的未定变量——取不同值这拍走向会" +
@@ -103,7 +113,6 @@ export function writeTools(language: string): StageTool[] {
 				"先问用户定下来再演。一次一问，多个变量只问最关键的。" +
 				"判断是**动态的**：变量不因「新」而重要——新人物的性格/身份不是全都要问，洞府里不是每件资源" +
 				"都值得问；不分岔的自己顺着演，不事事上报。禁止代写用户身份的完整档案、禁止替用户定重大变量。\n" +
-				"③ **续写触发**（路标演完之后）：续写的自然下文涉及用户的行动或选择。\n" +
 				`给出 2~4 个具体、可落地、彼此不同的选项（${language}），用户作答后按答案继续演。\n` +
 				"用户点了停止 = 笔还给用户，本拍就此收束。\n" +
 				"**选择框分流**：用户预设自带选择框格式（如 <w2g>）时，岔路与回合末选项**按预设格式写进正文**，" +

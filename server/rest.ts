@@ -1600,8 +1600,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 						dir: s.dir ?? s.name,
 						name: s.name,
 						description: s.description,
-						resident: s.resident,
-						everyBeat: s.everyBeat,
 						chars: s.body.length,
 						body: s.body,
 					})),
@@ -1613,16 +1611,12 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					dir?: string;
 					name?: string;
 					description?: string;
-					resident?: boolean;
-					everyBeat?: boolean;
 					body?: string;
 				};
 				const r = saveStageSkill(host.cwd, {
 					dir: typeof body.dir === "string" && body.dir.trim() ? body.dir : undefined,
 					name: body.name ?? "",
 					description: body.description ?? "",
-					resident: body.resident === true,
-					everyBeat: body.everyBeat === true,
 					body: body.body ?? "",
 				});
 				sendJson(res, 200, { ok: true, dir: r.dir, note: "下一拍装载即生效（引擎每拍现读 skills/）" });

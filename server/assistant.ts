@@ -865,8 +865,6 @@ tools.push(
 					dir: s.dir ?? s.name,
 					name: s.name,
 					description: s.description,
-					resident: s.resident,
-					everyBeat: s.everyBeat,
 					body: s.body,
 				})),
 			saveStageSkill: (input) => saveStageSkillFile(cwd, input),

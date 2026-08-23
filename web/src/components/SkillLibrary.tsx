@@ -10,8 +10,8 @@ import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "../api.ts";
 import { ConfirmButton } from "./kit.tsx";
 
-type StageSkill = { dir: string; name: string; description: string; resident: boolean; everyBeat: boolean; chars: number; body: string };
-type EditState = { dir: string | null; name: string; description: string; resident: boolean; everyBeat: boolean; body: string };
+type StageSkill = { dir: string; name: string; description: string; chars: number; body: string };
+type EditState = { dir: string | null; name: string; description: string; body: string };
 
 export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
 	const [skills, setSkills] = useState<StageSkill[] | null>(null);
@@ -40,8 +40,6 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 				dir: edit.dir ?? undefined,
 				name: edit.name,
 				description: edit.description,
-				resident: edit.resident,
-				everyBeat: edit.everyBeat,
 				body: edit.body,
 			});
 			toast("info", "已保存，下一拍装载即生效");
@@ -70,7 +68,6 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 
 	const renderForm = () => {
 		if (!edit) return null;
-		const builtin = edit.dir === "写作" || edit.dir === "skill指导";
 		return (
 			<div className="skill-edit-form">
 				<label className="field-label">名称（模型用它点名 skill_read）</label>
@@ -91,23 +88,6 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 					placeholder="只写什么时候用（触发场面）；别写做法摘要——模型会照摘要走捷径不读正文"
 					onChange={(e) => setEdit({ ...edit, description: e.target.value })}
 				/>
-				<label className="field-label" style={{ marginTop: 8 }}>
-					送达方式
-				</label>
-				{builtin ? (
-					<div className="panel-row">
-						<span className="lore-meta">内置骨架·固定{edit.resident ? "常驻（全文每拍随 system）" : "每轮必读（每段落笔前强制先读，动态菜单）"}——不可改</span>
-					</div>
-				) : (
-					<div className="seg-row">
-						<button className={`seg ${edit.everyBeat ? "active" : ""}`} disabled={busy} onClick={() => setEdit({ ...edit, resident: false, everyBeat: true })} title="每段落笔前强制先 skill_read（制造停顿逼死磕；每多一个多一次往返）">
-							必定读取
-						</button>
-						<button className={`seg ${!edit.everyBeat ? "active" : ""}`} disabled={busy} onClick={() => setEdit({ ...edit, resident: false, everyBeat: false })} title="进可用清单，模型按本段需要自取；省上下文但触发不保证">
-							按需读取
-						</button>
-					</div>
-				)}
 				<label className="field-label" style={{ marginTop: 8 }}>
 					正文
 				</label>
@@ -138,7 +118,7 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 				<button
 					className="drawer-btn"
 					disabled={busy || !!edit}
-					onClick={() => setEdit({ dir: null, name: "", description: "", resident: false, everyBeat: false, body: "" })}
+					onClick={() => setEdit({ dir: null, name: "", description: "", body: "" })}
 				>
 					＋ 新建 skill
 				</button>
@@ -157,7 +137,6 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 						<div className="skill-lib-main">
 							<span className="lore-title">
 								{s.name}
-								<span className={`skill-badge${s.resident ? " resident" : s.everyBeat ? " forced" : ""}`}>{s.resident ? "常驻" : s.everyBeat ? "必定" : "按需"}</span>
 							</span>
 							<span className="lore-meta">
 								{s.description} · {s.chars.toLocaleString()} 字
@@ -167,7 +146,7 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 							<button
 								className="act"
 								disabled={busy || !!edit}
-								onClick={() => setEdit({ dir: s.dir, name: s.name, description: s.description, resident: s.resident, everyBeat: s.everyBeat, body: s.body })}
+								onClick={() => setEdit({ dir: s.dir, name: s.name, description: s.description, body: s.body })}
 							>
 								编辑
 							</button>
