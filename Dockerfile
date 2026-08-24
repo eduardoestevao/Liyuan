@@ -16,7 +16,9 @@ RUN npm install --omit=dev --no-audit --no-fund \
 COPY server ./server
 COPY src ./src
 COPY assets ./assets
-COPY skills ./skills
+# skills/ 默认已无内置 skill（三档退役后 git rm）；git 不存空目录，clean clone 里没有它，
+# 硬 COPY 会挂（CI docker build："/skills": not found）。运行时 /app/skills 由卷提供，
+# 用户自建的 skill 落在那里；下面的 mkdir 保证镜像里有个空目录。
 COPY presets ./presets
 COPY .liyuan/extensions ./.liyuan/extensions
 COPY liyuan.config.example.json liyuan.agent.example.json ./
@@ -31,10 +33,10 @@ RUN if [ ! -f web/dist/index.html ]; then \
 
 # 默认素材备份：assets/cards 与 assets/lorebooks 会被卷挂载遮住，
 # entrypoint 首启时从这里补回默认角色卡/世界书
-RUN mkdir -p assets/default \
+# skills 现无内置项：只建空目录（不备份），entrypoint 的 seed_assets 会跳过缺失的 default/skills
+RUN mkdir -p assets/default skills \
   && cp -r assets/cards assets/default/cards \
-  && cp -r assets/lorebooks assets/default/lorebooks \
-  && cp -r skills assets/default/skills
+  && cp -r assets/lorebooks assets/default/lorebooks
 
 # 配置真身放在 /app/config（卷挂载点），/app 下同名文件由 entrypoint 软链过去。
 # 不在这里 cp 出 liyuan.*.json：镜像内的真文件会和 compose 的目录挂载冲突（issue #1）。

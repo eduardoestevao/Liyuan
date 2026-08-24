@@ -15,6 +15,9 @@ on:
       - "scripts/smoke-web.mjs"
       - "start.sh"
       - "start.command"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "docker-entrypoint.sh"
       - ".github/workflows/ci.yml"
   pull_request:
     paths:
@@ -28,6 +31,9 @@ on:
       - "scripts/smoke-web.mjs"
       - "start.sh"
       - "start.command"
+      - "Dockerfile"
+      - "docker-compose.yml"
+      - "docker-entrypoint.sh"
       - ".github/workflows/ci.yml"
   workflow_dispatch:
 
