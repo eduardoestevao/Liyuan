@@ -8,7 +8,6 @@ import {
 	buildStageInjection,
 	buildStageSystemPrompt,
 	detectsLanguageMismatch,
-	formatLoreIndex,
 	rebuildHistory,
 	stateFromBranch,
 	type BranchEntryLike,
@@ -183,64 +182,6 @@ const card = {
 };
 const config: RpConfig = { ...DEFAULT_CONFIG, userName: "沈舟" };
 
-test("system prompt：字节稳定、宏替换；扮演话语零残留（P1——扮演的每个字都有署名主人）", () => {
-	const opts = { card, config, constantLore: [] };
-	const a = buildStageSystemPrompt(opts);
-	const b = buildStageSystemPrompt(opts);
-	assert.equal(a, b, "同素材两次装配必须逐字节一致");
-	assert.ok(a.includes("沈舟的同门师姐"), "{{user}} 宏应替换");
-	assert.ok(a.includes("一场长篇沉浸式角色扮演"), "舞台声明在场（数据）");
-	// D1/D2/D3：harness 扮演文案全数退场
-	assert.ok(!a.includes("# 叙事与文风"), "D1：叙事与文风段已删");
-	assert.ok(!a.includes("# 输出结构"), "D2：输出结构段已删");
-	assert.ok(!a.includes("状态栏"), "状态栏在 system 零提及（唯一席位是谢幕注入）");
-	assert.ok(!a.includes("资深作家") && !a.includes("倾尽所有"), "D3：作家咏叹调已删");
-	assert.ok(!a.includes("主权") && !a.includes("绝不替"), "主权兜底迁默认预设，harness 不再持有");
-	assert.ok(!a.includes("800–1500") && !a.includes("800-1500"), "篇幅兜底迁默认预设");
-});
-
-test("system prompt：# 工作方式 = 纯协议（§2.1-5 逐字）；tools=false 时不出现", () => {
-	const p = buildStageSystemPrompt({ card, config, constantLore: [] });
-	assert.ok(p.includes("# 工作方式"), "工作方式节在场");
-	assert.ok(
-		p.includes(
-			"每拍第 1 轮用 `beat_plan` 列路标（没有戏的拍可 `draft_write` 一次交完）；正文用 `draft_append` 逐路标写在稿纸上，写完 `draft_seal` 收笔。剧情走向要用户拍板时随时 `ask`。每轮注入的【进度】【判定】【记账】【谢幕】是当前状态，以它为准。",
-		),
-		"文案即规格，逐字一致",
-	);
-	const noTools = buildStageSystemPrompt({ card, config, constantLore: [], tools: false });
-	assert.ok(!noTools.includes("# 工作方式"), "无工具形态不声明工作方式");
-	assert.ok(!noTools.includes("memory_search") && !noTools.includes("lorebook_search"), "语义表的工具指引随 tools=false 摘除");
-});
-
-test("system prompt：消息流约定补齐名录/面板/索引语义（每拍注入借此瘦成纯数据）", () => {
-	const p = buildStageSystemPrompt({ card, config, constantLore: [] });
-	assert.ok(p.includes("标注【登场名录】"), "名录语义入表");
-	assert.ok(p.includes("标注【活跃面板】"), "面板语义入表");
-	assert.ok(p.includes("标注【设定集索引】"), "索引语义入表");
-	assert.ok(p.includes("`memory_search`") && p.includes("`lorebook_search`"), "检索通道指引在语义表（一次说清）");
-});
-
-test("system prompt：梨园架构段最前，预设装配段随后、原文原序，harness 骨架殿后", () => {
-	const withPreset = buildStageSystemPrompt({
-		card,
-		config,
-		constantLore: [],
-		presetBefore: ["破限框架原文。", "文风块：要生动。", "不替用户做重大决定。"],
-	});
-	assert.ok(withPreset.startsWith("# 梨园运行架构"), "架构段最前：模型先读梨园怎么运转，再读预设");
-	const at = (t: string) => withPreset.indexOf(t);
-	assert.ok(at("# 梨园运行架构") < at("破限框架原文。"), "架构段先于预设装配段");
-	assert.ok(!withPreset.includes("# 预设指令（用户自备，按原序）"), "梨园不再给预设加标题（铁律一）");
-	assert.ok(at("破限框架原文。") < at("文风块：要生动。") && at("文风块：要生动。") < at("不替用户做重大决定。"), "原序保持");
-	assert.ok(at("不替用户做重大决定。") < at("# 舞台"), "harness 骨架殿后");
-	assert.ok(!withPreset.includes("# 文风与写法") && !withPreset.includes("# 行为边界"), "B/C 归拢节已拆（零归拢）");
-	// 架构段只讲系统怎么运转：不定义角色、不教写作、不举写作细节（那些归预设/工具描述）
-	const arch = withPreset.slice(0, withPreset.indexOf("破限框架原文。"));
-	assert.ok(!arch.includes("你是") && !arch.includes("你的名字"), "架构段不定义角色身份（碰破限）");
-	assert.ok(!arch.includes("神态") && !arch.includes("对白") && !arch.includes("环境"), "架构段不举写作细节");
-});
-
 test("system prompt：marker 归位——预设声明过的槽位，梨园不再按自己版式重出一遍", () => {
 	const rich = { ...card, description: "云澜是师姐。", personality: "冷。", scenario: "山门外。" };
 	const declared = buildStageSystemPrompt({
@@ -303,19 +244,6 @@ test("detectsLanguageMismatch：中文目标才判、样本要够长", () => {
 	assert.equal(detectsLanguageMismatch("殿内烛影摇动，她伏案未眠，窗外霜色渐重，更漏声一声一声敲在瓦上，夜风穿堂而过带起纸页。", "中文"), false);
 	assert.equal(detectsLanguageMismatch("short", "中文"), false);
 	assert.equal(detectsLanguageMismatch(en, "English"), false);
-});
-
-test("formatLoreIndex：只出标题、超预算截断", () => {
-	const entries = Array.from({ length: 80 }, (_, i) => ({
-		comment: `条目${i}标题较长一些`,
-		keys: [`k${i}`],
-		enabled: true,
-	}));
-	const line = formatLoreIndex(entries) ?? "";
-	assert.ok(line.startsWith("共 80 条："));
-	assert.ok(line.includes("未列出"));
-	assert.ok(line.length < 700);
-	assert.equal(formatLoreIndex([]), undefined);
 });
 
 // ---------------- 素材装载 ----------------

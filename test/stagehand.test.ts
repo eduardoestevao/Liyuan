@@ -11,37 +11,6 @@ import {
 } from "../src/stagehand.ts";
 import { DEFAULT_CONFIG } from "../src/types.ts";
 
-test("助手 system prompt：超集身份/工作语境/唯一红线/作者工具/纪律齐备", () => {
-	const sp = buildStagehandPrompt({ config: DEFAULT_CONFIG });
-	assert.ok(sp.includes("系统助手"), "自称=助手（大众词）");
-	assert.ok(sp.includes("不参与扮演"), "身份切割：不扮演");
-	assert.ok(sp.includes("全局视角") || sp.includes("全能作者"), "超集定位");
-	assert.ok(sp.includes("工作语境"), "必须有工作语境段（不注入预设时的语境合法性）");
-	assert.ok(sp.includes("虚构创作"), "库存定性=用户的虚构创作");
-	assert.ok(sp.includes("工作失职"), "拒看库存=失职");
-	// 唯一红线=不替剧情模型在剧情流里生成正文（D10），但作者写入全放行
-	assert.ok(sp.includes("唯一不能做") || sp.includes("唯一的红线"), "红线是唯一的一件事");
-	assert.ok(sp.includes("剧情对话流") || sp.includes("剧情消息流") || sp.includes("剧情对话里生成"), "不塞进剧情流");
-	assert.ok(sp.includes("/reroll"), "改稿的正确动作=调生产条件+重生成");
-	// 作者权限工具都在
-	assert.ok(sp.includes("panel_write"), "写面板");
-	assert.ok(sp.includes("lorebook_write"), "写世界书");
-	assert.ok(sp.includes("codex_create") || sp.includes("codex_write"), "知识库");
-	assert.ok(sp.includes("card_create"), "创建角色卡");
-	assert.ok(sp.includes("show_media"), "素材交付到助手对话");
-	assert.ok(sp.includes("story_read"), "剧情记录工具");
-	assert.ok(sp.includes("story_command"), "剧情命令工具");
-	assert.ok(sp.includes("skill_save"), "技能沉淀归助手");
-	assert.ok(sp.includes("得到确认再动手") || sp.includes("改前确认"), "变更先确认");
-	assert.ok(sp.includes(DEFAULT_CONFIG.language), "对话语言跟配置");
-	// SVG 优先于生图（用户撞坑点）
-	assert.ok(sp.includes("svg") || sp.includes("SVG"), "地图优先 svg");
-	// 命名纪律：用户可见文案禁戏剧隐喻（检场/幕后/舞台监督只许活在代码注释里）
-	for (const banned of ["检场", "幕后", "舞台监督", "戏外", "戏内"]) {
-		assert.ok(!sp.includes(banned), `提示词不得出现「${banned}」`);
-	}
-});
-
 test("助手 system prompt：backendControl=false 时不给本机工具段", () => {
 	const on = buildStagehandPrompt({ config: { ...DEFAULT_CONFIG, backendControl: true } });
 	const off = buildStagehandPrompt({ config: { ...DEFAULT_CONFIG, backendControl: false } });

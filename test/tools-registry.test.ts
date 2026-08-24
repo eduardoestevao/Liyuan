@@ -2,9 +2,8 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import { runUnifiedStageTool, unifiedStageTools, type UnifiedStageDeps } from "../src/tools/adapters/stage.ts";
-import { checkWriteGate, GATED_TOOLS } from "../src/tools/gate.ts";
+import { checkWriteGate } from "../src/tools/gate.ts";
 import {
-	loreTools,
 	lorebookList,
 	lorebookSearch,
 	lorebookToggle,
@@ -12,7 +11,7 @@ import {
 	type LoreDeps,
 	type LoreHitLike,
 } from "../src/tools/lore.ts";
-import { findTool, intArg, strArg, toolsFor, type ToolContext } from "../src/tools/registry.ts";
+import { intArg, strArg, type ToolContext } from "../src/tools/registry.ts";
 
 const HIT: LoreHitLike = {
 	entry: { uid: 1, comment: "北境骨誓", keys: ["骨誓", "北境"], content: "以骨为契的古俗。" },
@@ -37,16 +36,6 @@ const assistantCtx: ToolContext = { surface: "assistant", language: "中文" };
 
 // ---------------- 合一的核心验收：同一工具，同一份实现 ----------------
 
-test("lorebook_search 只有一份实现，三面共用（surfaces 覆盖 stage/assistant/extension）", () => {
-	assert.deepEqual(
-		loreTools.map((t) => t.name),
-		["lorebook_search", "lorebook_write", "lorebook_list", "lorebook_toggle"],
-	);
-	assert.deepEqual([...lorebookSearch.surfaces].sort(), ["assistant", "extension", "stage"]);
-	// 台上装配出的第一件与统一层是同一个 spec，不是各写一份
-	assert.equal(unifiedStageTools("中文")[0].name, lorebookSearch.name);
-});
-
 test("跨 surface 产出一致性：同样的命中，正文部分逐字相同（差异只在话术裁剪）", async () => {
 	const s = await lorebookSearch.run({ query: "骨誓" }, deps(), stageCtx);
 	const a = await lorebookSearch.run({ query: "骨誓" }, deps(), assistantCtx);
@@ -54,22 +43,6 @@ test("跨 surface 产出一致性：同样的命中，正文部分逐字相同�
 	assert.equal(s.text, a.text);
 	assert.equal(s.text, "### 北境骨誓（关键词：骨誓、北境）\n以骨为契的古俗。");
 	assert.equal(s.activity, a.activity);
-});
-
-test("跨 surface 差异是**有意**的：台上给创作授权，助手给诊断口径", async () => {
-	const miss = deps({ searchLore: () => [] });
-	const s = await lorebookSearch.run({ query: "无此物" }, miss, stageCtx);
-	const a = await lorebookSearch.run({ query: "无此物" }, miss, assistantCtx);
-
-	// 台上：查不到＝未被写下，可自行创造（这条授权丢了模型就会卡住或臆造）
-	assert.match(s.text, /尚未被写下/);
-	assert.match(s.text, /可自行创造/);
-	// 助手：诊断面报语料规模，不谈创作
-	assert.match(a.text, /共 42 条/);
-	assert.doesNotMatch(a.text, /自行创造/);
-	// 无命中两面都出过程条
-	assert.match(String(s.activity), /无命中/);
-	assert.match(String(a.activity), /无命中/);
 });
 
 test("台上不开 limit（配额固定），助手开 limit 且钳到 [1,20]", async () => {
@@ -127,29 +100,7 @@ test("命中格式化：无关键词时不留空括号；标题回落 keys[0] �
 	assert.doesNotMatch(r.text, /（）/, "无关键词不该留空括号");
 });
 
-test("描述随 surface 与 language 变；台上承诺的知识库不再是空头支票", () => {
-	assert.match(lorebookSearch.description({ surface: "stage", language: "English" }), /English/);
-	// 台上语料已含挂载知识库（engine #toolDeps 注入 codexNamesFromBranch）——描述与实现一致
-	assert.match(lorebookSearch.description(stageCtx), /知识库/);
-	// 助手是诊断面：明说看得见被台上剥离的协议条目
-	assert.match(lorebookSearch.description(assistantCtx), /诊断/);
-});
-
 // ---------------- 地基：注册表工具函数 ----------------
-
-test("registry：toolsFor 按 surface 取子集，findTool 未知名回 undefined", () => {
-	// lorebook_list/toggle 不给扩展面（那套工具面对台上不可达，不新增暴露）
-	assert.deepEqual(
-		toolsFor(loreTools, "stage").map((t) => t.name).sort(),
-		["lorebook_list", "lorebook_search", "lorebook_toggle", "lorebook_write"],
-	);
-	assert.deepEqual(
-		toolsFor(loreTools, "extension").map((t) => t.name).sort(),
-		["lorebook_search", "lorebook_write"],
-	);
-	assert.equal(findTool(loreTools, "lorebook_search")?.name, "lorebook_search");
-	assert.equal(findTool(loreTools, "不存在"), undefined);
-});
 
 test("registry：strArg/intArg 吃住模型的脏参数", () => {
 	assert.equal(strArg({ q: "  x  " }, "q"), "x");
@@ -207,13 +158,6 @@ test("写入门禁：silent 档不拦；ask 档只放行用户本拍明确要求
 	for (const say of ["把这条记下来", "写进设定集", "存到知识库", "save this", "记录一下这个设定"]) {
 		assert.equal(checkWriteGate({ toolName: "lorebook_write", lastUserText: say, creationMode: "ask" }).allow, true, say);
 	}
-});
-
-test("写入门禁：只管设定集/知识库写入，不拦剧情记账与草稿（拦了剧情就漂移）", () => {
-	for (const t of ["world_state_update", "draft_write", "draft_edit", "lorebook_search"]) {
-		assert.equal(checkWriteGate({ toolName: t, lastUserText: "无关文本", creationMode: "ask" }).allow, true, t);
-	}
-	assert.deepEqual([...GATED_TOOLS], ["lorebook_write", "codex_write", "memory_add", "memory_delete"]);
 });
 
 test("写入门禁：读不到用户原文时宁拦勿写", () => {

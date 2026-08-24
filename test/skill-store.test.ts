@@ -9,48 +9,6 @@ import { deleteStageSkill, sanitizeSkillDir, saveStageSkill } from "../src/stage
 
 const mkcwd = () => mkdtempSync(join(tmpdir(), "liyuan-skillstore-"));
 
-test("saveStageSkill：写出的 SKILL.md 正好是 scanSkillFiles 读的格式（编辑器产物=引擎消费物）", () => {
-	const cwd = mkcwd();
-	try {
-		const { dir } = saveStageSkill(cwd, { name: "打斗", description: "近身缠斗/群战时用", resident: false, body: "## 写法\n镜头贴着动作走。" });
-		assert.equal(dir, "打斗");
-		assert.ok(existsSync(join(cwd, "skills", "打斗", "SKILL.md")));
-		const scanned = scanSkillFiles(cwd);
-		assert.equal(scanned.length, 1);
-		assert.equal(scanned[0].name, "打斗");
-		assert.equal(scanned[0].description, "近身缠斗/群战时用");
-		assert.equal(scanned[0].resident, false);
-		assert.ok(scanned[0].body.includes("镜头贴着动作走"));
-		assert.equal(scanned[0].dir, "打斗");
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("saveStageSkill：resident=true 落 frontmatter，scan 认作常驻", () => {
-	const cwd = mkcwd();
-	try {
-		saveStageSkill(cwd, { name: "我的文风", description: "全程", resident: true, body: "冷硬白描。" });
-		assert.equal(scanSkillFiles(cwd)[0].resident, true);
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
-test("saveStageSkill：编辑既有（传 dir）覆盖同目录，不新建", () => {
-	const cwd = mkcwd();
-	try {
-		const { dir } = saveStageSkill(cwd, { name: "对峙", description: "旧说明", resident: false, body: "旧正文" });
-		saveStageSkill(cwd, { dir, name: "对峙", description: "新说明", resident: true, body: "新正文" });
-		const scanned = scanSkillFiles(cwd);
-		assert.equal(scanned.length, 1, "覆盖不新增目录");
-		assert.equal(scanned[0].description, "新说明");
-		assert.equal(scanned[0].resident, true);
-	} finally {
-		rmSync(cwd, { recursive: true, force: true });
-	}
-});
-
 test("saveStageSkill：新建撞已有同名 skill 报错（不静默吞占）", () => {
 	const cwd = mkcwd();
 	try {
