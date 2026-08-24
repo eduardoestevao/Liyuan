@@ -211,7 +211,7 @@ const fmtTime = (ts: number) => {
 
 export function WorldlinePanel({ toast, runCommand, onStore }: Props) {
 	const load = useCallback(() => apiGet<WorldlineViewDto>("/api/worldline"), []);
-	const { data, error, loading, reload } = usePanelData(load, { watchAgent: true });
+	const { data, error, loading, reload } = usePanelData(load, { watchAgent: true, cacheKey: "/api/worldline" });
 	const { busy, run } = useAction(toast);
 	const [menu, setMenu] = useState<{ saveId: string; name: string } | null>(null);
 

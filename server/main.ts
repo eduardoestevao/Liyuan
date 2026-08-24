@@ -111,6 +111,7 @@ import {
 	patchLoreEntryAnywhere,
 	selectCard,
 	setLorebookMounted,
+	writeMaybeGzip,
 	type CurrentModelInfo,
 	type RestHost,
 } from "./rest.ts";
@@ -1849,6 +1850,12 @@ const MIME: Record<string, string> = {
 	".map": "application/json",
 };
 
+/**
+ * 可压缩的文本类型（图片/字体/音视频本身已是压缩格式，再压只烧 CPU）。
+ * 首屏那两个大件就在这里：index.js 557KB→175KB、index.css 111KB→20KB。
+ */
+const COMPRESSIBLE_EXT = new Set([".html", ".js", ".css", ".svg", ".json", ".webmanifest", ".manifest", ".map", ".txt"]);
+
 // ---------- 访问密码闸门（src/access.ts；设置面板「访问密码」区管理） ----------
 
 let accessData: AccessData | null = loadAccess(cwd);
@@ -2072,8 +2079,12 @@ const httpServer = createServer((req, res) => {
 			if (ext === ".html") {
 				headers["cache-control"] = "no-cache";
 			}
-			res.writeHead(200, headers);
-			res.end(body);
+			if (COMPRESSIBLE_EXT.has(ext)) {
+				writeMaybeGzip(res, 200, body, headers);
+			} else {
+				res.writeHead(200, headers);
+				res.end(body);
+			}
 		} catch {
 			res.writeHead(404);
 			res.end();

@@ -500,13 +500,16 @@ export function LorebookPanel({ toast }: { toast: (level: "info" | "warning" | "
 	const [view, setView] = useState<ViewTarget | null>(null);
 	const viewKey = view?.kind === "file" ? `file:${view.path}` : view?.kind === "agent" ? "agent" : "none";
 
+	/** 当前视图的 GET 路径：loader 与 cacheKey 共用同一个来源，防两处写法漂移 */
+	const entriesPath =
+		view?.kind === "file"
+			? `/api/lorebook?path=${encodeURIComponent(view.path)}`
+			: view?.kind === "agent"
+				? "/api/lorebook?source=agent"
+				: null;
+
 	const loadEntries = useCallback((): Promise<LorebookResponse> => {
-		if (view?.kind === "file") {
-			return apiGet<LorebookResponse>(`/api/lorebook?path=${encodeURIComponent(view.path)}`);
-		}
-		if (view?.kind === "agent") {
-			return apiGet<LorebookResponse>("/api/lorebook?source=agent");
-		}
+		if (entriesPath) return apiGet<LorebookResponse>(entriesPath);
 		return Promise.resolve({
 			lorebookPath: null,
 			lorebookPaths: [],
@@ -516,11 +519,14 @@ export function LorebookPanel({ toast }: { toast: (level: "info" | "warning" | "
 			total: 0,
 			entries: [],
 		});
-	}, [view]);
+	}, [entriesPath]);
 
-	const { data, error, loading, reload } = usePanelData(loadEntries, { watchAgent: true });
+	const { data, error, loading, reload } = usePanelData(loadEntries, {
+		watchAgent: true,
+		cacheKey: entriesPath ?? undefined,
+	});
 	useEffect(() => {
-		reload();
+		// 换书的重拉由 cacheKey 变化驱动（看过的书再点回来命中缓存＝秒开），这里只重置视图态
 		setLimit(40);
 		setQuery("");
 		setHits(null);

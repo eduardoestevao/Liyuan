@@ -13,6 +13,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	apiDelete,
 	apiGet,
+	apiGetPeek,
 	apiPost,
 	apiPut,
 	downloadJson,
@@ -22,6 +23,9 @@ import {
 	type PresetsResponse,
 } from "../api.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
+
+/** 预设正文（full=1）的 GET 路径：apiGet 与 apiGetPeek 必须逐字相同，缓存按完整 path 存 */
+const PRESET_FULL_PATH = "/api/preset?full=1&working=1";
 
 const CHANNEL_LABEL: Record<string, string> = {
 	system: "历史前",
@@ -195,14 +199,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 	const activeFile = files.data?.active ?? null;
 
 	const loadFromDisk = useCallback(async () => {
-		setLoadingDetail(true);
+		// 缓存已有这份正文（预设 273KB，重复打开面板最贵的一件）：不打「读取中」，
+		// 让 apiGet 走缓存后原地填满；缓存过期/被清时才是真加载。
+		if (!apiGetPeek<FullPresetResponse>(PRESET_FULL_PATH)) setLoadingDetail(true);
 		setLoadError(null);
 		try {
 			// full=1：一次拉齐正文，方便编辑
 			// working=1：读**运行时生效版**（草稿 override 优先）。读磁盘版会让已生效的勾选在面板里
 			// 弹回原状，用户以为没生效、再点一次反而是空操作（补丁与运行时同值），只有点保存才看得见——
 			// 面板显示的必须是此刻真正送给模型的那一份。dirty 由服务端按 override 是否存在给出。
-			const r = await apiGet<FullPresetResponse>("/api/preset?full=1&working=1");
+			const r = await apiGet<FullPresetResponse>(PRESET_FULL_PATH);
 			setMissing(r.missing);
 			if (r.preset) {
 				setDraft(toDraft(r.preset));

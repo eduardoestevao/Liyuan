@@ -289,13 +289,23 @@ function CardDetail({
 	// 简介等字段：JSON 与 PNG（tEXt 回写）均可改
 	const fieldEditable = true;
 	const [front, setFront] = useState<CardFrontInfo | null>(null);
+	/**
+	 * 卡皮肤详情随当前卡变，但 URL 里没有卡 —— 原先靠 bypassCache 保证不吃上一张卡的 hasSkin，
+	 * 代价是每次打开面板都重传一遍（真实卡实测 140KB）。改成把卡路径挂成 query：
+	 * 服务端路由只看去掉 query 的路径（rest.ts `url.split("?")[0]`），这个参数它不读，
+	 * 纯粹给前端缓存分桶 ⇒ 不同卡各占一格，**结构上**不可能串卡，重复打开则命中缓存。
+	 */
+	const frontPath = data?.path ? `/api/cardfront?card=${encodeURIComponent(data.path)}` : null;
 
 	useEffect(() => {
+		if (!frontPath) {
+			setFront(null);
+			return;
+		}
 		let cancelled = false;
 		void (async () => {
 			try {
-				// 详情随 data.path 变：必须 bypass，避免吃到上一张卡的 hasSkin
-				const r = await apiGet<CardFrontInfo>("/api/cardfront", { bypassCache: true });
+				const r = await apiGet<CardFrontInfo>(frontPath);
 				if (!cancelled) setFront(r);
 			} catch {
 				if (!cancelled) setFront(null);
@@ -304,7 +314,8 @@ function CardDetail({
 		return () => {
 			cancelled = true;
 		};
-	}, [data?.path, data?.name]);
+		// 改名也重跑：写操作已清掉 /api/cardfront 前缀的缓存，这里会拉到新的
+	}, [frontPath, data?.name]);
 
 	const toggleFront = (enabled: boolean) =>
 		run(async () => {

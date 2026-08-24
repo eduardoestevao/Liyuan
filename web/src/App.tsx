@@ -741,6 +741,10 @@ export default function App() {
 						setThinkingLive(false);
 						setToolNote(null);
 						// 本轮 agent 可能写了技能/知识库/世界书等资产：通知 watchAgent 面板重拉
+						// 并清 GET 缓存——服务端的写客户端看不见（invalidateAfterWrite 只认前端自己发的写），
+						// 不清则「打开面板吃缓存」会让 agent 刚改的东西在 TTL 内不露面。
+						// watchAgent 面板照旧立即重拉，其余面板在下次打开时拉一次。
+						apiGetCacheClear();
 						setAgentTick((t) => t + 1);
 						// 中断/异常遗留的半截正文/思维链：并入本轮同一角色泡（不新开泡）
 						const text = streamRef.current;
@@ -1351,7 +1355,8 @@ export default function App() {
 			const next = leftPanel === id ? null : id;
 			openLeft(next);
 			if (next === "sessions") {
-				setSessions(null);
+				// 不清空：保留上次列表当场显示，后台静默重拉（回来替换）。
+				// 清成 null 会先渲染一帧「读取中…」再弹回 ⇒ 打开就闪一下。
 				ws.send({ type: "sessions" });
 			}
 		} else {
@@ -1650,7 +1655,7 @@ export default function App() {
 		}
 		openLeft(id);
 		if (id === "sessions") {
-			setSessions(null);
+			// 见 togglePanel：保留旧列表、后台重拉，避免「读取中…」闪一下
 			ws.send({ type: "sessions" });
 		}
 	};
@@ -1875,7 +1880,7 @@ export default function App() {
 									onBrowseAll={() => {
 										dismissWelcome();
 										openLeft("sessions");
-										setSessions(null);
+										// 保留旧列表、后台重拉（不清 null，避免闪「读取中…」）
 										ws.send({ type: "sessions" });
 									}}
 									onOpenPanel={openPanelFromWelcome}

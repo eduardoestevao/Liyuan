@@ -35,7 +35,12 @@ export interface PanelData<T> {
  * 面板数据装载。
  * - cacheKey：与 apiGet 路径一致时，首帧从内存缓存同步水合（无「读取中」闪烁）
  * - 已有 data：后台静默刷新，不挡 UI（ST 式常驻）
- * - 每次 effect 拉数走网络（bypass 缓存），缓存只服务 peek 秒开
+ * - **打开面板时缓存新鲜就直接用，一个请求都不发**：绝大多数数据在两次打开之间没变，
+ *   而每次重拉都是一整个 RTT + 整份体积（预设 273KB / 卡皮肤 140KB），慢链路上就是「总在加载」。
+ *   需要真数据的三条路径都仍强制走网络，所以「刷新」不会假成功：
+ *     · 右上角刷新 → App 先 apiGetCacheClearForPanel 清缓存再 remount ⇒ peek 必 miss
+ *     · 面板内 reload() → tick 递增，不算挂载
+ *     · agent 每轮结束 → App 清整表 GET 缓存（服务端的写客户端看不见），watchAgent 面板另有立即重拉
  */
 export function usePanelData<T>(
 	loader: () => Promise<T>,
@@ -51,6 +56,10 @@ export function usePanelData<T>(
 	const agentTick = useContext(PanelRefreshContext);
 	const effectiveAgentTick = opts?.watchAgent ? agentTick + watchBump : 0;
 	const hasDataRef = useRef(seeded != null);
+	/** 上一轮 effect 用的 cacheKey：变了＝换了一份数据（换书/换目标），旧 data 必须先撤 */
+	const keyRef = useRef(cacheKey);
+	/** 本次挂载是否已跑过 effect：区分「打开面板」与「reload/agentTick」 */
+	const ranOnceRef = useRef(false);
 	const loaderRef = useRef(loader);
 	loaderRef.current = loader;
 
@@ -65,19 +74,34 @@ export function usePanelData<T>(
 
 	useEffect(() => {
 		let alive = true;
+		// cacheKey 换了：现在显示的是另一份数据，不撤旧 data 会把 A 的内容当 B 显示
+		const keyChanged = keyRef.current !== cacheKey;
+		if (keyChanged) {
+			keyRef.current = cacheKey;
+			const forNewKey = cacheKey ? apiGetPeek<T>(cacheKey) : null;
+			setData(forNewKey);
+			hasDataRef.current = forNewKey != null;
+		}
 		// 缓存可能在挂载后被预热写入：再 peek 一次（仅尚无 data 时）
 		if (!hasDataRef.current && cacheKey) {
 			const again = apiGetPeek<T>(cacheKey);
 			if (again != null) {
 				setData(again);
 				hasDataRef.current = true;
-				setLoading(false);
 			}
+		}
+		// 「打开面板」且缓存新鲜 ⇒ 收工，不发请求
+		const openingWithCache = (!ranOnceRef.current || keyChanged) && hasDataRef.current;
+		ranOnceRef.current = true;
+		if (openingWithCache) {
+			setLoading(false);
+			setError(null);
+			return;
 		}
 		const silent = hasDataRef.current;
 		if (!silent) setLoading(true);
 		setError(null);
-		// 始终走网络：避免「reload / 右上角刷新 / agentTick」仍命中陈旧 GET 缓存
+		// 走到这里的都是「要真数据」：reload / 右上角刷新 / agentTick / 缓存未命中
 		runWithPanelFetchBypass(() => loaderRef.current())
 			.then((d) => {
 				if (alive) {
