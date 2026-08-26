@@ -13,6 +13,7 @@
 
 import { applyPatch, canonicalizeCharacterKeys, saveState } from "../state.ts";
 import { buildScribeTurnPrompt, parseScribeResult } from "../scribe.ts";
+import { applyMvuPatch } from "../mvu.ts";
 import type { WorldState } from "../types.ts";
 
 /** 场记快照的会话树条目类型（CustomEntry，不进 LLM 上下文） */
@@ -38,6 +39,11 @@ export interface ScribeRunInput {
 	assistantText: string;
 	charName: string;
 	userName: string;
+	/**
+	 * MVU 卡的「变量更新规则」原文（卡作者所写，来自世界书条目）。
+	 * 树本身在 state.mvu；给出规则让场记判断哪些值该动。非 MVU 卡不传。
+	 */
+	mvuRules?: string;
 }
 
 export type ScribeRunOutcome =
@@ -51,11 +57,13 @@ export type ScribeRunOutcome =
  * 任何失败都只跳过本拍记账，不影响正文——账本滞后一拍可由下拍补上。
  */
 export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput): Promise<ScribeRunOutcome> {
-	const { state, userText, assistantText, charName, userName } = input;
+	const { state, userText, assistantText, charName, userName, mvuRules } = input;
 	if (!assistantText.trim()) return { kind: "skipped", reason: "no-text" };
 
 	const leafBefore = deps.getLeafId();
-	const prompt = buildScribeTurnPrompt({ state, userText, assistantText, charName, userName });
+	// MVU 卡（state.mvu 有树）才把树+规则喂给场记，让它连 mvu_patch 一起判断；非 MVU 卡 prompt 逐字如旧
+	const mvu = state.mvu && typeof state.mvu === "object" ? { tree: state.mvu, rules: mvuRules } : undefined;
+	const prompt = buildScribeTurnPrompt({ state, userText, assistantText, charName, userName, mvu });
 	const resp = await deps.sideText(prompt.systemPrompt, prompt.userText);
 	if (typeof resp !== "string") return { kind: "failed", error: resp.error };
 
@@ -66,7 +74,9 @@ export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput):
 		const detail = flat.length <= 400 ? flat : `…${flat.slice(-160)}`;
 		return { kind: "failed", error: `输出不可解析（${resp.length} 字）：${detail}` };
 	}
-	if (Object.keys(parsed.patch).length === 0) return { kind: "skipped", reason: "empty-patch" };
+	// 两个补丁都空才算无变化——MVU 卡可能账本没动但树动了（如买了个物品，只落 mvu）
+	const mvuHasChanges = !!parsed.mvuPatch && Object.keys(parsed.mvuPatch).length > 0;
+	if (Object.keys(parsed.patch).length === 0 && !mvuHasChanges) return { kind: "skipped", reason: "empty-patch" };
 
 	// R9 叶守卫：调用期间树动过（swipe/rewind/切线）→ 整体丢弃
 	if (deps.getLeafId() !== leafBefore) {
@@ -76,6 +86,13 @@ export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput):
 
 	const knownNames = [charName, userName, ...Object.keys(state.characters)];
 	const result = applyPatch(state, canonicalizeCharacterKeys(parsed.patch, knownNames));
+	// MVU 树补丁：套进 result.state.mvu（applyPatch 已 structuredClone，改这份不碰入参 state）。
+	// 判断在场记模型（给出 path→值），落值由 applyMvuPatch 死板执行——不碰任何卡方言。
+	if (mvuHasChanges && result.state.mvu && typeof result.state.mvu === "object") {
+		const mv = applyMvuPatch(result.state.mvu, parsed.mvuPatch!);
+		result.state.mvu = mv.tree;
+		result.applied.push(...mv.applied.map((a) => `mvu:${a}`));
+	}
 	deps.appendStateEntry(result.state);
 	if (deps.stateFile) {
 		try {

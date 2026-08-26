@@ -54,6 +54,7 @@ import {
 	type RpSummaryData,
 } from "./compact.ts";
 import { runScribeTurn, STATE_ENTRY_TYPE } from "./scribe-run.ts";
+import { seedMvuIfNeeded, findMvuRules } from "../mvu.ts";
 import {
 	MAX_ROUNDS,
 	runStageTool,
@@ -912,6 +913,9 @@ export class StageEngine {
 		// 触发是结构信号（本拍有正文＝封笔），扮演者无感；场记读「已写出的正文＋当前账本」
 		// 出 patch，判断在模型、落账由 harness 死板执行（叶守卫在 runScribeTurn 内）。
 		if (entryId && !aborted && finalText) {
+			// MVU 卡：开演前若树还没建（首拍/老会话），从卡 [initvar] 懒建；规则喂给场记当参考。
+			const seededState = seedMvuIfNeeded(state, materials.card.book, materials.config.userName, materials.card.name);
+			const mvuRules = seededState.mvu ? findMvuRules(materials.card.book) : undefined;
 			const r = await runScribeTurn(
 				{
 					// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
@@ -922,11 +926,12 @@ export class StageEngine {
 					onActivity: (d) => ev.onActivity?.(d),
 				},
 				{
-					state,
+					state: seededState,
 					userText: lastUserText,
 					assistantText: finalText,
 					charName: materials.card.name,
 					userName: materials.config.userName,
+					mvuRules,
 				},
 			);
 			if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);

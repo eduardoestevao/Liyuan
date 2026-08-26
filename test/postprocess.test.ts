@@ -2,7 +2,7 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
-	addFoldTags,
+	addFoldTags,
 	classifyTag,
 	cleanAssistantText,
 	discoverFoldTagsFromTexts,
@@ -255,6 +255,77 @@ test("prepareDisplayText: 裸整份文档 + 文档外的过滤照常执行", () 
 	assert.ok(out.includes("收尾。"), "文档之外的正文保留");
 });
 
+test("prepareDisplayText: 省掉 <html> 外壳的围栏界面——壳不许被 unwrap 剥掉", () => {
+	// 8/25 实锤（奴漫城开场白）：作者的状态栏界面是一份省掉 <html> 外壳的文档——
+	// 根标签 <head>、收尾只到 </body>、裸围栏无语言标记。整页判据原先三条分别要求
+	// doctype / <html> / ```html，三条全落空 ⇒ 放行 unwrap ⇒ <head>/<style>/<body>/<script>
+	// 连壳被剥、只剩 CSS 与 JS 当正文上屏（16376 字皮肤产物被削成 13725 字裸文本）。
+	const ui =
+		"```\n<head>\n<style>\n  :root { --bg: #f4e4bc; }\n  .mvu-container { border: 3px solid #8b5a2b; }\n</style>\n</head>\n<body>\n" +
+		'<div class="mvu-container">' +
+		"状态".repeat(40) +
+		"</div>\n<script>\n  const t = 1;\n</script>\n</body>\n```";
+	const raw = "【开场 · 某卡】\n她把账本合上。\n\n<StatusPlaceHolderImpl/>";
+	const skin = {
+		rules: [{ name: "状态栏UI", source: "<StatusPlaceHolderImpl/>", flags: "g", replace: ui }],
+		charName: "某卡",
+		userName: "旅人",
+	};
+	const out = prepareDisplayText(raw, skin);
+	for (const tag of ["<head>", "<style>", "</style>", "<body>", "<script>", '<div class="mvu-container">']) {
+		assert.ok(out.includes(tag), `${tag} 必须留着——被剥就是 CSS/JS 裸奔上屏`);
+	}
+	assert.ok(out.includes("她把账本合上。"), "界面之前的叙事照旧保留");
+});
+
+test("classifyTag: HTML 规范里内容不是正文的元素 → keep；其余照旧", () => {
+	// keep 的判据来自 HTML 规范（封闭外部协议），不是作者措辞名单
+	for (const t of ["head", "body", "html", "style", "script", "title", "meta", "link", "template", "noscript"]) {
+		assert.equal(classifyTag(t), "keep", `<${t}> 必须 keep`);
+	}
+	// 作者/模型发明的标签照旧：未知 unwrap（＝浏览器对未知元素的行为）、思维链 fold
+	assert.equal(classifyTag("state1"), "unwrap");
+	assert.equal(classifyTag("catsay"), "unwrap");
+	assert.equal(classifyTag("thinking"), "fold");
+	// 结构容器不在本刀范围（保持既有行为，避免行内 HTML 变成字面标签）
+	assert.equal(classifyTag("div"), "unwrap");
+});
+
+test("displayAssistantText: 判据全落空时 CSS/JS 也不许被剥壳裸奔上屏", () => {
+	// 8/25 奴漫城根因的结构性验证：无围栏、无 doctype、无 <html>、div 无内联 style=
+	// ⇒ isFullPageHtmlPayload / isBareFullPagePayload / protectSkinDivs 全部不触发。
+	// 修前这类必然被 unwrap 剥壳（CSS 与 JS 当散文上屏）；修后必须原样留给浏览器。
+	const ui =
+		"<head>\n<style>\n  :root { --bg: #f4e4bc; }\n</style>\n</head>\n<body>\n" +
+		'<div class="panel">状态面板</div>\n<script>\n  const t = 1;\n</script>\n</body>';
+	const out = prepareDisplayText(`她把账本合上。\n\n${ui}\n\n<thinking>盘算</thinking>\n\n收尾。`, null);
+
+	assert.ok(/<style>[\s\S]*:root[\s\S]*<\/style>/.test(out), "CSS 必须仍在 <style> 壳内");
+	assert.ok(/<script>[\s\S]*const t = 1[\s\S]*<\/script>/.test(out), "JS 必须仍在 <script> 壳内");
+	for (const tag of ["<head>", "</head>", "<body>", "</body>"]) {
+		assert.ok(out.includes(tag), `${tag} 不许被「残留空标签行」清扫吃掉`);
+	}
+	assert.ok(out.includes("状态面板"), "面板文字保留");
+	assert.ok(out.includes("她把账本合上。") && out.includes("收尾。"), "叙事照旧");
+	assert.ok(!out.includes("盘算"), "界面之外的 thinking 仍被滤掉");
+});
+
+test("cleanAssistantText: 送模侧行为不变（本刀只改显示侧，不动 token 账）", () => {
+	// keep 只在显示路径生效；历史路径仍按旧行为拆包留内容，避免 token 账回升
+	const out = cleanAssistantText("正文。\n<style>\n.a{color:red}\n</style>\n尾。");
+	assert.ok(!out.includes("<style>"), "送模侧不保留 HTML 壳");
+	assert.ok(out.includes("正文。") && out.includes("尾。"));
+});
+
+test("prepareDisplayText: 非标记语言的围栏（选项块等）不算界面，照旧过策略", () => {
+	// 放宽整页判据后仍不能把普通围栏当界面保护起来，否则围栏内的 thinking 之类就漏网了。
+	const raw = "【开场 · 某卡】\n正文。\n\n```\n选择1: 留下\n选择2: 走\n```\n\n<thinking>盘算</thinking>\n收尾。";
+	const out = prepareDisplayText(raw, null);
+	assert.ok(!out.includes("盘算"), "普通围栏不构成整页保护，thinking 仍被滤掉");
+	assert.ok(out.includes("选择1: 留下"), "围栏内容本身保留");
+	assert.ok(out.includes("收尾。"));
+});
+
 // ——— 显示层正文守恒（8/19）：作者正则照跑，但不许把正文删没 ———
 // 用的是真预设里的作者成语（狐神抚 / TGbreak / 双人成行三家同形）：
 // 「从消息开头删到思维链闭合标签」+ /g + 替空。
@@ -329,4 +400,16 @@ test("正文守恒：哨符不泄漏到产物里", () => {
 	const raw = `<think_fox~>思考A</think_fox~>\n${BODY}\n<think_fox~>思考B</think_fox~>`;
 	const out = prepareDisplayText(raw, skinOf([foxHideCot]));
 	assert.ok(!/[\uE000-\uF8FF]/.test(out), `产物不得含私用区哨符，得到:${JSON.stringify(out)}`);
+});
+
+test("displayAssistantText：自闭合的残留标签也清掉——有无空格不该有区别（浏览器两种都渲染成空）", () => {
+	// 8/26 实证：depth 限定筛掉面板规则后，开场白里作者手写的占位符以源码形态印上屏
+	assert.equal(displayAssistantText("正文。\n\n<StatusPlaceHolderImpl/>"), "正文。");
+	assert.equal(displayAssistantText("正文。\n\n<StatusPlaceHolderImpl />"), "正文。", "带空格那支本来就清（两支必须一致）");
+	assert.equal(displayAssistantText("正文。\n\n<br/>\n\n尾巴"), "正文。\n\n尾巴", "<br> 早就被清，<br/> 不该例外");
+	// 非正文元素的豁免不受影响（8/25 第二刀），含自闭合写法
+	assert.ok(displayAssistantText("正文。\n\n<head>\n\n尾巴").includes("<head>"));
+	assert.ok(displayAssistantText("正文。\n\n<meta/>\n\n尾巴").includes("<meta/>"));
+	// 句中的自闭合标签不动（本条只管「单独成行的残留」）
+	assert.ok(displayAssistantText("他说<foo/>然后走了。").includes("<foo/>"));
 });

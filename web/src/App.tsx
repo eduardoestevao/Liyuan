@@ -419,6 +419,42 @@ export default function App() {
 		if (rightPanel === "assistant") setAsstUnread(false);
 	}, [rightPanel]);
 
+	/**
+	 * MVU 变量投递（唯一通道）：把账本里的 MVU 树（worldState.mvu）送进所有脚本 iframe 的
+	 * window.__liyuanVariables，卡自带的 setInterval 轮询 getAllVariables 自行点亮/刷新状态栏面板。
+	 *
+	 * 两个方向都要，缺一即漏：
+	 * - **推**：mvu 变化（场记记账后 state 帧到达）→ 广播给当前所有 iframe。
+	 * - **拉**：新 iframe 滚进视口/切会话后才 boot，错过了上一次广播 → 它 onload 时 postMessage
+	 *   {liyuanVariablesReady} 主动要一次，这里应答。与高度上报（子→父 postMessage）同款。
+	 *
+	 * 卡脚本读 getAllVariables().stat_data，而账本的 mvu 就是那棵 stat_data 树，故包一层 {stat_data}。
+	 * 广播到全部 iframe、靠 payload 有无 liyuanVariables 键自过滤——非 MVU 帧收到也无副作用（只是存了个没人读的全局）。
+	 */
+	useEffect(() => {
+		const mvu = worldState?.mvu;
+		if (!mvu || typeof mvu !== "object") return;
+		const payload = { liyuanVariables: { stat_data: mvu } };
+		const post = (win: Window | null) => {
+			try {
+				win?.postMessage(payload, "*");
+			} catch {
+				/* 跨域/已卸载帧忽略 */
+			}
+		};
+		const broadcast = () => {
+			for (const f of Array.from(document.querySelectorAll("iframe"))) post((f as HTMLIFrameElement).contentWindow);
+		};
+		broadcast();
+		// 拉：iframe boot 后要一次当前值
+		const onReady = (e: MessageEvent) => {
+			const d = e.data as { liyuanVariablesReady?: unknown } | null;
+			if (d && typeof d === "object" && "liyuanVariablesReady" in d) post((e.source as Window) ?? null);
+		};
+		window.addEventListener("message", onReady);
+		return () => window.removeEventListener("message", onReady);
+	}, [worldState?.mvu]);
+
 	useEffect(() => {
 		welcomeRef.current = welcome;
 		if (!welcome) return;

@@ -31,8 +31,44 @@
 import type { DisplayRule } from "./cardfront.ts";
 import { hasDepthLimits, rulesAtDepth } from "./cardfront.ts";
 import { applySkinKeepingBody } from "./cardSkin.ts";
+import { fencedBlockHoldsMarkup } from "./htmlMarkup.ts";
+import { mountMvuPanel } from "./mvu.ts";
 
-export type TagPolicy = "fold" | "strip" | "unwrap";
+export type TagPolicy = "fold" | "strip" | "unwrap" | "keep";
+
+/**
+ * 「内容不是正文文字」的 HTML 元素——对它们做 unwrap **在语义上就是错的**。
+ *
+ * unwrap 的含义是「标签不是显示标记，但它的内容是正文」。这个前提对未知标签成立
+ * （`<state1>血量80</state1>` → 血量80，正是浏览器对未知元素的原生行为，酒馆就靠它，
+ * 所以酒馆零标签名单）；但对下面这些元素**按 HTML 规范就不成立**：`<style>` 的内容是
+ * 样式表、`<script>` 的内容是代码，浏览器绝不会把它们当文字显示出来。
+ *
+ * 8/25 奴漫城实锤：作者界面被 unwrap 剥壳后，CSS 与 JS 当散文印进了故事
+ * （16376 字界面 → 13725 字裸文本）。根因就是把一个前提不成立的变换照做了。
+ *
+ * 这不是「名单」那类物（铁律三）：这些名字不是卡作者/预设作者发明的措辞，而是 HTML 规范里的
+ * 元素名——一个封闭、稳定、梨园既不发明也不必追的外部协议（浏览器判定同名的这一套叫
+ * HTMLUnknownElement，判据完全一致）。没见过的卡不需要往里加任何一行就是对的。
+ */
+const HTML_NON_PROSE_TAGS = new Set([
+	"html",
+	"head",
+	"body",
+	"style",
+	"script",
+	"title",
+	"meta",
+	"link",
+	"base",
+	"template",
+	"noscript",
+]);
+
+/** 是不是「内容不是正文文字」的 HTML 元素（见 HTML_NON_PROSE_TAGS） */
+export function isHtmlNonProseTag(tag: string): boolean {
+	return HTML_NON_PROSE_TAGS.has(tag.trim().toLowerCase());
+}
 
 /** 标签名：字母/中文起头，允许数字 _ - . 与中文（兼容 <haurki准则> <draft_notes>） */
 const TAG_NAME = String.raw`[A-Za-z_\u4e00-\u9fff][\w\u4e00-\u9fff.\-]*`;
@@ -103,6 +139,8 @@ export function classifyTag(tag: string): TagPolicy {
 	const raw = tag.trim();
 	const norm = normalizeTagName(raw);
 	if (!norm) return "unwrap";
+	// HTML 规范里「内容不是正文」的元素：原样留着交给浏览器，绝不剥壳（见 HTML_NON_PROSE_TAGS）
+	if (isHtmlNonProseTag(raw)) return "keep";
 	if (extraFold.has(norm) || extraFold.has(raw.toLowerCase())) return "fold";
 	// 模式匹配用「去下划线」与原文各试一次
 	if (FOLD_NAME_RE.test(raw) || FOLD_NAME_RE.test(norm)) return "fold";
@@ -230,6 +268,9 @@ function applyPolicies(
 	opts: { collectFold: boolean; stripHistoryOnly?: boolean },
 ): { text: string; foldParts: string[] } {
 	const foldParts: string[] = [];
+	/** keep 块的暂存：占位后续轮次不再扫描作者产物（见下方 changed 处的说明） */
+	const kept: string[] = [];
+	const keepToken = (i: number) => `${i}`;
 	let t = text;
 	for (let pass = 0; pass < 8; pass++) {
 		const blocks = scanTaggedBlocks(t);
@@ -241,7 +282,20 @@ function applyPolicies(
 			if (b.start > cursor) out += t.slice(cursor, b.start);
 			// 「历史剥、显示留」：只在历史路径整块扔，显示路径按原策略走
 			const policy = opts.stripHistoryOnly && isHistoryStripTag(b.tag) ? "strip" : b.policy;
-			if (policy === "fold") {
+			if (policy === "keep") {
+				// 显示侧：原样交给浏览器（不剥壳、不进内层扫描——里面是作者的东西）。
+				// **换成占位符**而不是直接回填原文：作者界面动辄十几 KB，且 JS 字符串里满是
+				// `<div …>` 字样会被当成开标签，留在文本里会让后续每一轮重扫一遍
+				// （实测整套测试 2.2s → 55s）。占位后下一轮就没有块可扫，当轮即收敛。
+				// 送模侧沿用旧行为（本刀只改显示侧，不动 token 账）。
+				if (opts.stripHistoryOnly) {
+					out += b.body;
+				} else {
+					out += keepToken(kept.length);
+					kept.push(b.raw);
+				}
+				changed = true;
+			} else if (policy === "fold") {
 				const body = b.body.trim();
 				if (opts.collectFold && body) foldParts.push(body);
 				changed = true;
@@ -257,6 +311,10 @@ function applyPolicies(
 		if (cursor < t.length) out += t.slice(cursor);
 		t = out;
 		if (!changed) break;
+	}
+	// 还原 keep 块（占位符互不嵌套；倒序只为与 stash 顺序一致）
+	for (let i = kept.length - 1; i >= 0; i--) {
+		t = t.split(keepToken(i)).join(kept[i]!);
 	}
 	return { text: t, foldParts };
 }
@@ -284,8 +342,16 @@ export function displayAssistantText(text: string): string {
 	t = t.replace(/<!--[\s\S]*?-->/g, "");
 	t = t.replace(/^\s*#{1,6}\s*正文\s*$/gim, "");
 	t = t.replace(/^\s*#{1,6}\s*(thinking|draft|notes?|思维|草稿)\s*$/gim, "");
-	// 残留空标签行（作者正则更早一步已跑过；到这里还剩的就是没人认领的裸标签，剥掉）
-	t = t.replace(new RegExp(`^\\s*</?(${TAG_NAME})(\\s[^>]*)?>\\s*$`, "gim"), "");
+	// 残留空标签行（作者正则更早一步已跑过；到这里还剩的就是没人认领的裸标签，剥掉）。
+	// **例外**：HTML 规范里内容不是正文的元素（`<head>`/`<style>`/`<script>`…）。它们单独成行
+	// 是界面的常态，删掉这一行就等于把 CSS/JS 的壳拆了、内容裸奔上屏——8/25 奴漫城的第二刀。
+	// `/?>`：自闭合写法也算残留标签。原先 `<foo />`（有空格）被清掉、`<foo/>`（无空格）却当文字
+	// 印上屏，这个区别毫无道理——浏览器对未知元素两种都渲染成空（酒馆零标签名单就是靠这个）。
+	// 8/26 实证：depth 限定把面板规则筛掉后，开场白里作者手写的 `<StatusPlaceHolderImpl/>`
+	// 就这么以源码形态出现在屏幕上（`<br/>` 同病，而 `<br>` 早就被清）。
+	t = t.replace(new RegExp(`^\\s*</?(${TAG_NAME})(\\s[^>]*)?/?>\\s*$`, "gim"), (m, tag: string) =>
+		isHtmlNonProseTag(tag) ? m : "",
+	);
 	return tidyWhitespace(t);
 }
 
@@ -294,15 +360,27 @@ export type DisplaySkin = {
 	rules: DisplayRule[];
 	charName: string;
 	userName: string;
+	/**
+	 * 梨园已接管本卡的 MVU 树，**且本条是最新一条**——显示侧据此补挂面板挂载点
+	 * （见 src/mvu.ts 的 mountMvuPanel：MVU 插件干的那一步在梨园没有主人）。
+	 * 由调用方置位（server/main.ts 看 state.mvu），并由 skinAtDepth 在非最新的深度上清掉。
+	 */
+	mvu?: boolean;
 };
 
 /**
  * 皮肤按消息深度收窄(酒馆 depth：0＝最新)。
  * 没有深度限定 / 没有 skin 时原样返回同一个对象——不制造无谓的新引用。
+ *
+ * 顺带把 `mvu` 收窄到 depth 0：面板读的是**当前**那棵树，画到历史消息上就是对历史撒谎
+ * （酒馆的 MVU 每条消息各存一份快照，梨园只持有当前一棵）。
  */
 export function skinAtDepth(skin: DisplaySkin | null | undefined, depth: number): DisplaySkin | null {
-	if (!skin?.rules?.length || !hasDepthLimits(skin.rules)) return skin ?? null;
-	return { ...skin, rules: rulesAtDepth(skin.rules, depth) };
+	if (!skin?.rules?.length) return skin ?? null;
+	const rules = hasDepthLimits(skin.rules) ? rulesAtDepth(skin.rules, depth) : skin.rules;
+	const mvu = skin.mvu === true && depth === 0;
+	if (rules === skin.rules && mvu === (skin.mvu === true)) return skin;
+	return { ...skin, rules, mvu };
 }
 
 /**
@@ -320,14 +398,17 @@ export function isHtmlDisplayPayload(text: string): boolean {
 function isFullPageHtmlPayload(text: string): boolean {
 	if (!text) return false;
 	const t = text.trim();
-	// 围栏整页（可带开场前缀）
-	if (/(?:^|\n)```[^\n`]*\r?\n\s*<!doctype\s+html/i.test(text) && /<\/html\s*>/i.test(text)) return true;
-	if (/(?:^|\n)```[^\n`]*\r?\n\s*<html[\s>]/i.test(text) && /<\/html\s*>/i.test(text)) return true;
-	if (/(?:^|\n)```html\b/i.test(text) && text.length > 80) return true;
+	// 围栏整页（可带开场前缀）：围栏内是标记语言即算界面——**不问**有没有 doctype/html 外壳。
+	// 原先三条判据分别要求 doctype、`<html>`、或 ` ```html ` 语言标记，于是「根标签 <head>、
+	// 收尾只到 </body>、裸围栏」的作者界面全部落空 → 放行 unwrap → 壳被剥、CSS/JS 当正文
+	// 上屏（奴漫城开场白实测）。判据统一到 src/htmlMarkup.ts，见那里的由来。
+	for (const block of text.match(/```[^\n`]*\r?\n[\s\S]*?\r?\n```/g) ?? []) {
+		if (fencedBlockHoldsMarkup(block) && block.length > 80) return true;
+	}
 	// 裸整页
 	const head = t.slice(0, 80).toLowerCase();
 	if (head.startsWith("<!doctype html") || head.startsWith("<html")) return true;
-	// 裸整页 + 短前言：上面三条围栏判据都写着 `(?:^|\n)` 明确容忍前缀，裸整页这条却要求
+	// 裸整页 + 短前言：上面围栏判据都容忍前缀，裸整页这条却要求
 	// 文档落在第 0 位——而**梨园自己**给开场白加了「【开场 · 卡名】\n」（greeting.ts:16）。
 	// 于是「裸整份文档」的开场白被判成不是整页，走通用 unwrap：`<style>` 壳被剥、CSS 当正文
 	// 上屏、容器标签也被剥。同一份原文去掉前缀或补上围栏都正常，实证只差这个前缀。
@@ -394,6 +475,9 @@ export function prepareDisplayText(text: string, skin?: DisplaySkin | null): str
 	if (!text) return "";
 	let t = text;
 	if (skin?.rules?.length) {
+		// MVU 面板挂载点：卡声明了它、正文里没有、且本卡的树归梨园管（最新一条）→ 补一个。
+		// 必须在皮肤正则**之前**，它就是给正则吃的。
+		if (skin.mvu) t = mountMvuPanel(t, skin.rules);
 		t = applySkinKeepingBody(t, skin.rules, { charName: skin.charName, userName: skin.userName });
 	}
 	// 整段就是界面（前后无叙事）：原样交出，不拆
@@ -443,9 +527,11 @@ function isBareFullPagePayload(text: string): boolean {
 function protectFullPageBlocks(text: string): { text: string; stash: string[] } {
 	const stash: string[] = [];
 	let out = text;
-	// 围栏块（含 doctype/html 的）整段占位
+	// 围栏块整段占位：围栏内是标记语言就保护（**不问** doctype/html 外壳——
+	// 检测侧 isFullPageHtmlPayload 已同源放宽，两边必须用同一条判据，否则
+	// 「判成界面却没保护」＝照旧被 unwrap 剥壳，等于没修）
 	out = out.replace(/```[^\n`]*\r?\n[\s\S]*?\r?\n```/g, (m) => {
-		if (!/<!doctype\s+html|<html[\s>]/i.test(m)) return m;
+		if (!fencedBlockHoldsMarkup(m)) return m;
 		const token = skinDivToken(stash.length);
 		stash.push(m);
 		return token;

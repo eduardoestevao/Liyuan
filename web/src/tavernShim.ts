@@ -308,10 +308,15 @@ import { JQUERY_MIN } from "./vendor/jquery-min.ts";
  * 垫片面（对照酒馆公开调用面）：
  * - `$`/`jQuery`：完整 jQuery 3.7.1（离线内置，MIT）
  * - `_`：lodash 常用子集（get/set/has/each/isArray/isObject/escape 等，按需扩充）
- * - `getAllVariables()`：酒馆变量系统 → 梨园侧变量 JSON（默认空壳 `{stat_data:{}}`，
+ * - `getAllVariables()` / `getVariables()`：酒馆变量系统 → 梨园侧变量 JSON（默认空壳 `{stat_data:{}}`，
  *   父页可 postMessage {liyuanVariables} 注入——后续接梨园账本）
+ * - `errorCatched(fn)`：包装函数、报错走 console、功能照跑（返回可调用体）
+ * - `substitudeMacros`/`getLastMessageId`/`getChatMessages`：util/读族安全降级
  * - `Mvu`：MVU 插件对象壳（事件常量 + 空事件总线，数据刷新联动后置）
  * - `waitGlobalInitialized(name)`：酒馆等待全局就绪 → 目标已存在立即 resolve
+ *
+ * 覆盖的是酒馆助手**已发布的调用面**（公开 `.d.ts`）中卡会裸用的读/util 子集，非枚举卡作者措辞
+ * （Wine 式兼容面，spec §3 原则 4）。写族/生成族**故意不提供**——正文红线：界面递条子、不拧旋钮。
  */
 export const IFRAME_TAVERN_GLOBALS_SNIPPET = `<script>(function(){
 var g=typeof window!=="undefined"?window:null;if(!g)return;
@@ -343,6 +348,45 @@ try{
   }
   if(typeof g.getAllVariables!=="function"){
     g.getAllVariables=function(){var v=g.__liyuanVariables||null;return v&&typeof v==="object"?v:{stat_data:{}};};
+  }
+  // 父页把梨园账本的 MVU 树 postMessage 进来 → 写 window.__liyuanVariables（getAllVariables 的数据源）。
+  // 卡脚本多用 setInterval 轮询 getAllVariables 自行重画（奴漫城 1.5s），故收到即生效、无需重载；
+  // 另发一次 Mvu 的 VARIABLE_UPDATE_ENDED 事件，兼顾监听事件而非轮询的卡。父→子单向通道，非模型注入。
+  if(typeof g.addEventListener==="function"){
+    g.addEventListener("message",function(ev){
+      var d=ev&&ev.data;
+      if(!d||typeof d!=="object"||!("liyuanVariables" in d))return;
+      var v=d.liyuanVariables;
+      g.__liyuanVariables=(v&&typeof v==="object")?v:{stat_data:{}};
+      if(g.Mvu&&g.Mvu.events&&typeof g.eventEmit==="function"){
+        try{g.eventEmit(g.Mvu.events.VARIABLE_UPDATE_ENDED,g.__liyuanVariables);}catch(e){}
+      }
+    });
+    // boot 后主动要一次当前变量（本帧可能是刚滚进视口才建、错过了父页上一次广播）
+    try{var pv=(g.parent&&g.parent!==g)?g.parent:null;if(pv)pv.postMessage({liyuanVariablesReady:g.name||1},"*");}catch(e){}
+  }
+  // 酒馆助手 util/读族裸全局（对照公开类型声明 @types/function、@types/iframe/variables）。
+  // 卡把它们当裸全局直接调用；module 脚本下缺一个就是 ReferenceError → 整份界面初始化中断
+  // （8/25 奴漫城：唯一缺的 errorCatched 让 $(errorCatched(init)) 抛错，5 个页签全点不动）。
+  // 全部安全降级：读族回空、util 按语义。写族/生成族不在此列（正文红线：界面不得拧旋钮）。
+  if(typeof g.errorCatched!=="function"){
+    // 公开语义：包装函数，报错时提示、功能照跑。返回值必须可调用（$(errorCatched(init)) 依赖它）。
+    g.errorCatched=function(fn){
+      if(typeof fn!=="function")return fn;
+      return function(){try{return fn.apply(this,arguments);}catch(e){console.error("[liyuan card]",e);}};
+    };
+  }
+  if(typeof g.getVariables!=="function"){
+    g.getVariables=function(){return g.getAllVariables();};
+  }
+  if(typeof g.substitudeMacros!=="function"){
+    g.substitudeMacros=function(text){return text==null?"":String(text);};
+  }
+  if(typeof g.getLastMessageId!=="function"){
+    g.getLastMessageId=function(){return 0;};
+  }
+  if(typeof g.getChatMessages!=="function"){
+    g.getChatMessages=function(){return [];};
   }
   if(!g.Mvu){
     g.Mvu={

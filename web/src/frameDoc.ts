@@ -2,6 +2,31 @@
 
 import { IFRAME_TAVERN_BRIDGE_SNIPPET, IFRAME_TAVERN_GLOBALS_SNIPPET } from "./tavernShim.ts";
 
+/**
+ * HTML 规范里「声明文档结构」的根元素。出现其一即这份内容是一份**文档**，不是一段正文。
+ * 与 postprocess 的 HTML_NON_PROSE_TAGS 同源同理（判据取自 HTML 规范，非卡作者措辞）：
+ * 那边管「不许剥壳」，这边管「不许灌片段 CSS」。刻意**不含** `style`/`script`——
+ * `<style>` 打头的多半是自带样式的状态栏片段，它仍需片段语义。
+ */
+const DOC_ROOT_RE = /^\s*<(?:!doctype\s+html|(?:html|head|body)(?=[\s>]))/i;
+
+/**
+ * 这份内容该按「整页文档」还是「正文片段」灌基底 CSS。
+ *
+ * 8/25 第二刀把四处「是不是界面」收成一份判据，**漏了此处第五处**：原先只认
+ * `<!doctype>` / `<html>` 打头，于是根标签是 `<head>`（省掉 `<html>` 外壳、收尾只到
+ * `</body>`，合法但非常规）的作者界面被当成正文片段，灌进 SEAMLESS_FRAGMENT_CSS 的
+ * `white-space:pre-wrap` —— 作者源码里的缩进与换行全部变成可见空白：头部与页签之间
+ * 撑出整屏死白、双栏被顶得错位（真 iframe 实测容器高 455px → 1706px、body 白空高 1876px）。
+ * 片段 CSS 是给「状态栏纯文本一行一项」用的，一份完整文档绝不能吃。
+ *
+ * 判据只问「有没有文档结构根元素」，不按界面标签名列举，故 `<head>` 之外
+ * （只写 `<body>`、只写 doctype 的下一张卡）同样落在正确一侧。
+ */
+function looksLikeDocument(html: string): boolean {
+	return DOC_ROOT_RE.test(html);
+}
+
 /** 程序卡默认高度：约 78vh，夹在 480–2400（fixed 全屏 UI 不能靠内容盒量高） */
 export function programViewportHeight(win?: { innerHeight: number } | null): number {
 	const vh = win && typeof win.innerHeight === "number" ? win.innerHeight : 800;
@@ -71,6 +96,17 @@ export function resolveViewportUnits(html: string, viewportPx: number): string {
 	return out;
 }
 
+/**
+ * 酒馆全局基底的一条：`public/style.css:135` 的 `* { box-sizing: border-box }`。
+ *
+ * 作者是照酒馆写的，`width:100%` + `padding` + `border` 在 border-box 下正好铺满；
+ * 浏览器默认的 content-box 会把内边距与边框**加到** 100% 之外（奴漫城状态栏实测
+ * 1280 视口下容器宽 1316px → 横向滚动条 + 右侧内容被切）。补这条不是改作者样式，
+ * 是把作者写作时的宿主前提补齐——与 resolveViewportUnits 折 vh 同一个道理。
+ * 用不带 !important 的裸 `*`：作者自己写了 box-sizing 的地方仍以作者为准。
+ */
+const TAVERN_BOX_SIZING = `*{box-sizing:border-box}`;
+
 const LEGACY_BASE_CSS = `html,body{margin:0;padding:0;background:transparent;color:#3f3f3f;` +
 	`font:13.5px/1.55 -apple-system,BlinkMacSystemFont,"PingFang SC","Microsoft YaHei","Noto Sans SC","Segoe UI",sans-serif}` +
 	`img,video{max-width:100%;height:auto}` +
@@ -83,7 +119,8 @@ const LEGACY_BASE_CSS = `html,body{margin:0;padding:0;background:transparent;col
 const SEAMLESS_FRAGMENT_CSS =
 	`html,body{margin:0;padding:0;background:transparent;` +
 	`white-space:pre-wrap;word-wrap:break-word;overflow-wrap:break-word}` +
-	`img,video{max-width:100%;height:auto;vertical-align:middle}`;
+	`img,video{max-width:100%;height:auto;vertical-align:middle}` +
+	TAVERN_BOX_SIZING;
 
 /**
  * 无痕·整页文档:透明兜底。
@@ -94,7 +131,8 @@ const SEAMLESS_FRAGMENT_CSS =
 const SEAMLESS_DOC_CSS =
 	`html,body{margin:0;padding:0;background:transparent;` +
 	`min-height:0!important;height:auto!important;overflow:visible!important}` +
-	`img,video{max-width:100%;height:auto}`;
+	`img,video{max-width:100%;height:auto}` +
+	TAVERN_BOX_SIZING;
 
 /**
  * 视口接管型整页文档:只给透明兜底，样式主权完全归卡——
@@ -311,7 +349,7 @@ export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean, v
 	// 静态无痕帧：作者样式里的 vh 折成真窗口高的 px。帧高按内容量，而 vh 的内容高又取决于帧高，
 	// 不折就互为因果、量不出正确高度（见 resolveViewportUnits）。脚本帧走上报器、接管帧锁视口，都不折。
 	const trimmed = seamless && !scripts && viewportPx ? resolveViewportUnits(raw, viewportPx) : raw;
-	const isFull = /^\s*<(!doctype|html[\s>])/i.test(trimmed);
+	const isFull = looksLikeDocument(trimmed);
 	// 与 HtmlFrame 的高度策略同源：同一函数、同一入参，保证 CSS 注入与定高策略永不打架
 	const takeover = seamless && looksLikeProgramApp(html, scripts);
 	// 程序卡需拉 CDN(dexie/echarts 等) + 内联脚本；connect 放宽到 https

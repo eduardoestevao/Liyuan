@@ -10,6 +10,13 @@ export type TextPart =
 	| { kind: "text"; text: string }
 	| { kind: "html"; html: string; /** 围栏标记 scripts / +js 时为 true */ scripts: boolean };
 
+/**
+ * 「是不是标记语言」只有一份判据，在 src/htmlMarkup.ts——那里写着为什么：
+ * 这个问题曾在服务端 postprocess 与前端此处共四处各自为政、且都按标签名列举，
+ * 于是根标签是 `<head>` 的界面四处同时漏网（奴漫城开场白）。
+ */
+import { startsWithMarkup } from "../../src/htmlMarkup.ts";
+
 /** 标准容器标签白名单:皮肤/界面产物以它们开头;自定义标签(状态栏族)绝不在此列 */
 const BLOCK_TAGS = /^(div|section|article|table|figure|details|style)$/i;
 
@@ -67,11 +74,11 @@ export function findFencedHtmlDocument(
 		}
 		const contentStart = fenceStart + openTok.length;
 		const probe = text.slice(contentStart, contentStart + 80).trimStart().toLowerCase();
-		if (!probe.startsWith("<!doctype html") && !probe.startsWith("<html")) {
-			// 大块 UI 根（无 doctype 的界面片段）
-			if (!/^<(div|section|article|main|body)\b/i.test(probe) || text.length < 200) {
-				continue;
-			}
+		// 标记语言判据（语法，非标签名单——见 src/htmlMarkup.ts）
+		if (!startsWithMarkup(probe)) continue;
+		// 非完整文档（无 doctype/html 外壳的界面片段）沿用原有体量下限
+		if (!probe.startsWith("<!doctype html") && !probe.startsWith("<html") && text.length < 200) {
+			continue;
 		}
 		const rest = text.slice(contentStart);
 		// 收集合法闭合：优先单文档首闭，否则末闭
@@ -99,7 +106,7 @@ export function findFencedHtmlDocument(
 		const html = rest.slice(0, bestClose).replace(/^\uFEFF/, "").trim();
 		if (!html) continue;
 		const isDoc = looksLikeHtmlDocument(html);
-		const isUiRoot = /^<(div|section|article|main|body)\b/i.test(html) && html.length >= 200;
+		const isUiRoot = startsWithMarkup(html) && html.length >= 200;
 		if (!isDoc && !isUiRoot) continue;
 		const scripts = htmlLooksInteractive(html) || /\bscripts?\b|\bjs\b|\+/i.test(lang);
 		return {

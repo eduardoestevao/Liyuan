@@ -99,3 +99,40 @@ test("buildSrcDoc: 静态无痕帧折 vh；脚本帧不折（走上报器/锁视
 	assert.ok(buildSrcDoc(doc, true, true, 1000).includes("max-height:76vh"), "脚本帧：不折");
 	assert.ok(buildSrcDoc(doc, false, true).includes("max-height:76vh"), "未给视口尺寸：不折");
 });
+
+/**
+ * 8/25 第五处判据（奴漫城状态栏）：省掉 `<html>` 外壳、根标签 `<head>` 的整份文档
+ * 曾被当成正文片段，灌进片段 CSS 的 `white-space:pre-wrap` —— 作者源码的缩进换行
+ * 全变可见空白，真 iframe 实测容器 455px 被撑到 1706px（头部与页签间整屏死白）。
+ */
+test("buildSrcDoc: <head>/<body> 起头的整份文档按文档灌 CSS，不得吃片段的 pre-wrap", () => {
+	const headRooted = "<head><style>.box{padding:10px}</style></head><body><div class='box'>甲</div></body>";
+	const headDoc = buildSrcDoc(headRooted, true, true);
+	assert.ok(!headDoc.includes("white-space:pre-wrap"), "整份文档绝不能吃片段 CSS 的 pre-wrap");
+	assert.ok(headDoc.includes("height:auto!important"), "走整页内容流分支");
+
+	// 只写 <body> 的、以及 doctype 的，同样落在文档一侧
+	assert.ok(!buildSrcDoc("<body><div>乙</div></body>", true, true).includes("white-space:pre-wrap"));
+	assert.ok(!buildSrcDoc("<!doctype html><html><body>丙</body></html>", true, true).includes("white-space:pre-wrap"));
+
+	// 反向：状态栏那类**片段**（div 起头）仍须保住「一行一项」的 pre-wrap
+	const fragment = "<div class='sb'>血量 80\n体力 60</div>";
+	assert.ok(buildSrcDoc(fragment, false, true).includes("white-space:pre-wrap"), "片段语义不能被这次放宽带走");
+});
+
+/**
+ * 酒馆 public/style.css:135 全局 `* { box-sizing: border-box }`。
+ * 作者照酒馆写 `width:100%` + padding + border，content-box 下会溢出容器
+ * （奴漫城实测 1280 视口 → 内容宽 1316px，横向滚动条 + 右侧被切）。
+ */
+test("buildSrcDoc: 补齐酒馆的 border-box 基底（作者写作时的宿主前提）", () => {
+	for (const [label, html, scripts] of [
+		["整页文档", "<head><style>.c{width:100%;padding:15px}</style></head><body><div class='c'>甲</div></body>", true],
+		["片段", "<div style='width:100%;padding:15px'>乙</div>", false],
+	] as const) {
+		const doc = buildSrcDoc(html, scripts, true);
+		assert.ok(/\*\{box-sizing:border-box\}/.test(doc), `${label}：须带 border-box 基底`);
+	}
+	// 接管型样式主权完全归卡，基底只给透明兜底——不在此列
+	assert.ok(!/\*\{box-sizing:border-box\}/.test(buildSrcDoc(takeoverDoc, true, true)), "接管型不插手样式主权");
+});

@@ -735,8 +735,10 @@ export function toWireHistory(
 	const skin = opts?.skin ?? null;
 	// 稿纸补丁（rp-draft-op）：显示层与送模层同一套函数（src/draft.ts），两侧看到同一份定稿
 	const { messages: patched } = applyDraftOps(messages as DraftMsgLike[]);
-	// 作者没用深度限定（绝大多数卡）→ depths 为 null，与改动前逐字同路
-	const depths = skin?.rules?.length && hasDepthLimits(skin.rules) ? depthPlan(patched, names) : null;
+	// 作者没用深度限定（绝大多数卡）→ depths 为 null，与改动前逐字同路。
+	// MVU 面板挂载也要按深度收窄（只补最新一条），故它也要求算 depths。
+	const needDepth = !!skin?.rules?.length && (hasDepthLimits(skin.rules) || skin.mvu === true);
+	const depths = needDepth ? depthPlan(patched, names) : null;
 	for (let i = 0; i < patched.length; i++) {
 		const m = patched[i];
 		const role = (m as MsgLike | null)?.role;

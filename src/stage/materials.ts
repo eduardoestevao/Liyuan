@@ -24,6 +24,7 @@ import {
 } from "../lorebook.ts";
 import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
+import { stripMvuRuleEntries } from "../mvu.ts";
 import {
 	assemble,
 	type AssembledPiece,
@@ -235,8 +236,22 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	const protocolFiltered = stripProtocolEntries(
 		applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore),
 	);
-	const entries = protocolFiltered.entries;
-	const protocolDrops = protocolFiltered.dropped;
+	// 归属补一刀：MVU 变量更新规则条目里一个插件标签都没有（全是 `获得时 add` 这类操作词），
+	// 按签名判的上一步抓不到；但它已被 src/mvu.ts 认领、读者是场记，主模型不该再收到同一份。
+	// 判据是归属不是签名，见 stripMvuRuleEntries 的头注（无树的书一律不动）。
+	const mvuFiltered = stripMvuRuleEntries(protocolFiltered.entries);
+	const entries = mvuFiltered.entries;
+	const protocolDrops = [
+		...protocolFiltered.dropped,
+		...mvuFiltered.dropped.map((d) => ({
+			title: d.title,
+			channel: "lorebook" as const,
+			chars: d.chars,
+			family: "mvu",
+			label: "MVU 变量更新规则（归属：场记）",
+			signals: ["own:mvu-rules"],
+		})),
+	];
 
 	// 预设：工作草稿（preset-override.json）优先，与预设页签热编辑一致。落盘即原文，这里只读不转换。
 	const readDoc = (abs: string, name: string): PresetDoc | null => {

@@ -65,6 +65,16 @@ export interface WorldState {
 	plot_threads: string[];
 	/** 登场名录（applyPatch 咽喉点自动登记；旧存档无此字段按空处理） */
 	roster?: StateRoster;
+	/**
+	 * MVU 变量树（卡自带 stat_data 前端的数据源；仅 MVU 卡有此字段，见 src/mvu.ts）。
+	 *
+	 * 与上面七个字段是**同一份剧情事实的两种展示形状**，不是第二套真相：上面是梨园自己的账本
+	 * 视图，这里是「这张卡的状态栏前端要的字段名/结构」。开局由卡 [initvar] 建初始树，之后场记
+	 * 旁路每拍连它一起更新（判断在模型、落值由 applyMvuPatch 执行）。存进 WorldState 即白嫖
+	 * rp-state 快照/分支/叶守卫全套持久化——树自动成 f(分支)，swipe/rewind 自动回到对应树形。
+	 * 前端把它 postMessage 进 iframe 的 window.__liyuanVariables，卡脚本的 setInterval 自行点亮面板。
+	 */
+	mvu?: Record<string, unknown>;
 }
 
 export interface CharacterState {

@@ -268,3 +268,43 @@ test("实卡 Living With Slaves: 开场占位符经显示正则 → 整页交互
 	});
 	assert.equal(isFullInterface(greSkinned), true);
 });
+
+/**
+ * 省掉 `<html>` 外壳的界面：根标签是 `<head>`、结尾只到 `</body>`（奴漫城状态栏的真实形状）。
+ * 认领判据一旦退回「首标签名单」，这份界面就会掉进 splitTopLevelBlocks 被撕碎——
+ * CSS 进空帧、`<script>` 函数体当正文印进故事（实测 5794 字泄漏）。
+ */
+test("围栏界面根标签是 <head>（无 doctype/html 外壳）：整份认领，不得撕碎", () => {
+	const ui =
+		"```\n<head>\n<style>\n  :root { --bg: #f4e4bc; }\n  .mvu-container { border: 3px solid #8b5a2b; padding: 15px; }\n</style>\n</head>\n<body>\n" +
+		'<div class="mvu-container">' +
+		"状态".repeat(60) +
+		"</div>\n" +
+		"<script>\n  const t = 1;\n  document.title = `x${t}`;\n</script>\n</body>\n```";
+	const text = `她把账本合上。\n\n${ui}`;
+
+	const found = findFencedHtmlDocument(text);
+	assert.ok(found, "根标签 <head> 的围栏界面必须被认领");
+	assert.ok(found!.html.startsWith("<head>"), "认领的是整份界面，从 <head> 起");
+	assert.ok(found!.html.includes("mvu-container"), "body 里的面板在同一帧");
+	assert.ok(found!.html.includes("const t = 1"), "脚本也在同一帧，不得泄成正文");
+
+	const parts = splitHtmlParts(text);
+	assert.equal(parts.filter((p) => p.kind === "html").length, 1, "整份界面只成一帧");
+	const leaked = parts
+		.filter((p) => p.kind === "text")
+		.map((p) => (p.kind === "text" ? p.text : ""))
+		.join("");
+	assert.ok(!leaked.includes(":root"), "CSS 不得泄进正文");
+	assert.ok(!leaked.includes("const t"), "JS 不得泄进正文");
+	assert.ok(!leaked.includes("```"), "围栏标记不得留在正文里");
+	assert.ok(leaked.includes("她把账本合上"), "界面之前的叙事照旧是正文");
+});
+
+test("认领判据是语法不是标签名：非标记语言的裸围栏仍当代码块", () => {
+	// 首字符不是 `<` + 标签名 → 不认领（放宽后仍不能把普通围栏吞成界面）
+	assert.equal(claimFencedHtmlDocument("```\n选择1: 留下\n选择2: 走\n```"), null);
+	assert.equal(claimFencedHtmlDocument(`\`\`\`\n${"纯文本很长".repeat(60)}\n\`\`\``), null);
+	// `<3` 这类不是标签
+	assert.equal(claimFencedHtmlDocument(`\`\`\`\n<3 ${"心".repeat(200)}\n\`\`\``), null);
+});

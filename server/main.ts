@@ -42,6 +42,7 @@ import {
 import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
 import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile, updateCardFields } from "../src/card.ts";
+import { findInitVar, seedMvuIfNeeded } from "../src/mvu.ts";
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
@@ -388,17 +389,50 @@ mkdirSync(stateDir, { recursive: true });
  * 展示用账本。权威是会话树（R4：世界 = f(分支)）——swipe/rewind/切世界线后
  * 磁盘缓存仍是旧分支的账本，只有树快照能给出当前分支的正确值。
  * 树上无快照（未记账的新会话）时回落磁盘缓存：旧会话与导入建账都只有文件。
+ *
+ * MVU 卡：读出的 state 若还没建变量树（首拍/老会话，见 src/mvu.ts），从卡 [initvar] 懒建初始树，
+ * 使状态栏面板在开局就有数据（之后由场记每拍推动）。按 cardPath 记忆卡书，避免每次读盘。
  */
-const currentState = (): WorldState => {
+let mvuBookCache: { path: string; entries: Array<{ comment?: string; content?: string }> } | null = null;
+const cardBookForMvu = (): Array<{ comment?: string; content?: string }> => {
+	if (!cardPath) return [];
+	if (mvuBookCache?.path === cardPath) return mvuBookCache.entries;
 	try {
-		const branch = session.sessionManager.getBranch() as BranchEntryLike[];
-		if (branch.some((e) => e.type === "custom" && e.customType === "rp-state")) {
-			return stateFromBranch(branch);
-		}
+		const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
+		const entries = loadCardFile(abs).book.map((e) => ({ comment: e.comment, content: e.content }));
+		mvuBookCache = { path: cardPath, entries };
+		return entries;
 	} catch {
-		// 树不可读（极早期生命周期）→ 磁盘缓存
+		return [];
 	}
-	return loadState(join(stateDir, `${session.sessionId}.json`));
+};
+const currentState = (): WorldState => {
+	const raw = ((): WorldState => {
+		try {
+			const branch = session.sessionManager.getBranch() as BranchEntryLike[];
+			if (branch.some((e) => e.type === "custom" && e.customType === "rp-state")) {
+				return stateFromBranch(branch);
+			}
+		} catch {
+			// 树不可读（极早期生命周期）→ 磁盘缓存
+		}
+		return loadState(join(stateDir, `${session.sessionId}.json`));
+	})();
+	return seedMvuIfNeeded(raw, cardBookForMvu(), names.userName, names.charName) as WorldState;
+};
+
+/**
+ * 本卡的 MVU 变量树归梨园管吗——判据同 seedMvuIfNeeded 的前提：卡里有可解的 `[initvar]` 初始树。
+ * 归梨园管，梨园就要连 MVU 插件「回复后追加面板挂载点」那一步也一起干（src/mvu.ts）。
+ * 按 cardPath memo：显示侧每条消息都要问一次，别重复解 YAML。
+ */
+let mvuOwnedCache: { path: string; owned: boolean } | null = null;
+const hasMvuTree = (): boolean => {
+	if (!cardPath) return false;
+	if (mvuOwnedCache?.path === cardPath) return mvuOwnedCache.owned;
+	const owned = findInitVar(cardBookForMvu()) !== null;
+	mvuOwnedCache = { path: cardPath, owned };
+	return owned;
 };
 
 // 场记记账落盘即推送（PLAN-PHASE3 §4：fs.watch 目录级监听，零扩展改动；
@@ -535,6 +569,9 @@ const currentDisplaySkin = () => {
 			rules: snap.rules,
 			charName: snap.charName || names.charName,
 			userName: snap.userName || names.userName,
+			// 树归梨园管 ⇒ 梨园在替 MVU 插件干活，那就连它「回复后追加面板挂载点」那一步也一起干
+			// （src/mvu.ts mountMvuPanel）。没有树的卡（含全部非 MVU 卡）此位为 false，显示侧零变化。
+			mvu: hasMvuTree(),
 		};
 	} catch {
 		return null;
@@ -577,6 +614,9 @@ const helloFrame = (): ServerFrame => {
 					rules: cardfront.rules,
 					charName: cardfront.charName || names.charName,
 					userName: cardfront.userName || names.userName,
+					// 同 currentDisplaySkin：树归梨园管就补挂面板挂载点。
+					// 首屏这一路走 toWireHistory，由它按 depth 把非最新那些清掉。
+					mvu: hasMvuTree(),
 				}
 			: null;
 	return {
