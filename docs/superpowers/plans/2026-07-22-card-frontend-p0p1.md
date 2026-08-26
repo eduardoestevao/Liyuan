@@ -18,7 +18,7 @@
 - 代码风格:tab 缩进、中文块注释讲「为什么」、领域层(src/)不 import pi(D3);测试文件放 `test/*.test.ts`,风格对照 `test/htmlEmbed.test.ts`(node:test + assert/strict)。
 - 每个任务收尾跑 `node --test test/*.test.ts` 全绿再 commit。
 
-**已知样本**(测试夹具直接用):`assets/cards/淫宫美人录.png` 有两条显示向皮肤规则:`/<StatusBlock>/gs` → `<div style="background-color: rgba(0, 0, 0, 0.5); …"><status>`、`/<\/StatusBlock>/gs` → `</status></div>`;`assets/cards/大乾风华录 Ver1.7.json` 有两条清理向规则(`删除描写分析` promptOnly,`角色登场2` 显示向删除)——用于验证筛选边界。
+**已知样本**(测试夹具直接用):`assets/cards/` 下一张样本卡有两条显示向皮肤规则:`/<StatusBlock>/gs` → `<div style="background-color: rgba(0, 0, 0, 0.5); …"><status>`、`/<\/StatusBlock>/gs` → `</status></div>`;另一张样本卡有两条清理向规则(`删除描写分析` promptOnly,`角色登场2` 显示向删除)——用于验证筛选边界。
 
 **v1 明确不支持**(遇到即整条跳过+warn,不硬猜):`trimStrings` 非空、`substituteRegex≠0`、`minDepth/maxDepth` 非 null 的深度限定语义(规则仍应用,深度字段忽略并 warn)。
 
@@ -47,7 +47,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import { displayRules, extractRegexScripts, isSkinEnabled, setSkinEnabled } from "../src/cardfront.ts";
 
-/** 淫宫美人录实卡形态(内联夹具,不读盘,测试自包含) */
+/** 样本卡实卡形态(内联夹具,不读盘,测试自包含) */
 const skinScript = {
 	scriptName: "状态栏",
 	findRegex: "/<StatusBlock>/gs",
@@ -58,7 +58,7 @@ const skinScript = {
 	promptOnly: false,
 	trimStrings: [],
 };
-/** 大乾风华录:promptOnly 清理向,显示层必须排除 */
+/** 另一张样本卡:promptOnly 清理向,显示层必须排除 */
 const promptOnlyScript = {
 	scriptName: "删除描写分析",
 	findRegex: "/<descriptive_analysis>[\\s\\S]*</descriptive_analysis>/gm",
@@ -254,7 +254,7 @@ const M = { charName: "青梧", userName: "旅人" };
 const wrapOpen = { name: "状态栏", source: "<StatusBlock>", flags: "gs", replace: '<div style="x"><status>' };
 const wrapClose = { name: "状态栏2", source: "</StatusBlock>", flags: "gs", replace: "</status></div>" };
 
-test("皮肤包装:开闭标签替换为卡作者 HTML(淫宫美人录模式)", () => {
+test("皮肤包装:开闭标签替换为卡作者 HTML(样本卡模式)", () => {
 	const out = applyCardSkin("正文\n<StatusBlock>\nHP: 80\n</StatusBlock>\n尾", [wrapOpen, wrapClose], M);
 	assert.ok(out.includes('<div style="x"><status>'));
 	assert.ok(out.includes("</status></div>"));
@@ -907,7 +907,7 @@ git commit -m "feat(cardfront): App 接线与卡详情皮肤开关"
 npm run web
 ```
 浏览器操作清单(逐项核对,spec §9 验收):
-1. 卡库切到「淫宫美人录」,发一轮消息诱导状态栏输出(或 `/import` 一段含 `<StatusBlock>HP: 80</StatusBlock>` 的旧档);
+1. 卡库切到那张带皮肤规则的样本卡,发一轮消息诱导状态栏输出(或 `/import` 一段含 `<StatusBlock>HP: 80</StatusBlock>` 的旧档);
 2. 该楼层出现**卡作者的半透明黑底圆角 div**(不是梨园白底状态卡),无工具条无徽章,悬停右上浮现「源码」;
 3. 卡详情关闭「原卡界面美化」→ 同楼层回落为梨园统一「状态」卡;再开 → 恢复;
 4. 换回 default_Qingwu:无任何观感变化;agent `show_html` 消息(若有存档)仍带工具条(非 seamless 通道未动);

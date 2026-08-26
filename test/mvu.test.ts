@@ -1,23 +1,17 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { readFileSync } from "node:fs";
-import { loadLorebookFile } from "../src/lorebook.ts";
 import { findMvuRules, findInitVar, parseInitVarYaml, applyMvuPatch, formatMvuTree, isMvuPanelMount, mountMvuPanel, MVU_STATUS_PLACEHOLDER, isMvuRulesEntry, stripMvuRuleEntries } from "../src/mvu.ts";
 import { prepareDisplayText, skinAtDepth } from "../src/postprocess.ts";
 import { displayRules, extractRegexScripts } from "../src/cardfront.ts";
+import { findLocalCard, findLocalLorebook, localCards, type LocalCard } from "./fixtures.ts";
 
-/** 三张实卡（普查确认带 [initvar]）——放仓库根，测试按需读，缺文件跳过而非红 */
-function loadCardBook(file: string): Array<{ comment?: string; content?: string }> | null {
-	try {
-		const j = JSON.parse(readFileSync(file, "utf8"));
-		const d = j.data ?? j;
-		return (d.character_book?.entries ?? []).map((e: Record<string, unknown>) => ({
-			comment: (e.comment ?? e.name ?? "") as string,
-			content: (e.content ?? "") as string,
-		}));
-	} catch {
-		return null;
-	}
+/** 卡内世界书条目 → mvu.ts 认的最小形状（它只看 comment/content） */
+function bookOf(c: LocalCard): Array<{ comment?: string; content?: string }> {
+	const entries = (c.data.character_book as { entries?: unknown[] } | undefined)?.entries ?? [];
+	return (entries as Array<Record<string, unknown>>).map((e) => ({
+		comment: (e.comment ?? e.name ?? "") as string,
+		content: (e.content ?? "") as string,
+	}));
 }
 
 test("parseInitVarYaml：缩进映射 + 标量类型 + 行内空容器", () => {
@@ -135,32 +129,39 @@ test("formatMvuTree：超大树截断且提示", () => {
 	assert.ok(txt.split("\n").length <= 51);
 });
 
-// ── 三张真卡端到端（存在才跑）──
-test("真卡·奴漫城：findInitVar 解出 115 键树、关键字段对", () => {
-	const book = loadCardBook("_card-奴漫城.chara.json");
-	if (!book) return; // 卡不在（CI/clean clone）→ 跳过
-	const tree = findInitVar(book);
-	assert.ok(tree, "应解出树");
-	assert.equal((tree!.user as any).装备.颈部, "贵族项链");
-	assert.equal((tree!.user as any).背包.金币, 500);
-	assert.equal((tree!.世界 as any).当前地点, "白漫城");
-	assert.equal((tree!.地图 as any).白漫城.执行奴隶法, false, "18 个地点的 boolean");
-	assert.equal(Object.keys(tree!.地图 as any).length, 18);
-	// 端到端：改一拍
-	const r = applyMvuPatch(tree!, { "user.背包.金币": 480, "世界.当前地点": "裂谷城" });
-	assert.equal((r.tree.user as any).背包.金币, 480);
-});
+// ── 真卡端到端（本地有 MVU 卡才跑）──
 
-test("真卡·模拟修仙2 / 道渊：裸 YAML 方言也能解", () => {
-	for (const [file, probe] of [
-		["_card-2-dec.json", (t: any) => t.主角],
-		["_card-奴漫城.chara.json", (t: any) => t.user], // 兜底至少奴漫城在
-	] as const) {
-		const book = loadCardBook(file);
-		if (!book) continue;
-		const tree = findInitVar(book);
-		if (!tree) continue;
-		assert.ok(probe(tree) || Object.keys(tree).length > 0, `${file} 应解出非空树`);
+/** 树里第一条标量叶子的点分路径（给 applyMvuPatch 做真数据往返用） */
+function firstLeafPath(node: unknown, prefix = ""): string | null {
+	if (!node || typeof node !== "object" || Array.isArray(node)) return null;
+	for (const [k, v] of Object.entries(node as Record<string, unknown>)) {
+		const path = prefix ? `${prefix}.${k}` : k;
+		if (v !== null && typeof v === "object") {
+			const deeper = firstLeafPath(v, path);
+			if (deeper) return deeper;
+			continue;
+		}
+		return path;
+	}
+	return null;
+}
+
+test("真卡：findInitVar 在实卡上解出非空深树，且 applyMvuPatch 能真数据往返", () => {
+	// 判据是形状不是卡名（见 test/fixtures.ts）：本地任何一张能解出 [initvar] 树的卡都算
+	const trees = localCards()
+		.map((c) => findInitVar(bookOf(c)))
+		.filter((t): t is NonNullable<typeof t> => t !== null && Object.keys(t).length > 0);
+	if (trees.length === 0) return; // clean clone / CI 无本地卡 → 跳过而非红
+
+	for (const tree of trees) {
+		// 深结构：实卡的树至少两层（顶层容器 → 字段），这是手写 YAML 子集必须扛住的
+		const nested = Object.values(tree).some((v) => v !== null && typeof v === "object");
+		assert.ok(nested, "实卡的初值树应是嵌套结构，不是一层平铺");
+		const leaf = firstLeafPath(tree);
+		assert.ok(leaf, "应能找到一条标量叶子路径");
+		const r = applyMvuPatch(tree, { [leaf!]: "__probe__" });
+		assert.equal(r.warnings.length, 0, `套 ${leaf} 不应告警`);
+		assert.notEqual(r.tree, tree, "applyMvuPatch 必须返回新树，不改入参");
 	}
 });
 
@@ -171,7 +172,7 @@ test("isMvuPanelMount：只认协议常量，不认任何「固定字面量 + �
 	assert.ok(isMvuPanelMount({ source: "<StatusPlaceHolderImpl\/>" }), "作者写 \/ 转义也是同一个常量");
 	// 13 张卡普查里另有四类「固定字面量 + 整份界面」的显示规则，触发字由剧情/开场白产出，
 	// 替它们补挂＝把开局屏糊到每一拍上。判据必须让它们全部落空。
-	for (const src of ["【本世界身份认证】", "\[重塑仙缘\]", "lucklyjkop", "<StatusBlock>", "</StatusBlock>"]) {
+	for (const src of ["【某个开局占位符】", "\\[另一个开局占位符\\]", "AUTHOR_TOKEN", "<StatusBlock>", "</StatusBlock>"]) {
 		assert.equal(isMvuPanelMount({ source: src }), false, `${src} 不是 MVU 挂载点`);
 	}
 	// 贪婪/带元字符的规则一概不是
@@ -185,7 +186,7 @@ test("mountMvuPanel：卡声明了挂载点才补，已有则不重复，没声�
 	const none = [{ source: "<state(\d+)>" }];
 	assert.equal(mountMvuPanel("正文。", none), "正文。", "没声明挂载点的卡＝零变化");
 	assert.equal(mountMvuPanel("正文。", mount), `正文。\n\n${MVU_STATUS_PLACEHOLDER}`);
-	// 开场白作者手写了一个（奴漫城 first_mes 末行）→ 不补第二个
+	// 开场白里作者常手写一个在 first_mes 末行 → 不补第二个
 	const already = `正文。\n\n${MVU_STATUS_PLACEHOLDER}`;
 	assert.equal(mountMvuPanel(already, mount), already);
 	assert.equal(mountMvuPanel("", mount), "", "空正文不无端造出一条面板");
@@ -203,24 +204,23 @@ test("skinAtDepth：mvu 只在最新一条成立——梨园只持有当前一�
 	assert.equal(skinAtDepth(plain, 3), plain);
 });
 
-test("真卡·奴漫城端到端：叙事正文 → 补挂 → 显示正则换成整份面板；历史与非 MVU 卡不动", () => {
-	let raw: Record<string, unknown>;
-	try {
-		raw = JSON.parse(readFileSync("_card-奴漫城.chara.json", "utf8"));
-	} catch {
-		return; // 卡不在（clean clone）→ 跳过而非红
-	}
-	const rules = displayRules(extractRegexScripts(raw));
-	assert.equal(rules.filter(isMvuPanelMount).length, 1, "奴漫城恰好一条挂载点规则");
+test("真卡端到端：叙事正文 → 补挂 → 显示正则换成整份面板；历史与非 MVU 卡不动", () => {
+	// 判据是形状不是卡名（见 test/fixtures.ts）：本地任何一张声明了 MVU 面板挂载点的卡
+	const card = findLocalCard((c) => displayRules(extractRegexScripts(c.raw)).some(isMvuPanelMount));
+	if (!card) return; // clean clone / CI 无本地 MVU 卡 → 跳过而非红
+	const rules = displayRules(extractRegexScripts(card.raw));
+	const mounts = rules.filter(isMvuPanelMount);
+	assert.equal(mounts.length, 1, "一张卡的面板挂载点应当只有一条");
+	const panelMark = mounts[0]!.replace.slice(0, 400);
 	const prose = "他压低声音，“那法令是真的。”\n\n<fox_tip>\n小心呀～\n</fox_tip>";
-	const base = { rules, charName: "奴漫城", userName: "明月" };
+	const base = { rules, charName: "样本卡", userName: "旅人" };
 
 	const before = prepareDisplayText(prose, skinAtDepth({ ...base }, 0));
-	assert.ok(!/--bg-color/.test(before), "mvu 未置位 ⇒ 与改动前逐字同路，没有面板");
+	assert.ok(!before.includes(panelMark), "mvu 未置位 ⇒ 与改动前逐字同路，没有面板");
 
 	const live = prepareDisplayText(prose, skinAtDepth({ ...base, mvu: true }, 0));
-	assert.ok(/--bg-color/.test(live), "最新一条应挂出面板（作者 15634 字 HTML）");
-	assert.ok(live.length > before.length + 10000);
+	assert.ok(live.includes(panelMark), "最新一条应挂出作者那份面板 HTML");
+	assert.ok(live.length > before.length + 1000, "面板是整份界面，不是几个字");
 	assert.ok(!live.includes(MVU_STATUS_PLACEHOLDER), "挂载点必须被显示正则吃掉，不许裸奔上屏");
 	assert.ok(live.includes("那法令是真的"), "正文守恒");
 
@@ -263,26 +263,26 @@ test("stripMvuRuleEntries：有树才动、只置 enabled=false、不改入参�
 	assert.equal(stripMvuRuleEntries(r.entries).dropped.length, 0);
 });
 
-test("真书·奴漫城：签名判不到、归属判得到；另外三本零变化", () => {
-	// 实书是本地私有数据（assets/lorebooks/* 已 gitignore，只有 Mistvale 进仓库），
-	// clean clone / CI 里读不到 → 整条跳过而非红。合成用例已覆盖逻辑本身。
-	let nu: Array<{ comment?: string; content?: string; enabled: boolean }>;
-	let lws: Array<{ comment?: string; content?: string; enabled: boolean }>;
-	try {
-		nu = loadLorebookFile("assets/lorebooks/奴漫城.json");
-		lws = loadLorebookFile("assets/lorebooks/Living With Slaves.json");
-	} catch {
-		return;
-	}
-	const dropped = stripMvuRuleEntries(nu).dropped;
-	assert.equal(dropped.length, 1, "奴漫城恰好一条规则条目");
-	assert.equal(dropped[0]!.title, "【AI注入】变量更新规则");
-	assert.equal(dropped[0]!.chars, 748);
-	// initvar 那条本刀不碰（它是主模型唯一的装备/物品视野，摘不摘归用户定）
+test("真书：带树的书里规则条目被摘、initvar 条目留着；无树的书一字不动", () => {
+	// 判据是形状不是书名（见 test/fixtures.ts）：实书是本地私有数据、已 gitignore，
+	// clean clone / CI 里一本都找不到 → 跳过而非红。合成用例已覆盖逻辑本身。
+	const withTree = findLocalLorebook((b) => findInitVar(b.entries) !== null && !!findMvuRules(b.entries));
+	const noTree = findLocalLorebook((b) => b.entries.length > 0 && findInitVar(b.entries) === null);
+	if (!withTree) return;
+
+	const r = stripMvuRuleEntries(withTree.entries);
+	assert.ok(r.dropped.length >= 1, "带树的书里应摘掉规则条目");
 	assert.ok(
-		stripMvuRuleEntries(nu).entries.some((e) => /\[initvar\]/i.test(e.content ?? "") && e.enabled),
-		"initvar 数据条目必须仍是启用的",
+		r.dropped.every((d) => d.chars > 0 && d.title.length > 0),
+		"drop 记录应带标题与字数（进装配报告用）",
 	);
-	// 无树的书（Living With Slaves 根本没 MVU）一字不动
-	assert.equal(stripMvuRuleEntries(lws).dropped.length, 0);
+	// 摘掉之后场记仍拿得到（mvu.ts 一律无视 enabled）
+	assert.ok(findMvuRules(r.entries), "场记不该被这一刀饿着");
+	// initvar 那条本刀不碰（它是主模型唯一的装备/物品视野，摘不摘归用户定）。
+	// 不变量是「启用状态不被本刀改动」——有的作者本来就把它停用了（写着「勿开」）。
+	const initvarState = (es: typeof withTree.entries) =>
+		es.filter((e) => /\[initvar\]/i.test(e.content ?? "") || /\[\s*initvar\s*\]/i.test(e.comment ?? "")).map((e) => e.enabled);
+	assert.deepEqual(initvarState(r.entries), initvarState(withTree.entries), "initvar 条目的启用状态不许被本刀改动");
+	// 无树的书一字不动
+	if (noTree) assert.equal(stripMvuRuleEntries(noTree.entries).dropped.length, 0);
 });

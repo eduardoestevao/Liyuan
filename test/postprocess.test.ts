@@ -221,11 +221,12 @@ test("prepareDisplayText: 皮肤状态栏 div 与 thinking 混排——div 保�
 	assert.ok(!out.includes("<!--"), "HTML 注释应被剥除");
 });
 
-test("prepareDisplayText: 开场前缀+占位符经皮肤成围栏文档", () => {	const raw = `【开场 · LWS】\n【本世界身份认证】`;
+test("prepareDisplayText: 开场前缀+占位符经皮肤成围栏文档", () => {
+	const raw = `【开场 · 样本卡】\n【开局占位符】`;
 	const html = `<!doctype html>\n<html><head></head><body><h1>性别</h1><script>1</script></body></html>`;
 	const skin = {
-		rules: [{ name: "开局", source: "【本世界身份认证】", flags: "g", replace: "```\n" + html + "\n```" }],
-		charName: "LWS",
+		rules: [{ name: "开局", source: "【开局占位符】", flags: "g", replace: "```\n" + html + "\n```" }],
+		charName: "样本卡",
 		userName: "旅人",
 	};
 	const out = prepareDisplayText(raw, skin);
@@ -256,7 +257,7 @@ test("prepareDisplayText: 裸整份文档 + 文档外的过滤照常执行", () 
 });
 
 test("prepareDisplayText: 省掉 <html> 外壳的围栏界面——壳不许被 unwrap 剥掉", () => {
-	// 8/25 实锤（奴漫城开场白）：作者的状态栏界面是一份省掉 <html> 外壳的文档——
+	// 8/25 实锤（实卡开场白）：作者的状态栏界面是一份省掉 <html> 外壳的文档——
 	// 根标签 <head>、收尾只到 </body>、裸围栏无语言标记。整页判据原先三条分别要求
 	// doctype / <html> / ```html，三条全落空 ⇒ 放行 unwrap ⇒ <head>/<style>/<body>/<script>
 	// 连壳被剥、只剩 CSS 与 JS 当正文上屏（16376 字皮肤产物被削成 13725 字裸文本）。
@@ -292,7 +293,7 @@ test("classifyTag: HTML 规范里内容不是正文的元素 → keep；其余�
 });
 
 test("displayAssistantText: 判据全落空时 CSS/JS 也不许被剥壳裸奔上屏", () => {
-	// 8/25 奴漫城根因的结构性验证：无围栏、无 doctype、无 <html>、div 无内联 style=
+	// 8/25 剥壳根因的结构性验证：无围栏、无 doctype、无 <html>、div 无内联 style=
 	// ⇒ isFullPageHtmlPayload / isBareFullPagePayload / protectSkinDivs 全部不触发。
 	// 修前这类必然被 unwrap 剥壳（CSS 与 JS 当散文上屏）；修后必须原样留给浏览器。
 	const ui =

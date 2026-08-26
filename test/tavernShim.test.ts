@@ -141,7 +141,7 @@ test("酒馆全局垫片：jQuery/lodash/变量系统/Mvu/waitGlobalInitialized 
 	const staticDoc = buildSrcDoc("<!doctype html><html><head></head><body><div>x</div></body></html>", false, true);
 	assert.ok(!staticDoc.includes("getAllVariables"), "静态帧不注入变量垫片");
 
-	// 模拟修仙2 形态的卡界面：占位符替换出的 HTML + 脚本裸用 $/getAllVariables/Mvu
+	// MVU 卡界面形态：占位符替换出的 HTML + 脚本裸用 $/getAllVariables/Mvu
 	const cardUi =
 		"```html\n<!doctype html>\n<html lang=\"zh-CN\">\n<head>\n<style>.nav-btn{display:inline-block;padding:4px 10px}</style>\n</head>\n<body>\n" +
 		"<div class=\"nav-btn\" data-tab=\"protagonist\">主角状态</div>\n" +

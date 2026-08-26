@@ -8,19 +8,19 @@ test("programViewportHeight: 约 78vh 且有上下限", () => {
 	assert.ok(programViewportHeight({ innerHeight: 4000 }) <= 2400);
 });
 
-/** 道渊开局创建器形态：根级接管 CSS + 100vh 容器 + fixed 星空层 */
+/** 开局创建器形态：根级接管 CSS + 100vh 容器 + fixed 星空层 */
 const takeoverDoc =
 	"<!doctype html><html><head><style>html, body { height: 100%; margin: 0; padding: 0; overflow: hidden; }" +
 	"#main { width: 100%; height: 100vh; position: relative; }" +
 	"#stars { position: fixed; inset: 0; }</style></head>" +
 	"<body><div id=main><div id=stars></div></div><script>1</script></body></html>";
 
-/** 道渊「开局创造角色」形态：根级接管 CSS 但全程无 position:fixed */
+/** 另一种「开局创造角色」形态：根级接管 CSS 但全程无 position:fixed */
 const takeoverNoFixed =
 	"<!doctype html><html><head><style>html, body{height:100%;overflow:hidden}" +
 	".stage{height:100vh}</style></head><body><div class=stage></div><script>1</script></body></html>";
 
-/** 道渊 MVU/XML 状态栏形态：大体积整页 + fixed 弹窗，但零 vh、根级无接管 CSS → 内容流 */
+/** MVU/XML 状态栏形态：大体积整页 + fixed 弹窗，但零 vh、根级无接管 CSS → 内容流 */
 const statusBigDoc =
 	"<!doctype html><html><head><style>.modal{position:fixed;inset:0;display:none}.card{width:100%}</style></head>" +
 	"<body><div class=card>状态</div><script>" +
@@ -29,7 +29,7 @@ const statusBigDoc =
 
 test("looksLikeProgramApp: 视口接管 CSS / fixed+vh 才算；体积不作数", () => {
 	assert.equal(looksLikeProgramApp("<div>hi</div>", true), false);
-	// 旧「≥25KB 即程序卡」规则的回归钉：大体积裸文本/大状态栏不得锁 78vh（道渊 MVU 事故）
+	// 旧「≥25KB 即程序卡」规则的回归钉：大体积裸文本/大状态栏不得锁 78vh（MVU 状态栏事故）
 	assert.equal(looksLikeProgramApp("x".repeat(25_000), true), false);
 	assert.equal(looksLikeProgramApp(statusBigDoc, true), false);
 	assert.equal(looksLikeProgramApp(takeoverDoc, false), false, "scripts=false 一律非程序卡");
@@ -38,7 +38,7 @@ test("looksLikeProgramApp: 视口接管 CSS / fixed+vh 才算；体积不作数"
 		looksLikeProgramApp("<!doctype html><html><body><script>1</script></body></html>", true),
 		false,
 	);
-	// 根级接管 CSS：有无 fixed 都认（道渊两个开局创建器）
+	// 根级接管 CSS：有无 fixed 都认（实卡的两个开局创建器）
 	assert.equal(looksLikeProgramApp(takeoverDoc, true), true);
 	assert.equal(looksLikeProgramApp(takeoverNoFixed, true), true);
 	// fixed 铺满 + 视口单位（body 内联样式，无根级 CSS 块）
@@ -57,7 +57,7 @@ test("looksLikeProgramApp: 视口接管 CSS / fixed+vh 才算；体积不作数"
 		),
 		false,
 	);
-	// LWS 量级状态栏（约 11KB + script）不应当 program
+	// 实卡量级状态栏（约 11KB + script）不应当 program
 	const statusLike =
 		"<!doctype html><html><head></head><body><div class='card'>状态</div><script>" +
 		"x".repeat(10_000) +
@@ -65,7 +65,7 @@ test("looksLikeProgramApp: 视口接管 CSS / fixed+vh 才算；体积不作数"
 	assert.equal(looksLikeProgramApp(statusLike, true), false);
 });
 
-test("buildSrcDoc 接管型:不注入 height:auto 覆盖、不注入高度上报（道渊抖动/塌陷根修）", () => {
+test("buildSrcDoc 接管型:不注入 height:auto 覆盖、不注入高度上报（接管型帧抖动/塌陷根修）", () => {
 	const doc = buildSrcDoc(takeoverDoc, true, true);
 	assert.ok(!doc.includes("height:auto!important"), "不得打断卡自己的 height:100% 链");
 	assert.ok(!doc.includes("overflow:visible!important"), "不得掀开卡自己的 overflow:hidden");
@@ -101,7 +101,7 @@ test("buildSrcDoc: 静态无痕帧折 vh；脚本帧不折（走上报器/锁视
 });
 
 /**
- * 8/25 第五处判据（奴漫城状态栏）：省掉 `<html>` 外壳、根标签 `<head>` 的整份文档
+ * 8/25 第五处判据（<head> 起头的状态栏界面）：省掉 `<html>` 外壳、根标签 `<head>` 的整份文档
  * 曾被当成正文片段，灌进片段 CSS 的 `white-space:pre-wrap` —— 作者源码的缩进换行
  * 全变可见空白，真 iframe 实测容器 455px 被撑到 1706px（头部与页签间整屏死白）。
  */
@@ -123,7 +123,7 @@ test("buildSrcDoc: <head>/<body> 起头的整份文档按文档灌 CSS，不得�
 /**
  * 酒馆 public/style.css:135 全局 `* { box-sizing: border-box }`。
  * 作者照酒馆写 `width:100%` + padding + border，content-box 下会溢出容器
- * （奴漫城实测 1280 视口 → 内容宽 1316px，横向滚动条 + 右侧被切）。
+ * （实测 1280 视口 → 内容宽 1316px，横向滚动条 + 右侧被切）。
  */
 test("buildSrcDoc: 补齐酒馆的 border-box 基底（作者写作时的宿主前提）", () => {
 	for (const [label, html, scripts] of [

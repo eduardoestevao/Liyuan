@@ -100,7 +100,7 @@ export function resolveViewportUnits(html: string, viewportPx: number): string {
  * 酒馆全局基底的一条：`public/style.css:135` 的 `* { box-sizing: border-box }`。
  *
  * 作者是照酒馆写的，`width:100%` + `padding` + `border` 在 border-box 下正好铺满；
- * 浏览器默认的 content-box 会把内边距与边框**加到** 100% 之外（奴漫城状态栏实测
+ * 浏览器默认的 content-box 会把内边距与边框**加到** 100% 之外（实卡状态栏实测
  * 1280 视口下容器宽 1316px → 横向滚动条 + 右侧内容被切）。补这条不是改作者样式，
  * 是把作者写作时的宿主前提补齐——与 resolveViewportUnits 折 vh 同一个道理。
  * 用不带 !important 的裸 `*`：作者自己写了 box-sizing 的地方仍以作者为准。

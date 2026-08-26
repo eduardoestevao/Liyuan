@@ -13,7 +13,7 @@ const entry = (over: Partial<Parameters<typeof stripProtocolEntries>[0][number]>
 });
 
 test("detectProtocol：强信号单条即判死（插件专属标签/命名）", () => {
-	// 实测最短的真协议条目（模拟修仙2 uid83 / 道渊 uid230，159~160 字）
+	// 实测最短的真协议条目（两本实书各一条，159~160 字）
 	const shortest = `变量输出格式强调:
   rule: The following must be inserted to the end of reply, and cannot be omitted
   format: |-
@@ -24,7 +24,7 @@ test("detectProtocol：强信号单条即判死（插件专属标签/命名）",
 	assert.equal(v.family, "mvu");
 	assert.ok(v.signals.includes("tag:UpdateVariable"), "命中信号要可回溯");
 
-	// 标题里的插件命名约定也算强信号（道渊 uid227 正文无 UpdateVariable 标签）
+	// 标题里的插件命名约定也算强信号（实书 uid227 正文无 UpdateVariable 标签）
 	assert.equal(detectProtocol("变量更新规则:\n  世界:\n    当前时间:", "[mvu_update]").family, "mvu");
 	// 酒馆前端消费的变量宏
 	assert.equal(detectProtocol("<status_current_variables>\n{{format_message_variable::stat_data}}\n</status_current_variables>", "变量列表").family, "mvu");
@@ -35,7 +35,7 @@ test("detectProtocol：弱信号需 ≥2 共现——单个弱信号不判死（
 	assert.equal(detectProtocol("战斗时必须更新，不得遗漏敌方动向。").family, null, "单弱信号不判死");
 	assert.equal(detectProtocol("此地遭遇冷却为 15 个回合。").family, null);
 
-	// 两个弱信号共现 → 判死（道渊 uid227 形态：RFC6902 + op 动词）
+	// 两个弱信号共现 → 判死（实书 uid227 形态：RFC6902 + op 动词）
 	const two = `the update commands works like the **JSON Patch (RFC 6902)** standard
       - replace: replace the value of existing paths
       { "op": "delta", "path": "/主角/修为", "value": 5 }`;
@@ -43,14 +43,14 @@ test("detectProtocol：弱信号需 ≥2 共现——单个弱信号不判死（
 });
 
 test("detectProtocol：正常世界观设定零误伤（全库实测语料）", () => {
-	// 道渊 #10「境界」——真设定，与 MVU 条目共享大量术语
+	// 实书里的 #10「境界」——真设定，与 MVU 条目共享大量术语
 	const realm = `# 核心规则：境界序列
   本世界的力量体系遵循一个明确的修炼序列，分为凡人九境与仙人五境。
   1. **炼气期**: 共十层，是修炼的起点。
   2. **筑基期**: 分为初期、中期、后期、圆满四个小境界。`;
 	assert.equal(detectProtocol(realm, "境界").family, null);
 
-	// 道渊 #17「具体数值」——含 0~100 数值表，最像变量 schema 的真设定
+	// 实书里的 #17「具体数值」——含 0~100 数值表，最像变量 schema 的真设定
 	const stats = `# 用户角色核心数值
   ## 总则
   用户角色拥有五大核心资源：生命、灵力、精血、修为、神识。上限均为100。

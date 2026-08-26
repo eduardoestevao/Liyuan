@@ -146,7 +146,7 @@ try{
     g.getAllVariables=function(){var v=g.__liyuanVariables||null;return v&&typeof v==="object"?v:{stat_data:{}};};
   }
   // 父页把梨园账本的 MVU 树 postMessage 进来 → 写 window.__liyuanVariables（getAllVariables 的数据源）。
-  // 卡脚本多用 setInterval 轮询 getAllVariables 自行重画（奴漫城 1.5s），故收到即生效、无需重载；
+  // 卡脚本多用 setInterval 轮询 getAllVariables 自行重画（实测有卡是 1.5s 一轮），故收到即生效、无需重载；
   // 另发一次 Mvu 的 VARIABLE_UPDATE_ENDED 事件，兼顾监听事件而非轮询的卡。父→子单向通道，非模型注入。
   if(typeof g.addEventListener==="function"){
     g.addEventListener("message",function(ev){
@@ -163,7 +163,7 @@ try{
   }
   // 酒馆助手 util/读族裸全局（对照公开类型声明 @types/function、@types/iframe/variables）。
   // 卡把它们当裸全局直接调用；module 脚本下缺一个就是 ReferenceError → 整份界面初始化中断
-  // （8/25 奴漫城：唯一缺的 errorCatched 让 $(errorCatched(init)) 抛错，5 个页签全点不动）。
+  // （8/25 实测：唯一缺的 errorCatched 让 $(errorCatched(init)) 抛错，5 个页签全点不动）。
   // 全部安全降级：读族回空、util 按语义。写族/生成族不在此列（正文红线：界面不得拧旋钮）。
   if(typeof g.errorCatched!=="function"){
     // 公开语义：包装函数，报错时提示、功能照跑。返回值必须可调用（$(errorCatched(init)) 依赖它）。

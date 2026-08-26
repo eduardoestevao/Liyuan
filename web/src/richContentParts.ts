@@ -11,8 +11,8 @@
  * 作者写了正则 → 这里拿到的已是 HTML；作者没写 → 标签本就该显示成裸文字（对齐酒馆）。
  *
  * **禁止二次皮肤**：wire 侧 prepareDisplayText 已应用显示正则。
- * 某卡等程序卡 HTML 内仍含占位串 `lucklyjkop`，再跑会把 2.6MB 脚本再嵌一遍 →
- * `Identifier has already been declared` → 按钮全死。
+ * 程序卡的产物 HTML 里往往仍含它自己的触发占位串，再跑一遍会把整份脚本（实测有 2.6MB 的）
+ * 再嵌一次 → `Identifier has already been declared` → 按钮全死。
  */
 
 import type { DisplayRule } from "../../src/cardfront.ts";

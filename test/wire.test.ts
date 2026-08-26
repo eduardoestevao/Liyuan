@@ -307,7 +307,7 @@ test("wire + skin: narrative 先正则后策略，state 变成 HTML 载荷", () 
 				replace: "```html\n<!DOCTYPE html><html><body><article>$2</article></body></html>\n```",
 			},
 		],
-		charName: "LWS",
+		charName: "样本卡",
 		userName: "旅人",
 	};
 	const raw = `她走了过来。\n\n<state1>\n姓名: 白荷\n好感: 60\n</state1>`;
@@ -331,7 +331,7 @@ test("toolResult 与未知类型跳过；字符串与内容块数组两种 conte
 });
 
 test("toWireHistory：显示侧深度限定——只有最新气泡渲染面板，旧的自动摘除", () => {
-	// Living With Slaves 实卡形态：`折叠通用多状态栏` maxDepth:2 只管最新几条，
+	// 实卡形态：`折叠通用多状态栏` maxDepth:2 只管最新几条，
 	// 否则每条消息都挂一个 11KB 面板，聊天记录会被面板淹没。
 	const skin = {
 		rules: [

@@ -3,17 +3,16 @@
  * 作者正则先跑（applyCardSkin），产物是标准 HTML；梨园不再按标签名抠「统一状态卡」。
  */
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import test from "node:test";
-import { readCardRawJson } from "../src/card.ts";
 import { buildCardFrontSnapshot, displayRules, extractRegexScripts } from "../src/cardfront.ts";
+import { findLocalCard } from "./fixtures.ts";
 import { prepareDisplayText } from "../src/postprocess.ts";
 import { applyCardSkin } from "../web/src/cardSkin.ts";
 import { isFullInterface, splitHtmlParts } from "../web/src/htmlEmbed.ts";
 import { buildSrcDoc } from "../web/src/frameDoc.ts";
 import { splitRichContentParts } from "../web/src/richContentParts.ts";
 
-/** 淫宫美人录形态：开闭标签换皮（内含 <status>，会误触发 isPanelTagName） */
+/** 开闭标签换皮形态：替换串内含 <status>，会误触发 isPanelTagName */
 const skinScripts = [
 	{
 		scriptName: "状态栏开",
@@ -39,7 +38,7 @@ const skinScripts = [
 
 const sampleRaw = {
 	data: {
-		name: "美人录",
+		name: "样本卡",
 		extensions: { regex_scripts: skinScripts },
 	},
 };
@@ -47,7 +46,7 @@ const sampleRaw = {
 const macros = { charName: "青梧", userName: "旅人" };
 
 test("pipeline: 页面级 CSS 端到端——不再被 unwrap 剥成裸 CSS 上屏,整块进 iframe", () => {
-	// 修仙世界模拟器 [美化]状态栏 实卡形态：顶层 <style> + 自己的容器,无 doctype 无围栏。
+	// 实卡状态栏美化形态：顶层 <style> + 自己的容器,无 doctype 无围栏。
 	// 改动前实测：<style> 被 unwrap 剥掉 → 737 字 CSS 当正文上屏,容器 div 一起没了,只剩裸数值。
 	const raw = {
 		data: {
@@ -172,19 +171,24 @@ test("pipeline: 关闭皮肤=不应用规则时 StatusBlock 仍为文本段(html
 	assert.equal(parts[0].kind, "text");
 });
 
-/** 实卡回归:淫宫美人录一档皮肤绝对不能回落 StatusPanel */
-test("实卡 淫宫美人录: first_mes/备选开场白 一律 html 皮肤、零 status 段", () => {
-	const cardPath = "assets/cards/淫宫美人录.png";
-	if (!existsSync(cardPath)) {
-		// 发行包可不带样本卡;有卡则必须全绿
-		return;
-	}
-	const { raw } = readCardRawJson(cardPath);
-	const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+/** 实卡回归:带成对开闭状态栏标签的卡,一档皮肤绝对不能回落 StatusPanel */
+test("实卡: first_mes/备选开场白 一律 html 皮肤、零 status 段", () => {
+	// 判据是形状不是卡名:开场白里有 StatusBlock 占位、且卡自带换皮规则(见 test/fixtures.ts)
+	const card = findLocalCard((c) => {
+		const greetings = [
+			String(c.data.first_mes ?? ""),
+			...((Array.isArray(c.data.alternate_greetings) ? c.data.alternate_greetings : []) as unknown[]).map(String),
+		];
+		if (!greetings.some((t) => t.includes("StatusBlock"))) return false;
+		return displayRules(extractRegexScripts(c.raw)).length >= 2;
+	});
+	// 发行包与 clean clone 不带样本卡;有卡则必须全绿
+	if (!card) return;
+	const { raw, data } = card;
 	const snap = buildCardFrontSnapshot(
-		{ card: cardPath, userName: "旅人" },
+		{ card: card.path, userName: "旅人" },
 		raw as Record<string, unknown>,
-		String(data.name ?? "淫宫美人录"),
+		String(data.name ?? "样本卡"),
 	);
 	assert.equal(snap.enabled, true);
 	assert.equal(snap.hasSkin, true);
@@ -206,16 +210,17 @@ test("实卡 淫宫美人录: first_mes/备选开场白 一律 html 皮肤、零
 		assert.equal(statuses.length, 0, "不得回落梨园 StatusPanel");
 		assert.equal(htmls.length, 1, "作者皮肤应成单一 html 段");
 		if (htmls[0].kind === "html") {
-			assert.ok(htmls[0].html.includes("rgba(0, 0, 0, 0.5)"), "须含作者黑底样式");
+			// 断言换成形状不变量:换皮规则的替换串必带作者样式,不问是哪一张卡的什么颜色
+			assert.ok(/\bstyle\s*=|rgba?\(/i.test(htmls[0].html), "须含作者自带样式");
 			assert.ok(!htmls[0].html.includes("<StatusBlock"), "StatusBlock 开标签须被替换");
 			assert.ok(!htmls[0].html.includes("</StatusBlock"), "StatusBlock 闭标签须被替换");
 			// 原文换行必须还在 html 段里(后续靠 seamless pre-wrap 显示为多行)
 			assert.ok(
-				htmls[0].html.includes("地点:") && /地点:[^\n]*\n\s*姓名:/.test(htmls[0].html.replace(/\r\n/g, "\n")),
-				"皮肤产物须保留「地点/姓名」之间的换行,不能已压成一行",
+				/\S\s*\n\s*\S/.test(htmls[0].html.replace(/\r\n/g, "\n")),
+				"皮肤产物须保留状态栏各字段之间的换行,不能已压成一行",
 			);
 			const doc = buildSrcDoc(htmls[0].html, false, true);
-			assert.ok(doc.includes("rgba(0, 0, 0, 0.5)"));
+			assert.ok(/\bstyle\s*=|rgba?\(/i.test(doc), "帧里仍带作者样式");
 			assert.ok(!doc.includes("PingFang"), "无痕帧不得强塞宿主字体");
 			assert.ok(doc.includes("white-space:pre-wrap"), "seamless 必须 pre-wrap,对齐酒馆多行状态栏");
 		}

@@ -54,10 +54,9 @@ assets/gen/
 Thumbs.db
 
 # local-only assets (personal / copyright cards — keep defaults only)
-# 白名单式。原先按名字点名，漏掉 4 张卡 + 8 个世界书（`assets/cards/凡人*` 匹配
-# 不到 `《凡人修仙传V10.9》…`，`assets/lorebooks/淫宫*` 匹配不到 `淫乱仙侠.json`），
-# 一次 git add -A 就把版权内容提交进公开仓库。改为默认全忽略、只放行已入库的，
-# 与 pack-release.ps1「只留 default_* 卡、世界书全清」同口径。
+# 白名单式。原先按名字点名，漏掉 4 张卡 + 8 个世界书（书名带书名号或前缀不一致，
+# 按前缀写的通配全都匹配不到），一次 git add -A 就把版权内容提交进公开仓库。
+# 改为默认全忽略、只放行已入库的，与 pack-release.ps1「只留 default_* 卡、世界书全清」同口径。
 assets/cards/*
 !assets/cards/default_*
 assets/lorebooks/*

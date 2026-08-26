@@ -13,7 +13,7 @@ export type TextPart =
 /**
  * 「是不是标记语言」只有一份判据，在 src/htmlMarkup.ts——那里写着为什么：
  * 这个问题曾在服务端 postprocess 与前端此处共四处各自为政、且都按标签名列举，
- * 于是根标签是 `<head>` 的界面四处同时漏网（奴漫城开场白）。
+ * 于是根标签是 `<head>` 的界面四处同时漏网（实卡开场白）。
  */
 import { startsWithMarkup } from "../../src/htmlMarkup.ts";
 
@@ -183,7 +183,7 @@ export function splitHtmlParts(text: string): TextPart[] {
 		if (pre.trim()) parts.push(...splitTopLevelBlocks(pre));
 		parts.push({ kind: "html", html: found.html, scripts: found.scripts });
 		const post = text.slice(found.end);
-		// 后缀可能还有下一份 ```html 文档（LWS 多 state + options）
+		// 后缀可能还有下一份 ```html 文档（实卡的多 state + options）
 		if (post.trim()) parts.push(...splitHtmlParts(post));
 		return parts;
 	}

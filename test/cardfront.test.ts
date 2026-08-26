@@ -14,7 +14,7 @@ import {
 	type DisplayRule,
 } from "../src/cardfront.ts";
 
-/** 淫宫美人录实卡形态(内联夹具,不读盘,测试自包含) */
+/** 开闭标签换皮的实卡形态(内联夹具,不读盘,测试自包含) */
 const skinScript = {
 	scriptName: "状态栏",
 	findRegex: "/<StatusBlock>/gs",
@@ -25,7 +25,7 @@ const skinScript = {
 	promptOnly: false,
 	trimStrings: [],
 };
-/** 大乾风华录:promptOnly 清理向,显示层必须排除 */
+/** promptOnly 清理向规则:显示层必须排除 */
 const promptOnlyScript = {
 	scriptName: "删除描写分析",
 	findRegex: "/<descriptive_analysis>[\\s\\S]*</descriptive_analysis>/gm",
@@ -210,7 +210,7 @@ test("hasDepthLimits: 有没有深度限定决定要不要为算 depth 多走一
 	assert.equal(hasDepthLimits([]), false);
 });
 
-/** 页面级 CSS：顶层 <style>/<script> 的替换串（修仙世界模拟器 [美化]状态栏 实卡形态） */
+/** 页面级 CSS：顶层 <style>/<script> 的替换串（实卡 [美化]状态栏 形态） */
 const pageScopedScript = {
 	scriptName: "[美化]状态栏",
 	findRegex: "/<StatusBar>([\\s\\S]*?)<\\/StatusBar>/gi",
@@ -229,7 +229,7 @@ test("页面级 <style>: 替换串包成围栏整份文档,样式与结构同框
 	assert.ok(/<style/.test(doc) && /class="xzs"/.test(doc), "样式与结构必须同框,分家了样式就管不到结构");
 	assert.ok(doc.includes("$1"), "捕获组占位符原样保留,展开仍归 applyCardSkin");
 
-	// 2_1.png / v5.2_1.png 形态:div 在前、style 在后(实测 6 条里 4 条是这个顺序)
+	// 实卡常见形态:div 在前、style 在后(实测 6 条里 4 条是这个顺序)
 	const styleLast = displayRules([
 		{ ...pageScopedScript, replaceString: '<div class="mvu">$1</div>\n<style>.mvu{color:red}</style>' },
 	])[0].replace;
@@ -282,22 +282,22 @@ test("页面级: 只在显示侧成立——promptRules 不许把围栏文档塞
 });
 
 test("buildCardFrontSnapshot: hello/REST 同源载荷", () => {
-	const raw = { data: { name: "美人录", extensions: { regex_scripts: [skinScript] } } };
+	const raw = { data: { name: "样本卡", extensions: { regex_scripts: [skinScript] } } };
 	const snap = buildCardFrontSnapshot(
 		{ card: "assets/cards/a.png", userName: "旅人" },
 		raw,
-		"美人录",
+		"样本卡",
 	);
 	assert.equal(snap.enabled, true);
 	assert.equal(snap.hasSkin, true);
 	assert.equal(snap.rules.length, 1);
-	assert.equal(snap.charName, "美人录");
+	assert.equal(snap.charName, "样本卡");
 	assert.equal(snap.userName, "旅人");
 
 	const off = buildCardFrontSnapshot(
 		{ card: "assets/cards/a.png", cardSkinOff: ["assets/cards/a.png"], userName: "旅人" },
 		raw,
-		"美人录",
+		"样本卡",
 	);
 	assert.equal(off.enabled, false);
 	assert.equal(off.hasSkin, true); // 卡上有皮;前端用 enabled 决定是否应用

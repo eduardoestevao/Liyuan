@@ -178,7 +178,7 @@ export interface ToolResult { text: string; activity?: string; details?: unknown
   （与 M-D2 那套已损坏的门禁不同，`src/memory/` 未被 8/02 清场波及）。
 - **接线探针**：宿主注入 → 统一层 → 服务层全线打通（真落盘/真检索/真删除、
   作用域隔离、门禁两向），产物已清。
-- **实弹**（TGbreak + 淫乱仙侠 + `/greeting 3`）：拍 1 未提记忆 → **零写入**（门禁生效）；
+- **实弹**（TGbreak + 一张仙侠卡 + `/greeting 3`）：拍 1 未提记忆 → **零写入**（门禁生效）；
   拍 2 用户明确要求 → `写记忆「赤霄剑线索」· 1 条`，落盘条目为模型自拟标题 + 自撰摘要
   （`source=manual`，scope 正确）。**拍 3（召回）未取得**——上游连续
   `Stream ended without finish_reason`；**已用鉴别实验排除本次改动**：
@@ -277,7 +277,7 @@ R3 的门禁语义**从 `src/tools/gate.ts` 取**（M-D2 已搬）：`GATED_TOOL
   的授权，助手给语料规模与命中回声；台上不开 limit（配额固定好控预算），助手开。
 - 单测 `test/tools-registry.test.ts` 11 条：跨 surface 产出一致性（命中正文逐字相同）、
   差异是有意的、limit 钳制、容错不抛、**D-T1 红线守卫**（扫 `src/tools/` 禁 import typebox）。
-- 实弹一拍（TGbreak + 模拟修仙2 + `/greeting 3`）：`查设定「补气丹 丹药 凡人 炼化」· 3 条`
+- 实弹一拍（TGbreak + 一张修仙卡 + `/greeting 3`）：`查设定「补气丹 丹药 凡人 炼化」· 3 条`
   与 `· 无命中` 两条路径都实录，正文零协议污染。**只验能力不验思考量**（定位纪律）。
 
 ## 5. 风险

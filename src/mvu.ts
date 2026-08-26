@@ -13,8 +13,8 @@
  * 出 patch」（见 scribe.ts），MVU 卡只是同一件事换一套字段名——场记读完本拍，连这棵树该改哪些
  * 值也一并判断。**判断在模型**（它读得懂卡的 `[initvar]` 形状与更新规则），**落值由本模块死板执行**。
  *
- * 于是不需要「一卡一份映射表」，也不需要 schema：三张实卡（奴漫城 115 键/深 4、模拟修仙2 50 键、
- * 道渊 46 键）零共用结构，正因如此规则不能写死进代码——写死就是给每张卡加分支（铁律三禁的）。
+ * 于是不需要「一卡一份映射表」，也不需要 schema：普查过的三张实卡（115 键/深 4、50 键/深 3、
+ * 46 键/深 3）零共用结构，正因如此规则不能写死进代码——写死就是给每张卡加分支（铁律三禁的）。
  * 本模块只提供**通道**：读初值、把模型给的平铺 patch 套进树。填什么永远是模型的判断。
  *
  * ## 铁律对照
@@ -33,11 +33,11 @@ export type MvuTree = Record<string, unknown>;
  * 从世界书条目里找出 `[initvar]` 初始数据条目并解析成树。
  *
  * 两种方言（普查实测）：
- *  - 奴漫城：`content` 首行 `[initvar]`、末行 `[/initvar]` 包裹；条目名不含 initvar 字样。
- *  - 模拟修仙2 / 道渊：`content` 是裸 YAML，标记 `[initvar]` 只写在条目名（comment）里。
+ *  - 包裹式：`content` 首行 `[initvar]`、末行 `[/initvar]`；条目名不含 initvar 字样。
+ *  - 裸 YAML 式：`content` 直接是 YAML，标记 `[initvar]` 只写在条目名（comment）里。
  * 两种都认：正文里有 `[initvar]...[/initvar]` 就取包裹内容；否则若**条目名**含 `[initvar]` 就取整段正文。
  *
- * 返回 null＝这张卡没有可解的初始树（不是 MVU 卡，或初值写在散文里如终极羞辱卡——不硬解）。
+ * 返回 null＝这张卡没有可解的初始树（不是 MVU 卡，或初值只写在散文里——不硬解）。
  */
 export function findInitVar(entries: Array<{ comment?: string; content?: string }>): MvuTree | null {
 	for (const e of entries) {
@@ -101,7 +101,7 @@ export function isMvuRulesEntry(e: { comment?: string; content?: string }): bool
  *
  * 8/26 查出的矛盾：架构定案是「主模型永不见 MVU 协议」，`protocol-detect` 也正是为此存在，但它
  * 按**签名**判（`<UpdateVariable>`/`[mvu_update]`/`{{format_message_variable::}}`），而规则条目里
- * 一个插件标签都没有——奴漫城那条 748 字全是 `获得时 add，消耗时 replace，归零时 remove` 这类
+ * 一个插件标签都没有——实测某本书那条 748 字全是 `获得时 add，消耗时 replace，归零时 remove` 这类
  * 操作词，于是逐字常驻注入进了主模型的「世界设定（常驻事实）」。后果两层：白烧 token；更糟的是
  * 它**读起来像指令**，模型当真就会往正文里吐补丁——正是 protocol-detect 头注要防的正文污染。
  * 同时这 748 字有正当读者：场记（findMvuRules 拿的就是它，长度逐字对上）。一份料两个读者，
@@ -111,9 +111,8 @@ export function isMvuRulesEntry(e: { comment?: string; content?: string }): bool
  * （声明落成数据、harness 死板执行数据），且不随卡增长——换一张没见过的 MVU 卡，判据一字不改。
  *
  * **前提：本书里有梨园能接管的树**（findInitVar 非空）。没有树就没有认领，一律不动——否则
- * 会去掐一份没人接手的内容。普查 10 本实书：命中 3 本（奴漫城/模拟修仙2/道渊）各 1 条，
- * 其中模拟修仙2 与道渊的那条 protocol-detect 早已判死（作者按 `[mvu_update]` 命名），故本步
- * 实际只改奴漫城——但判据是通用的，不是为它一张卡写的特判。
+ * 会去掐一份没人接手的内容。普查 10 本实书：命中 3 本各 1 条，其中两本的那条 protocol-detect
+ * 早已判死（作者按 `[mvu_update]` 命名），故本步实际只多摘一本——但判据是通用的，不是特判。
  *
  * 退场＝置 `enabled: false`（同 stripProtocolEntries）：constant 注入、关键词激活、lorebook_search
  * 三条通道都尊重 enabled，一处置死全线生效。不改入参数组。
@@ -140,8 +139,8 @@ export function stripMvuRuleEntries<T extends { comment?: string; content?: stri
  *
  * 覆盖三张实卡用到的全部形态（普查实测）：缩进映射、标量（字符串/数字/布尔）、
  * 行内空对象 `{}`、行内空数组 `[]`、`"引号包裹"`（含带 `{{user}}` 宏的值）。
- * **不覆盖**多行数组项（`- foo`）与锚点/多文档等 YAML 高级特性——三张实卡都不用（唯一的数组
- * `道渊.$器灵台词` 是行内空数组）；遇到不认得的行跳过，不抛（宁可漏一字段，不可毁整棵树）。
+ * **不覆盖**多行数组项（`- foo`）与锚点/多文档等 YAML 高级特性——三张实卡都不用（唯一出现的
+ * 数组是个行内空数组，键名还带 `$`）；遇到不认得的行跳过，不抛（宁可漏一字段，不可毁整棵树）。
  *
  * 缩进敏感：靠前导空格数定父子。制表符按 1 空格计（实卡未见 tab，防御性）。
  */
@@ -201,7 +200,7 @@ export interface MvuPatchResult {
  * 把场记给出的**平铺 patch**（`{ "路径.用点分隔": 新值 }`）套进树。
  *
  * 为什么是平铺 path→值、而不是 RFC6902 / lodash `_.set` 命令：那两种是**卡方言**（不同卡用不同
- * 套，普查见奴漫城用 JSON Patch、终极羞辱用 `_.set`）。让场记模型手写卡方言正是 8/04 实测「首拍
+ * 套，普查见两种并存：JSON Patch 与 lodash `_.set`）。让场记模型手写卡方言正是 8/04 实测「首拍
  * 31% 思考、正文污染」的来源。梨园自定一套最简形状，模型只填「哪条路径→什么新值」，方言差异
  * 由本模块吸收——模型永不碰 op/from/JSONPatch 那些语法负担。
  *
@@ -260,7 +259,7 @@ function summarizeValue(v: unknown): string {
 /**
  * 把 MVU 树摘成给**场记模型**看的紧凑文本（当前值一览）。
  * 场记据此判断哪些值该随本拍剧情变。深对象递归成 `路径: 值` 平铺行，空对象/空数组标注为占位。
- * 上限保护：极大树（道渊满树可能上千键）截断到 maxLines 行，尾部提示已省略——防旁路 prompt 爆量。
+ * 上限保护：极大树（满树可能上千键）截断到 maxLines 行，尾部提示已省略——防旁路 prompt 爆量。
  */
 export function formatMvuTree(tree: MvuTree, maxLines = 200): string {
 	const lines: string[] = [];
@@ -350,7 +349,7 @@ export function seedMvuIfNeeded(
  *  4. 卡的显示正则把挂载点换成整份面板 HTML；
  *  5. 面板脚本 `setInterval` 读 `getAllVariables().stat_data` 画。
  * 送模侧插件自带 `ir({messages})` 会把它删掉，卡另有 `promptOnly` 规则做同一件事
- * （奴漫城那条的名字就叫「对AI隐藏状态栏」）⇒ 模型无从模仿、也不该模仿。
+ * （实卡里那条规则的名字就直接叫「对AI隐藏状态栏」）⇒ 模型无从模仿、也不该模仿。
  *
  * 梨园接管了第 1—3 步（树归 state、判断归场记），第 3 步的**追加动作没有主人**，于是
  * 显示正则永不触发、面板压根不上屏——这就是「数据活着、面板黑着」的全部原因。本模块补上它。
@@ -389,10 +388,9 @@ function fixedLiteralOf(source: string): string | null {
  * 这条显示规则是不是 MVU 的面板挂载点——判据：**整条正则恰好就是那个协议常量**。
  *
  * 故意收得这么紧。实测 13 张卡里另有四条「固定字面量 + 整份界面」的显示规则不是挂载点：
- * Living With Slaves 的 45155 字开局身份屏（`【本世界身份认证】`）、道渊的 207135 字建卡屏
- * （`[重塑仙缘]`）、凡人修仙传的 2649242 字（`lucklyjkop`）、两张卡的 `<StatusBlock>` 开闭对。
- * 它们的触发字由剧情/开场白产出，harness 替它们补挂就是把开局屏糊到每一拍上。
- * 只认协议常量，这四条自动全部落空。
+ * 45155 字的开局身份认证屏、207135 字的开局建卡屏、2649242 字的整页皮肤（触发字是作者署名），
+ * 以及两张卡各自的成对开闭状态栏标签。它们的触发字由剧情/开场白产出，harness 替它们补挂
+ * 就是把开局屏糊到每一拍上。只认协议常量，这四条自动全部落空。
  */
 export function isMvuPanelMount(rule: { source: string }): boolean {
 	return fixedLiteralOf(rule.source) === MVU_STATUS_PLACEHOLDER;
@@ -403,7 +401,7 @@ export function isMvuPanelMount(rule: { source: string }): boolean {
  *
  * 三个不动的前提（缺一条就原样返回，＝改动前逐字同路）：
  *  - 卡真的声明了消费这个挂载点的显示规则（没声明＝这张卡没有 MVU 面板）；
- *  - 正文里还没有它（开场白作者手写了一个——奴漫城 `first_mes` 末行就是，那时不补）；
+ *  - 正文里还没有它（开场白里作者常手写一个在 `first_mes` 末行，那时不补）；
  *  - 调用方已确认「梨园接管了本卡的树、且这是最新一条」（见 DisplaySkin.mvu）。
  *
  * **只补最新一条**由调用方保证（skinAtDepth）。理由不是性能而是诚实：梨园只持有**当前**一棵树

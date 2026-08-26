@@ -6,7 +6,7 @@ const M = { charName: "青梧", userName: "旅人" };
 const wrapOpen = { name: "状态栏", source: "<StatusBlock>", flags: "gs", replace: '<div style="x"><status>' };
 const wrapClose = { name: "状态栏2", source: "</StatusBlock>", flags: "gs", replace: "</status></div>" };
 
-test("皮肤包装:开闭标签替换为卡作者 HTML(淫宫美人录模式)", () => {
+test("皮肤包装:开闭标签替换为卡作者 HTML(开闭标签换皮模式)", () => {
 	const out = applyCardSkin("正文\n<StatusBlock>\nHP: 80\n</StatusBlock>\n尾", [wrapOpen, wrapClose], M);
 	assert.ok(out.includes('<div style="x"><status>'));
 	assert.ok(out.includes("</status></div>"));
@@ -39,7 +39,7 @@ test("空规则原文返回", () => {
 });
 
 test("字面量 $' 不得被 String.replace 特殊序列吃掉（程序卡 '$' 字符）", () => {
-	// 模拟凡人修仙 TILE 字符表：'|','$','T'
+	// 模拟地图 TILE 字符表：'|','$','T'
 	const rule = {
 		name: "dollar-char",
 		source: "TOKEN",
@@ -69,7 +69,7 @@ test("长替换串（程序卡）不展开 $&；无捕获时 $1 保持字面", (
 	assert.ok(!out.includes("/\\TOKEN/g"), "不得把 $& 展开成命中文本");
 });
 
-test("长替换串仍展开有效 $2（LWS 状态栏 rawData=`$2`）", () => {
+test("长替换串仍展开有效 $2（实卡状态栏 rawData=`$2`）", () => {
 	const body = "『姓名』: 明月\n『内心想法』: 想逃";
 	const payload =
 		"```html\n<!DOCTYPE html><html><body><script>const rawData = `$2`;</script><div id=x></div></body></html>\n```".replace(

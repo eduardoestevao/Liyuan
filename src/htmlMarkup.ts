@@ -1,7 +1,7 @@
 /**
  * 「这段内容是不是标记语言」——显示链上**唯一**的一处判据。
  *
- * 由来（8/25 奴漫城开场白）：同一个问题此前有四处各自为政的判断，且都以
+ * 由来（8/25 一张实卡的开场白）：同一个问题此前有四处各自为政的判断，且都以
  * 「有没有 `<!doctype>` / `<html>` / ` ```html ` 语言标记」为准：
  *   1) postprocess.isFullPageHtmlPayload —— 决定 unwrap 放不放行
  *   2) postprocess.protectFullPageBlocks —— 决定整页块要不要占位保护

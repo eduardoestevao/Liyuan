@@ -44,7 +44,7 @@ export type TagPolicy = "fold" | "strip" | "unwrap" | "keep";
  * 所以酒馆零标签名单）；但对下面这些元素**按 HTML 规范就不成立**：`<style>` 的内容是
  * 样式表、`<script>` 的内容是代码，浏览器绝不会把它们当文字显示出来。
  *
- * 8/25 奴漫城实锤：作者界面被 unwrap 剥壳后，CSS 与 JS 当散文印进了故事
+ * 8/25 实锤：作者界面被 unwrap 剥壳后，CSS 与 JS 当散文印进了故事
  * （16376 字界面 → 13725 字裸文本）。根因就是把一个前提不成立的变换照做了。
  *
  * 这不是「名单」那类物（铁律三）：这些名字不是卡作者/预设作者发明的措辞，而是 HTML 规范里的
@@ -344,7 +344,7 @@ export function displayAssistantText(text: string): string {
 	t = t.replace(/^\s*#{1,6}\s*(thinking|draft|notes?|思维|草稿)\s*$/gim, "");
 	// 残留空标签行（作者正则更早一步已跑过；到这里还剩的就是没人认领的裸标签，剥掉）。
 	// **例外**：HTML 规范里内容不是正文的元素（`<head>`/`<style>`/`<script>`…）。它们单独成行
-	// 是界面的常态，删掉这一行就等于把 CSS/JS 的壳拆了、内容裸奔上屏——8/25 奴漫城的第二刀。
+	// 是界面的常态，删掉这一行就等于把 CSS/JS 的壳拆了、内容裸奔上屏——8/25 的第二刀。
 	// `/?>`：自闭合写法也算残留标签。原先 `<foo />`（有空格）被清掉、`<foo/>`（无空格）却当文字
 	// 印上屏，这个区别毫无道理——浏览器对未知元素两种都渲染成空（酒馆零标签名单就是靠这个）。
 	// 8/26 实证：depth 限定把面板规则筛掉后，开场白里作者手写的 `<StatusPlaceHolderImpl/>`
@@ -401,7 +401,7 @@ function isFullPageHtmlPayload(text: string): boolean {
 	// 围栏整页（可带开场前缀）：围栏内是标记语言即算界面——**不问**有没有 doctype/html 外壳。
 	// 原先三条判据分别要求 doctype、`<html>`、或 ` ```html ` 语言标记，于是「根标签 <head>、
 	// 收尾只到 </body>、裸围栏」的作者界面全部落空 → 放行 unwrap → 壳被剥、CSS/JS 当正文
-	// 上屏（奴漫城开场白实测）。判据统一到 src/htmlMarkup.ts，见那里的由来。
+	// 上屏（实卡开场白实测）。判据统一到 src/htmlMarkup.ts，见那里的由来。
 	for (const block of text.match(/```[^\n`]*\r?\n[\s\S]*?\r?\n```/g) ?? []) {
 		if (fencedBlockHoldsMarkup(block) && block.length > 80) return true;
 	}

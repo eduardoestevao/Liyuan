@@ -98,7 +98,7 @@ test("rebuildHistory：送模侧作者正则（promptOnly/破坏性）剥「作�
 });
 
 test("rebuildHistory：送模侧深度限定——旧状态栏剥掉，最新那条留着当模型的格式模仿源", () => {
-	// Living With Slaves 实卡形态：`隐藏历史多状态栏`（minDepth:3 起、replace 空）
+	// 实卡形态：`隐藏历史多状态栏`（minDepth:3 起、replace 空）
 	// 与 `折叠通用多状态栏`（maxDepth:2）是按深度互补的一对。忽略 depth 全深度跑，
 	// 历史里一个范例都不剩，模型每拍得从散文重推格式。
 	const hideOld: DisplayRule[] = [

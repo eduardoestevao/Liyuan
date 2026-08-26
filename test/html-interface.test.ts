@@ -1,12 +1,11 @@
 /**
  * 整页 HTML 界面卡:显示正则 → 围栏文档 → 单 html 段(可 scripts)。
- * 夹具对齐 Living With Slaves「开局正则」形态(不依赖读盘也能绿)。
+ * 夹具对齐「开局正则」形态:一个固定字面量触发字换成整份带脚本的文档(不依赖读盘也能绿)。
  */
 import assert from "node:assert/strict";
-import { existsSync } from "node:fs";
 import test from "node:test";
-import { readCardRawJson } from "../src/card.ts";
 import { displayRules, extractRegexScripts } from "../src/cardfront.ts";
+import { findLocalCard } from "./fixtures.ts";
 import { applyCardSkin } from "../web/src/cardSkin.ts";
 import {
 	claimFencedHtmlDocument,
@@ -25,7 +24,7 @@ const fakeDoc = `<!doctype html>
 <style>.x{content:"use \`\`\` carefully"}</style>
 </head>
 <body>
-  <h1>第一步：确定性别</h1>
+  <h1>第一步：开局第一步</h1>
   <button type="button">男性</button>
   <button type="button">女性</button>
   <script>console.log("ok \`\`\`");</script>
@@ -38,22 +37,22 @@ test("claimFencedHtmlDocument: 首开末闭,文档内 ``` 不截断", () => {
 	const c = claimFencedHtmlDocument(fenced);
 	assert.ok(c);
 	assert.ok(c!.html.includes("<!doctype html>"));
-	assert.ok(c!.html.includes("确定性别"));
+	assert.ok(c!.html.includes("开局第一步"));
 	assert.ok(c!.html.includes("</html>"));
 	assert.equal(c!.scripts, true, "含 script 应标 interactive");
 	assert.ok(!c!.html.includes("```\n<!doctype"), "html 本体不应再带开围栏");
 });
 
 test("findFencedHtmlDocument: 【开场】前缀 + 围栏文档仍能认领", () => {
-	const withPrefix = `【开场 · Living With Slaves】\n【本世界身份认证】`.replace(
-		"【本世界身份认证】",
+	const withPrefix = `【开场 · 样本卡】\n【开局占位符】`.replace(
+		"【开局占位符】",
 		fenced.trimEnd(),
 	);
 	// 模拟皮肤后: 前缀 + 围栏 HTML
-	const skinned = `【开场 · Living With Slaves】\n${fenced.trim()}\n`;
+	const skinned = `【开场 · 样本卡】\n${fenced.trim()}\n`;
 	const found = findFencedHtmlDocument(skinned);
 	assert.ok(found, "带开场前缀必须找到围栏文档");
-	assert.ok(found!.html.includes("确定性别"));
+	assert.ok(found!.html.includes("开局第一步"));
 	assert.equal(found!.scripts, true);
 	assert.ok(skinned.slice(0, found!.start).includes("开场"));
 	assert.equal(isFullInterface(skinned), true, "短开场前缀仍算整楼界面");
@@ -74,7 +73,7 @@ test("splitHtmlParts / isFullInterface: 围栏整页 → 单 html 段", () => {
 	assert.equal(parts[0].kind, "html");
 	if (parts[0].kind === "html") {
 		assert.equal(parts[0].scripts, true);
-		assert.ok(parts[0].html.includes("确定性别"));
+		assert.ok(parts[0].html.includes("开局第一步"));
 	}
 	assert.equal(isFullInterface(fenced), true);
 });
@@ -83,21 +82,21 @@ test("splitRichContentParts: 开局标记 + 显示正则 → 单交互 html", ()
 	const rules = [
 		{
 			name: "开局",
-			source: "【本世界身份认证】",
+			source: "【开局占位符】",
 			flags: "g",
 			replace: fenced.trimEnd(),
 		},
 	];
-	const parts = splitRichContentParts("【本世界身份认证】", {
+	const parts = splitRichContentParts("【开局占位符】", {
 		rules,
-		charName: "LWS",
+		charName: "样本卡",
 		userName: "旅人",
 	});
 	assert.equal(parts.length, 1);
 	assert.equal(parts[0].kind, "html");
 	if (parts[0].kind === "html") {
 		assert.equal(parts[0].scripts, true);
-		assert.ok(parts[0].html.includes("确定性别"));
+		assert.ok(parts[0].html.includes("开局第一步"));
 		const doc = buildSrcDoc(parts[0].html, true, true);
 		assert.ok(!doc.includes("white-space:pre-wrap"));
 		assert.ok(doc.includes("liyuanFrameHeight"), "交互整页需高度上报");
@@ -108,15 +107,15 @@ test("splitRichContentParts: 已是 HTML 载荷时禁止二次皮肤（防程序
 	const rules = [
 		{
 			name: "token",
-			source: "lucklyjkop",
+			source: "TRIGGER_TOKEN",
 			flags: "g",
-			replace: "<!DOCTYPE html><html><body><script>const X=1;</script>lucklyjkop more</body></html>",
+			replace: "<!DOCTYPE html><html><body><script>const X=1;</script>TRIGGER_TOKEN more</body></html>",
 		},
 	];
 	// 模拟 wire 已 prepareDisplayText 后的正文
-	const already = applyCardSkin("lucklyjkop", rules, { charName: "a", userName: "b" });
+	const already = applyCardSkin("TRIGGER_TOKEN", rules, { charName: "a", userName: "b" });
 	assert.ok(already.includes("const X=1"));
-	assert.ok(already.includes("lucklyjkop"), "产物内仍含占位串");
+	assert.ok(already.includes("TRIGGER_TOKEN"), "产物内仍含占位串");
 	const parts = splitRichContentParts(already, {
 		rules,
 		charName: "a",
@@ -222,55 +221,52 @@ code sample
 	assert.ok(found!.html.includes("</html>"));
 });
 
-test("实卡 Living With Slaves: 开场占位符经显示正则 → 整页交互界面", () => {
-	const cardPath = "assets/cards/Living With Slaves.png";
-	if (!existsSync(cardPath)) return;
-	const { raw } = readCardRawJson(cardPath);
-	const rules = displayRules(extractRegexScripts(raw));
+test("实卡: 开场占位符经显示正则 → 整页交互界面", () => {
+	// 判据是形状不是卡名（见 test/fixtures.ts）：某条显示规则把一个**固定字面量**触发字
+	// 换成一份带脚本的整页文档。触发字取自规则自己的正则源，不写死在测试里。
+	let trigger = "";
+	const card = findLocalCard((c) => {
+		for (const r of displayRules(extractRegexScripts(c.raw))) {
+			if (!/<!doctype|<html[\s>]/i.test(r.replace) || !/<script[\s>]/i.test(r.replace)) continue;
+			// 正则能匹配它自己的源文本 ⇒ 源就是纯字面量触发字，可以直接当输入喂进去
+			if (!new RegExp(r.source, r.flags.replace("g", "")).test(r.source)) continue;
+			trigger = r.source;
+			return true;
+		}
+		return false;
+	});
+	// 发行包与 clean clone 不带样本卡；有卡则必须全绿
+	if (!card) return;
+	const rules = displayRules(extractRegexScripts(card.raw));
 	assert.ok(rules.length >= 1, "应有显示向规则");
-	const open = rules.find((r) => r.name.includes("开局") || r.replace.includes("<!doctype"));
-	assert.ok(open, "应有开局类规则");
-	const skinned = applyCardSkin("【本世界身份认证】", rules, {
-		charName: "Living With Slaves",
-		userName: "旅人",
-	});
+	const macros = { charName: "样本卡", userName: "旅人" };
+
+	const skinned = applyCardSkin(trigger, rules, macros);
 	assert.ok(skinned.includes("<!doctype html>") || skinned.includes("<!DOCTYPE html>"));
-	const parts = splitRichContentParts("【本世界身份认证】", {
-		rules,
-		charName: "Living With Slaves",
-		userName: "旅人",
-	});
+	const parts = splitRichContentParts(trigger, { rules, ...macros });
 	assert.equal(parts.length, 1, "不得撕成多段 text/html");
 	assert.equal(parts[0].kind, "html");
 	if (parts[0].kind === "html") {
 		assert.equal(parts[0].scripts, true);
 		assert.ok(parts[0].html.length > 1000);
-		assert.ok(/性别|男性|女性|button/i.test(parts[0].html));
+		assert.ok(/<body[\s>]/i.test(parts[0].html), "整页文档的 body 须在框里");
 	}
 	assert.equal(isFullInterface(skinned), true);
 
 	// 真实会话形态：buildGreeting 加「【开场 · 卡名】」前缀
-	const greeting = `【开场 · Living With Slaves】\n【本世界身份认证】`;
-	const greParts = splitRichContentParts(greeting, {
-		rules,
-		charName: "Living With Slaves",
-		userName: "旅人",
-	});
+	const greeting = `【开场 · 样本卡】\n${trigger}`;
+	const greParts = splitRichContentParts(greeting, { rules, ...macros });
 	const htmlParts = greParts.filter((p) => p.kind === "html");
 	assert.equal(htmlParts.length, 1, "带开场前缀仍须认出整页 html");
 	if (htmlParts[0].kind === "html") {
 		assert.equal(htmlParts[0].scripts, true);
 		assert.ok(htmlParts[0].html.length > 1000);
 	}
-	const greSkinned = applyCardSkin(greeting, rules, {
-		charName: "Living With Slaves",
-		userName: "旅人",
-	});
-	assert.equal(isFullInterface(greSkinned), true);
+	assert.equal(isFullInterface(applyCardSkin(greeting, rules, macros)), true);
 });
 
 /**
- * 省掉 `<html>` 外壳的界面：根标签是 `<head>`、结尾只到 `</body>`（奴漫城状态栏的真实形状）。
+ * 省掉 `<html>` 外壳的界面：根标签是 `<head>`、结尾只到 `</body>`（实卡状态栏的真实形状）。
  * 认领判据一旦退回「首标签名单」，这份界面就会掉进 splitTopLevelBlocks 被撕碎——
  * CSS 进空帧、`<script>` 函数体当正文印进故事（实测 5794 字泄漏）。
  */
