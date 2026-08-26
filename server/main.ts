@@ -43,6 +43,7 @@ import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from 
 import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile, updateCardFields } from "../src/card.ts";
 import { findInitVar, seedMvuIfNeeded } from "../src/mvu.ts";
+import { authorScriptManifest } from "../src/authorScripts.ts";
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
@@ -619,6 +620,16 @@ const helloFrame = (): ServerFrame => {
 					mvu: hasMvuTree(),
 				}
 			: null;
+	/**
+	 * hello 里**不带作者脚本正文，只带轻清单**。
+	 *
+	 * 显示规则必须与消息同帧（否则首屏 StatusBlock 会回落统一面板），脚本不然：它是页面级的，
+	 * 晚一个往返出现完全不影响任何一条消息——酒馆那边也是聊天加载完才跑脚本。
+	 * 而正文很重：实测一个预设自带的脚本 3.58MB。REST 那条路有 gzip（4.36MB→1.17MB），
+	 * **hello 走 WebSocket 不压缩，且每次重放/回退都重发**——塞进 hello 就是每次 resync 白扛 4MB。
+	 * 前端拿清单算指纹，只在换卡/换预设（指纹变了）时才去拉一次正文。
+	 */
+	const { scripts, ...cardfrontLite } = cardfront;
 	return {
 		type: "hello",
 		sessionId: session.sessionId,
@@ -629,7 +640,7 @@ const helloFrame = (): ServerFrame => {
 		stats: safeStats(),
 		panels: currentPanels(),
 		// 一档皮肤与消息同帧:首屏不得依赖二次 REST(缓存/竞态会让 StatusBlock 回落统一面板)
-		cardfront,
+		cardfront: { ...cardfrontLite, scriptManifest: authorScriptManifest(scripts) },
 	};
 };
 

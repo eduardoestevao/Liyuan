@@ -10,13 +10,14 @@
  * 故在 clean clone / CI 里这些发现函数一律返回 null / 空数组——调用方据此**跳过而非红**。
  */
 
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
 import { readCardRawJson } from "../src/card.ts";
 import { loadLorebookFile, type LorebookEntry } from "../src/lorebook.ts";
 
 const CARD_DIR = "assets/cards";
 const LOREBOOK_DIR = "assets/lorebooks";
+const PRESET_DIR = "assets/presets";
 
 export interface LocalCard {
 	/** 卡文件路径（调用方要传给生产函数时用；不要断言它的内容） */
@@ -89,6 +90,44 @@ export function findLocalLorebook(pred: (b: LocalLorebook) => boolean): LocalLor
 	for (const b of localLorebooks()) {
 		try {
 			if (pred(b)) return b;
+		} catch {
+			// 同上
+		}
+	}
+	return null;
+}
+
+export interface LocalPreset {
+	path: string;
+	/** 预设原文 JSON（酒馆导出格式，`extensions` 在顶层） */
+	raw: Record<string, unknown>;
+}
+
+/**
+ * 本地全部可解的预设（`assets/presets/*.json`）。
+ * 与卡同规矩：私人预设全部 gitignore，clean clone / CI 里返回空数组 → 调用方跳过。
+ * `.bak` 一律不收（同一份预设的历史副本会让「有几份带某形状」的计数失真）。
+ */
+export function localPresets(): LocalPreset[] {
+	if (!existsSync(PRESET_DIR)) return [];
+	const out: LocalPreset[] = [];
+	for (const f of readdirSync(PRESET_DIR)) {
+		if (!f.endsWith(".json")) continue;
+		try {
+			const raw = JSON.parse(readFileSync(join(PRESET_DIR, f), "utf8")) as Record<string, unknown>;
+			if (raw && typeof raw === "object") out.push({ path: join(PRESET_DIR, f), raw });
+		} catch {
+			// 坏预设跳过
+		}
+	}
+	return out;
+}
+
+/** 第一份满足形状判据的本地预设；一份都没有返回 null（调用方跳过） */
+export function findLocalPreset(pred: (p: LocalPreset) => boolean): LocalPreset | null {
+	for (const p of localPresets()) {
+		try {
+			if (pred(p)) return p;
 		} catch {
 			// 同上
 		}

@@ -42,6 +42,21 @@ export function getTavernChatBridge(): TavernChatBridge | null {
 	return chatBridge;
 }
 
+/**
+ * 注册梨园自己的通知条给作者脚本的 `toastr` 用（子帧经 `parent.__liyuanToast` 调）。
+ * 传 null 注销。挂 window 而不是模块变量：iframe 与 server 各持一份 src 实例，
+ * 模块级状态跨边界不可见（jiti 模块二象性的老坑），跨帧共享的东西必须挂 globalThis。
+ * 档位用梨园自己的三档（toastr 的 success 在垫片里已折成 info），父页不再做映射。
+ */
+export type LiyuanToastLevel = "info" | "warning" | "error";
+
+export function registerLiyuanToast(fn: ((level: LiyuanToastLevel, text: string) => void) | null): void {
+	if (typeof window === "undefined") return;
+	const w = window as Window & { __liyuanToast?: (level: LiyuanToastLevel, text: string) => void };
+	if (fn) w.__liyuanToast = fn;
+	else delete w.__liyuanToast;
+}
+
 function getBus(target: object): BusMap {
 	const w = target as { __liyuanEventBus?: BusMap };
 	if (!w.__liyuanEventBus) w.__liyuanEventBus = new Map();
@@ -316,7 +331,12 @@ import { JQUERY_MIN } from "./vendor/jquery-min.ts";
  * - `waitGlobalInitialized(name)`：酒馆等待全局就绪 → 目标已存在立即 resolve
  *
  * 覆盖的是酒馆助手**已发布的调用面**（公开 `.d.ts`）中卡会裸用的读/util 子集，非枚举卡作者措辞
- * （Wine 式兼容面，spec §3 原则 4）。写族/生成族**故意不提供**——正文红线：界面递条子、不拧旋钮。
+ * （Wine 式兼容面，spec §3 原则 4）。
+ *
+ * **写族的边界**（8/26 补页面级脚本宿主时划定）：变量写入按**作用域**分家，不是一刀切禁。
+ * `global`/`script` 作用域是作者脚本自己的界面自留地（实测页面级 UI 脚本的全部写入就是存
+ * 悬浮球坐标，chat/message 作用域 0 次），落 localStorage；`chat`/`message`（＝梨园账本）
+ * 写入一律拒绝并 warn。正文红线未松动：界面递条子、不拧旋钮，剧情状态只由 agent/场记推动。
  */
 export const IFRAME_TAVERN_GLOBALS_SNIPPET = `<script>(function(){
 var g=typeof window!=="undefined"?window:null;if(!g)return;
@@ -377,7 +397,72 @@ try{
     };
   }
   if(typeof g.getVariables!=="function"){
-    g.getVariables=function(){return g.getAllVariables();};
+    g.getVariables=function(opts){
+      var t=opts&&opts.type;
+      if(t==="global"||t==="script")return g.__liyuanAuthorVarsRead(t);
+      return g.getAllVariables();
+    };
+  }
+  // 作者脚本的「界面自留地」——与梨园账本严格分家。
+  //
+  // 实测三个页面级 UI 脚本的全部写入合起来只有一件事：把自己的坐标存下来
+  // （insertOrAssignVariables({xxx_pos:"{x,y}"},{type:'global'})），
+  // chat/message 作用域出现 0 次。所以「让球记住位置」和「让界面拧账本」是两件事，
+  // 不必为了前者放开后者：
+  // - global/script 作用域 = 纯前端 UI 状态 → 落 localStorage（本机、本浏览器）
+  // - 其余（含缺省、chat、message）= 梨园账本 → **读可以，写一律拒绝**
+  // 账本只由 agent 与场记推动，界面递条子不拧旋钮（本文件头的红线，未松动）。
+  if(typeof g.__liyuanAuthorVarsRead!=="function"){
+    var AV_KEY=function(t){return "liyuan.authorVars."+(t==="script"?"script":"global");};
+    g.__liyuanAuthorVarsRead=function(t){
+      try{
+        var raw=g.localStorage&&g.localStorage.getItem(AV_KEY(t));
+        var v=raw?JSON.parse(raw):null;
+        return v&&typeof v==="object"?v:{};
+      }catch(e){return {};}
+    };
+    g.__liyuanAuthorVarsWrite=function(t,patch,mode){
+      try{
+        var cur=mode==="replace"?{}:g.__liyuanAuthorVarsRead(t);
+        for(var k in patch){if(Object.prototype.hasOwnProperty.call(patch,k))cur[k]=patch[k];}
+        if(g.localStorage)g.localStorage.setItem(AV_KEY(t),JSON.stringify(cur));
+        return cur;
+      }catch(e){return {};}
+    };
+    // 三个写族入口同一套语义（酒馆助手公开面：insertOrAssign 合并 / replace 整替 / updateWith 函数式）
+    var authorWrite=function(name,mode){
+      return function(arg,opts){
+        var t=opts&&opts.type;
+        if(t!=="global"&&t!=="script"){
+          console.warn("[liyuan "+name+"] 梨园账本只读：界面不拧旋钮，剧情状态由 agent/场记推动。作用域="+String(t||"(缺省)"));
+          return Promise.resolve({});
+        }
+        var patch=arg;
+        if(typeof arg==="function"){
+          try{patch=arg(g.__liyuanAuthorVarsRead(t))||{};}catch(e){patch={};}
+        }
+        if(!patch||typeof patch!=="object")return Promise.resolve({});
+        return Promise.resolve(g.__liyuanAuthorVarsWrite(t,patch,mode));
+      };
+    };
+    if(typeof g.insertOrAssignVariables!=="function")g.insertOrAssignVariables=authorWrite("insertOrAssignVariables","assign");
+    if(typeof g.replaceVariables!=="function")g.replaceVariables=authorWrite("replaceVariables","replace");
+    if(typeof g.updateVariablesWith!=="function")g.updateVariablesWith=authorWrite("updateVariablesWith","assign");
+  }
+  // toastr：作者脚本拿它当唯一反馈渠道（一个脚本里 58 处）。接梨园自己的通知条，
+  // 接不上就退回 console——缺这个全局同样是 ReferenceError（同 errorCatched 那个坑）。
+  if(!g.toastr){
+    var toast=function(level){
+      return function(msg,title){
+        var text=String(title?title+"：":"")+String(msg==null?"":msg);
+        try{
+          var p=(g.parent&&g.parent!==g)?g.parent:null;
+          if(p&&typeof p.__liyuanToast==="function"){p.__liyuanToast(level,text);return;}
+        }catch(e){}
+        console.log("[liyuan toastr:"+level+"]",text);
+      };
+    };
+    g.toastr={success:toast("info"),info:toast("info"),warning:toast("warning"),error:toast("error")};
   }
   if(typeof g.substitudeMacros!=="function"){
     g.substitudeMacros=function(text){return text==null?"":String(text);};

@@ -343,6 +343,14 @@ export function escapeScriptEndTags(html: string): string {
 	return out;
 }
 
+/**
+ * 脚本帧 CSP：程序卡需拉 CDN(dexie/echarts 等) + 跑内联脚本；connect 放宽到 https/ws。
+ * 页面级脚本宿主（scriptHostDoc）用的是同一份——两处若各写一份，放开一处忘另一处
+ * 就是「同一判据多处平行」的老病（8/25 三刀的病根）。
+ */
+export const SCRIPT_FRAME_CSP =
+	`default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https: http: data: blob:; style-src 'unsafe-inline' https: http: data:; img-src data: blob: https: http:; font-src data: https: http:; media-src data: blob: https: http:; connect-src https: http: ws: wss: data: blob:; worker-src blob: data:; frame-src 'none'`;
+
 export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean, viewportPx?: number): string {
 	// 先修用户 HTML 内脚本截断，再注入带真实 </script> 的垫片
 	const raw = escapeScriptEndTags(html.trim());
@@ -354,7 +362,7 @@ export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean, v
 	const takeover = seamless && looksLikeProgramApp(html, scripts);
 	// 程序卡需拉 CDN(dexie/echarts 等) + 内联脚本；connect 放宽到 https
 	const csp = scripts
-		? `default-src 'none'; script-src 'unsafe-inline' 'unsafe-eval' https: http: data: blob:; style-src 'unsafe-inline' https: http: data:; img-src data: blob: https: http:; font-src data: https: http:; media-src data: blob: https: http:; connect-src https: http: ws: wss: data: blob:; worker-src blob: data:; frame-src 'none'`
+		? SCRIPT_FRAME_CSP
 		: `default-src 'none'; style-src 'unsafe-inline' https: http: data:; img-src data: blob: https: http:; font-src data: https: http:; media-src data: blob: https: http:`;
 	const seamlessCss = isFull ? (takeover ? TAKEOVER_DOC_CSS : SEAMLESS_DOC_CSS) : SEAMLESS_FRAGMENT_CSS;
 	// 脚本帧：垫片桥必须先于卡脚本，保证 eventOn / TavernHelper / jQuery / 变量系统在初始化时已存在

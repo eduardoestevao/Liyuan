@@ -21,6 +21,7 @@
  * 载荷纪律:hello 与 GET /api/cardfront 必须同源(buildCardFrontSnapshot),避免「REST 有规则、对话流无规则」。
  */
 
+import { buildAuthorScripts, type AuthorScript } from "./authorScripts.ts";
 import type { RpConfig } from "./types.ts";
 
 export interface DisplayRule {
@@ -44,6 +45,15 @@ export interface CardFrontSnapshot {
 	rules: DisplayRule[];
 	charName: string;
 	userName: string;
+	/**
+	 * 作者运行时脚本（页面级，见 authorScripts.ts）。与 rules 同车不同命：
+	 * rules 是「怎么画这条消息」，scripts 是「页面上常驻什么」，前端各走各的通道。
+	 *
+	 * ⚠ **正文只走 REST，不进 hello 帧**：单份脚本实测可达 3.58MB，而 hello 走 WebSocket
+	 * 不压缩、每次重放/回退都重发。规则必须与消息同帧（否则首屏回落统一面板），脚本没有
+	 * 这个时序要求——它是页面级的，晚一个往返出现无影响。见 server/main.ts 的 helloFrame。
+	 */
+	scripts: AuthorScript[];
 }
 
 /**
@@ -67,6 +77,7 @@ export function buildCardFrontSnapshot(
 		rules,
 		charName,
 		userName: config.userName,
+		scripts: buildAuthorScripts(raw, presetRaw),
 	};
 }
 

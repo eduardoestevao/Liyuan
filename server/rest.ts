@@ -2012,7 +2012,15 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			case "GET /api/cardfront": {
 				// 与 GET /api/card 同：当前卡用 resolvePath（支持按路径换卡的非库内路径）
 				// 载荷必须与 hello.cardfront 同源(buildCardFrontSnapshot)
-				sendJson(res, 200, loadCardFrontSnapshot(host.cwd));
+				const snap = loadCardFrontSnapshot(host.cwd);
+				/**
+				 * 作者脚本正文默认**不带**（`?scripts=1` 才带）。
+				 * 这条端点每次 hello 后都会被拉一遍（对齐皮肤开关态），而脚本正文实测可达 3.58MB；
+				 * 默认带上就是每次重放/回退都白拉一遍。前端按 hello 里的清单指纹判断变没变，
+				 * 只在换卡/换预设时才带 `?scripts=1` 拉一次。投影不改数据源，仍是同一份快照。
+				 */
+				const wantScripts = query.get("scripts") === "1";
+				sendJson(res, 200, wantScripts ? snap : { ...snap, scripts: [] });
 				return true;
 			}
 			case "PUT /api/cardfront": {

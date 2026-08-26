@@ -34,7 +34,7 @@ import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
 import { UpdateModal, UpdateToast } from "./components/UpdateFlow.tsx";
 import { PanelRefreshContext } from "./components/kit.tsx";
-import { registerTavernChatBridge } from "./tavernShim.ts";
+import { registerLiyuanToast, registerTavernChatBridge } from "./tavernShim.ts";
 import { setAtHome, shouldShowHomeOnBoot, touchVisit } from "./visit.ts";
 import {
 	IconApi,
@@ -81,12 +81,14 @@ import {
 	type TurnSegment,
 } from "./timeline.ts";
 import type { DisplayRule } from "../../src/cardfront.ts";
+import { authorScriptSig } from "../../src/authorScripts.ts";
 import { skinAtDepth } from "../../src/postprocess.ts";
 import { PanelDock } from "./components/PanelDock.tsx";
 import { PersonaPanel } from "./components/PersonaPanel.tsx";
 import { PowersPanel } from "./components/PowersPanel.tsx";
 import { PresetPanel } from "./components/PresetPanel.tsx";
 import { RosterPanel } from "./components/RosterPanel.tsx";
+import { ScriptHost } from "./components/ScriptHost.tsx";
 import { SessionsPanel } from "./components/SessionsPanel.tsx";
 import { SettingsPanel } from "./components/SettingsPanel.tsx";
 import { SessionStatsBar, StatusStrip } from "./components/StatusStrip.tsx";
@@ -96,6 +98,7 @@ import { useWire, type ConnState } from "./ws.ts";
 import type {
 	AssistantModelInfo,
 	AssistantMsg,
+	AuthorScript,
 	RpPanel,
 	ServerFrame,
 	WireActivity,
@@ -599,8 +602,16 @@ export default function App() {
 
 	/** 一档卡皮肤：显示向规则（启用且有规则时注入对话流） */
 	const [cardSkin, setCardSkin] = useState<SkinProp | null>(null);
+	/**
+	 * 作者运行时脚本（页面级）：卡/预设声明的悬浮球等常驻 UI，交 ScriptHost 跑。
+	 * 与 cardSkin 同源同车（cardfront 快照）但各走各的通道——那是「页面上常驻什么」，
+	 * 不是「这条消息怎么画」，故不受 hasSkin（有没有显示规则）影响，只受皮肤总开关约束。
+	 */
+	const [authorScripts, setAuthorScripts] = useState<AuthorScript[]>([]);
 	/** 生成中的这条就是最新消息（depth 0）：作者「N 楼外删掉」类规则不该落在它头上 */
 	const liveSkin = useMemo(() => skinAtDepth(cardSkin, 0), [cardSkin]);
+	/** 当前这批作者脚本的清单指纹（见 syncAuthorScripts）；声明在两个使用者之前 */
+	const authorSigRef = useRef<string>("");
 	const refreshCardFront = useCallback(async () => {
 		try {
 			// 显式清缓存 + bypass:换卡/hello 后绝对不能吃上一张卡的 rules
@@ -613,10 +624,50 @@ export default function App() {
 				userName: string;
 			}>("/api/cardfront", { bypassCache: true });
 			setCardSkin(r.enabled && r.hasSkin ? { rules: r.rules, charName: r.charName, userName: r.userName } : null);
+			if (!r.enabled) {
+				authorSigRef.current = "";
+				setAuthorScripts([]);
+			}
 		} catch {
 			// hello 已注入时保留;仅 REST 失败且当前无皮时保持 null
 		}
 	}, []);
+
+	/**
+	 * 作者脚本正文：**只在清单指纹变了才拉**（换卡/换预设）。
+	 * 正文实测可达 3.58MB，而 refreshCardFront 每次 hello 都跑——默认带上正文
+	 * 就是每次重放/回退白拉一遍。指纹由服务端的轻清单算出，与 ScriptHost 的
+	 * generation 同一算法（authorScriptSig，共用一份）。
+	 */
+	const syncAuthorScripts = useCallback(
+		async (manifest: Array<{ id: string; source: "preset" | "card"; len: number }> | undefined, enabled: boolean) => {
+			if (!enabled) {
+				authorSigRef.current = "";
+				setAuthorScripts([]);
+				return;
+			}
+			// 旧服务端没有这个字段：什么都不做（没有页面级脚本这回事）
+			if (!manifest) return;
+			const sig = authorScriptSig(manifest);
+			if (sig === authorSigRef.current) return; // 同一批脚本，宿主不必重启
+			authorSigRef.current = sig;
+			if (!manifest.length) {
+				setAuthorScripts([]);
+				return;
+			}
+			try {
+				apiGetCacheClear("/api/cardfront?scripts=1");
+				const r = await apiGet<{ enabled: boolean; scripts?: AuthorScript[] }>("/api/cardfront?scripts=1", {
+					bypassCache: true,
+				});
+				setAuthorScripts(r.enabled ? (r.scripts ?? []) : []);
+			} catch {
+				// 拉不到就当没有：球不出现，不影响正文与其它面板
+				authorSigRef.current = "";
+			}
+		},
+		[],
+	);
 
 	/** 拉角色卡立绘 + 当前身份头像（hello / 切卡后） */
 	const refreshAvatars = useCallback(() => {
@@ -669,6 +720,8 @@ export default function App() {
 								? { rules: cf.rules, charName: cf.charName, userName: cf.userName }
 								: null,
 						);
+						// 作者脚本：hello 只带轻清单，正文按指纹变化才拉（见 syncAuthorScripts）
+						void syncAuthorScripts(cf.scriptManifest, cf.enabled);
 					}
 					// 旧服务端无 cardfront 字段时回落 REST;有字段时仍 bypass 刷新一次对齐开关态
 					void refreshCardFront();
@@ -1246,6 +1299,12 @@ export default function App() {
 		});
 		return () => registerTavernChatBridge(null);
 	}, [ws, pushToast]);
+
+	// 作者脚本的 toastr → 梨园通知条（子帧经 parent.__liyuanToast 调；缺它就只落 console）
+	useEffect(() => {
+		registerLiyuanToast((level, text) => pushToast(level, text));
+		return () => registerLiyuanToast(null);
+	}, [pushToast]);
 
 	// 上传：即时落服务端 .liyuan-uploads/，成功后进 pending（chip 显示，发送时随消息）
 	const doUpload = useCallback(
@@ -1876,6 +1935,12 @@ export default function App() {
 					</div>
 				</div>
 			)}
+
+			{/*
+			  * 页面级作者脚本宿主：卡/预设声明的悬浮球等常驻 UI 在此起跑，产物挂到父页 body。
+			  * 帧自身零尺寸不可见，放在这里只为跟着 App 的生命周期走（换卡即换帧、卸载即收 DOM）。
+			  */}
+			<ScriptHost scripts={authorScripts} />
 
 			<div className="toasts">
 				<UpdateToast

@@ -15,12 +15,14 @@ import {
 	type DisplaySkin,
 } from "../src/postprocess.ts";
 import { hasDepthLimits } from "../src/cardfront.ts";
+import type { AuthorScript } from "../src/authorScripts.ts";
 import { isBackstageText } from "../src/stance.ts";
 import { applyDraftOps, type DraftMsgLike } from "../src/draft.ts";
 import type { RpPanel } from "../src/panels.ts";
 import type { WorldState } from "../src/types.ts";
 
 export type { DisplaySkin };
+export type { AuthorScript };
 export { skinAtDepth };
 
 export type { WorldState, RpPanel };
@@ -239,6 +241,13 @@ export type ServerFrame =
 				rules: Array<{ name: string; source: string; flags: string; replace: string }>;
 				charName: string;
 				userName: string;
+				/**
+				 * 作者运行时脚本（页面级悬浮球等，见 src/authorScripts.ts）**只带清单不带正文**：
+				 * 正文可达数 MB，而 hello 走 WS 不压缩且每次重放都重发。前端拿这份清单算指纹，
+				 * 只在指纹变了（换卡/换预设）时才去 `GET /api/cardfront?scripts=1` 取正文。
+				 * 规则必须同帧、脚本不必——脚本是页面级的，晚一个往返无影响。
+				 */
+				scriptManifest?: Array<{ id: string; source: "preset" | "card"; len: number }>;
 			};
 	  }
 	| { type: "message"; message: WireMsg }
