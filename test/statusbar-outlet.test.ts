@@ -42,8 +42,8 @@ test("mergeFinalText：旧行为不回归——纯元话语整段丢、纯格式
 });
 
 test("mergeFinalText：<content> 整段重述正文 → 状态栏保留、正文不重复（8/13 实弹 B2）", () => {
-	const draft = "鎏金大厅的穹顶垂下一盏水晶吊灯。\n\n明月垂着眼。";
-	const text = `<state1>\n🕰️时间: "星元历2001年7月5日 夜"\n📝姓名: "怀瑾"\n</state1>\n<options>\n- 顺从回应\n</options>\n<thinking>\n开局按设定推进。\n</thinking>\n<content>\n${draft}\n</content>`;
+	const draft = "鎏金大厅的穹顶垂下一盏水晶吊灯。\n\n青梧垂着眼。";
+	const text = `<state1>\n🕰️时间: "第一年·夏 夜"\n📝姓名: "旅人"\n</state1>\n<options>\n- 顺从回应\n</options>\n<thinking>\n开局按设定推进。\n</thinking>\n<content>\n${draft}\n</content>`;
 	const merged = mergeFinalText(draft, text);
 	assert.ok(merged.startsWith(draft), "正文以稿件为准");
 	assert.ok(merged.includes("<state1>"), "状态栏保留（此前 indexOf 把它切掉）");
@@ -54,7 +54,7 @@ test("mergeFinalText：<content> 整段重述正文 → 状态栏保留、正文
 
 test("mergeFinalText：<content> 以正文末段开头续写 → 裁掉重复前缀（8/13 实弹 B1）", () => {
 	const draft = "第一段。\n\n她站在侧厅，月光从高窗斜斜落进来。";
-	const text = `<state1>x</state1>\n<content>\n${draft}\n\n怀瑾走近，说：「今晚跳得很好。」\n</content>`;
+	const text = `<state1>x</state1>\n<content>\n${draft}\n\n旅人走近，说：「今晚跳得很好。」\n</content>`;
 	const merged = mergeFinalText(draft, text);
 	assert.ok(merged.includes("<state1>"));
 	assert.equal((merged.match(/她站在侧厅/g) ?? []).length, 1, "末段不重复");
@@ -151,7 +151,7 @@ test("mergeFinalText：尾巴里裸重述整段正文 → 只留格式块，正�
 	const draft = "我抬起头，看向他。\n\n窗外的光斜进来，落在桌沿上。";
 	const tail = [
 		"<time_format>",
-		"time: 星元历2001年7月5日·周五☆13:40-14:10",
+		"time: 第一年·夏·周五☆13:40-14:10",
 		"scene: 便民街·雀语咖啡馆",
 		"</time_format>",
 		"",

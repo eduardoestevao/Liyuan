@@ -22,7 +22,7 @@
 
 | 旧判断 | 为什么错 |
 |---|---|
-| 「模型不查是因为不查也能写下去」 | 8/21 实测反例：怀瑾查不到它没查、星光学院查得到它也没查。检索从来不是被「写不下去」逼出来的。 |
+| 「模型不查是因为不查也能写下去」 | 8/21 实测反例：某人物查不到它没查、某地点查得到它也没查。检索从来不是被「写不下去」逼出来的。 |
 | 「工具文案不够硬，改文案能治」 | 8/21 实验：把 `ask` ② 的锚点从死掉的「列路标之前」改成「开场第一拍」，**完全没有触发**。文案是苍白的。 |
 | 「派个子代理专门去检索」 | 8/21 证伪：「从索引报编号」是纯位置偏置（反转索引，仍报 0/1/2）；更根本的是子代理**必须交差、没有『查不到』的退路**。见 [[liyuan-retrieval-subagent-falsified]]。 |
 
@@ -44,7 +44,7 @@
 思考原文（最后三句）：
 
 > 「I need to check world state and memory for established facts. **The world state says no records yet.**」
-> 「**Let me search lorebook for 怀瑾 和 星辰之夜** to get details…」
+> 「**Let me search lorebook for 某人物 和 某事件** to get details…」
 > 「**Let me do a couple of searches to ground the scene.**」
 
 时间线：`thinking(1384) → text(2836)`，`toolCall = false`，`stopReason = stop`。

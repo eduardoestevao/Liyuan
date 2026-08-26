@@ -70,7 +70,7 @@ test("长替换串（程序卡）不展开 $&；无捕获时 $1 保持字面", (
 });
 
 test("长替换串仍展开有效 $2（实卡状态栏 rawData=`$2`）", () => {
-	const body = "『姓名』: 明月\n『内心想法』: 想逃";
+	const body = "『姓名』: 青梧\n『内心想法』: 想逃";
 	const payload =
 		"```html\n<!DOCTYPE html><html><body><script>const rawData = `$2`;</script><div id=x></div></body></html>\n```".replace(
 			"```html\n",
@@ -86,7 +86,7 @@ test("长替换串仍展开有效 $2（实卡状态栏 rawData=`$2`）", () => {
 	};
 	const out = applyCardSkin(`<state1>\n${body}\n</state1>`, [rule], M);
 	assert.ok(!out.includes("`$2`") && !out.includes("rawData = `$2`"), "不得残留字面 $2");
-	assert.ok(out.includes("明月") && out.includes("想逃"), "捕获正文须注入模板");
+	assert.ok(out.includes("青梧") && out.includes("想逃"), "捕获正文须注入模板");
 });
 
 // ——— 字面量预筛（8/19 性能修复）：不改语义，只跳过不可能匹配的规则 ———

@@ -146,7 +146,7 @@ function miniDoc(title: string, name: string): string {
 }
 
 test("多份连续 ```html 文档：各自成帧，禁止捏成单帧", () => {
-	const d1 = miniDoc("状态展示", "明月");
+	const d1 = miniDoc("状态展示", "青梧");
 	const d2 = miniDoc("状态展示", "店员小桃");
 	const d3 = miniDoc("下一步行动建议", "opts");
 	const multi =
@@ -164,14 +164,14 @@ test("多份连续 ```html 文档：各自成帧，禁止捏成单帧", () => {
 	const found = findFencedHtmlDocument(multi);
 	assert.ok(found);
 	assert.equal((found!.html.match(/<!DOCTYPE/gi) || []).length, 1, "首认领只能是单文档");
-	assert.ok(found!.html.includes("明月"));
+	assert.ok(found!.html.includes("青梧"));
 	assert.ok(!found!.html.includes("店员小桃"), "不得吞掉后续 state");
 
 	const parts = splitHtmlParts(multi);
 	const htmls = parts.filter((p) => p.kind === "html");
 	assert.equal(htmls.length, 3, "state1+state2+options 各一帧");
 	const bodies = htmls.map((p) => (p.kind === "html" ? p.html : ""));
-	assert.ok(bodies[0]!.includes("明月"));
+	assert.ok(bodies[0]!.includes("青梧"));
 	assert.ok(bodies[1]!.includes("店员小桃"));
 	assert.ok(bodies[2]!.includes("下一步行动建议"));
 	for (const h of bodies) {

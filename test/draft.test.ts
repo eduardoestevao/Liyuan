@@ -74,10 +74,10 @@ test("draftTurnText：只取最后一条 user 之后的 assistant 文本，且�
 
 test("resolveDraftEdit：空稿/找不到/多处/唯一 四态", () => {
 	assert.equal(resolveDraftEdit([user("x")], "abc").ok, false);
-	const msgs = [user("x"), asst("春风又绿江南岸。春风又绿江南岸。明月何时照我还。")];
+	const msgs = [user("x"), asst("春风又绿江南岸。春风又绿江南岸。烟雨蒙蒙锁江天。")];
 	assert.equal(resolveDraftEdit(msgs, "不存在").ok, false);
 	assert.equal(resolveDraftEdit(msgs, "春风又绿江南岸").ok, false, "出现两处应拒绝");
-	assert.equal(resolveDraftEdit(msgs, "明月何时照我还").ok, true);
+	assert.equal(resolveDraftEdit(msgs, "烟雨蒙蒙锁江天").ok, true);
 });
 
 test("parseDraftOp：合法 JSON 才认；old 必须非空", () => {

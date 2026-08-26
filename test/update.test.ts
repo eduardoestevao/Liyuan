@@ -217,7 +217,7 @@ test("apply-update.mjs：白名单覆盖 + 数据保留 + 备份", () => {
 		writeFileSync(join(dir, "package.json"), JSON.stringify({ name: "liyuan", version: "1.1.1", dependencies: { ws: "1" } }));
 		writeFileSync(join(dir, "src", "old.ts"), "old code");
 		writeFileSync(join(dir, "src", "gone.ts"), "will be removed by update");
-		writeFileSync(join(dir, "liyuan.config.json"), '{"userName":"怀瑾"}');
+		writeFileSync(join(dir, "liyuan.config.json"), '{"userName":"旅人"}');
 		writeFileSync(join(dir, "assets", "cards", "我的私人卡.png"), "PRIVATE");
 		writeFileSync(join(dir, "assets", "cards", "default_Qingwu.json"), '{"v":"old"}');
 		writeFileSync(join(dir, ".liyuan-state", "state.json"), '{"hp":1}');
@@ -245,7 +245,7 @@ test("apply-update.mjs：白名单覆盖 + 数据保留 + 备份", () => {
 		assert.ok(!existsSync(join(dir, "src", "gone.ts")), "更新里已删除的模块不得残留");
 		assert.equal(JSON.parse(readFileSync(join(dir, "package.json"), "utf8")).version, "1.1.2");
 		// 用户数据分毫不动
-		assert.equal(readFileSync(join(dir, "liyuan.config.json"), "utf8"), '{"userName":"怀瑾"}');
+		assert.equal(readFileSync(join(dir, "liyuan.config.json"), "utf8"), '{"userName":"旅人"}');
 		assert.equal(readFileSync(join(dir, "assets", "cards", "我的私人卡.png"), "utf8"), "PRIVATE");
 		assert.equal(readFileSync(join(dir, ".liyuan-state", "state.json"), "utf8"), '{"hp":1}');
 		// 官方示例卡同步

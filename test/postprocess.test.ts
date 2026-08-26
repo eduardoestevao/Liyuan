@@ -338,8 +338,8 @@ const foxHideCot = {
 };
 const skinOf = (rules: Array<Record<string, unknown>>) => ({
 	rules: rules as never,
-	charName: "怀瑾",
-	userName: "明月",
+	charName: "青梧",
+	userName: "旅人",
 });
 const BODY = "她站在追光里，胶衣的凉意贴着脊背，报价声一层层压下来，像雨点砸在铁皮上。她没有动。";
 
