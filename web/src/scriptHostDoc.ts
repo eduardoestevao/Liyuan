@@ -35,7 +35,13 @@ export const AUTHOR_SCRIPTS_GLOBAL = "__liyuanAuthorScripts";
  *
  * - **逐条独立**：一条一个 `<script>` 元素，各是独立编译单元。某条语法错误只废它自己，
  *   后面的照跑（拼成一大段就是一错全废）。
- * - **顺序同步**：同步 append 保证按清单顺序执行（预设在前、卡在后，见 authorScripts.ts）。
+ * - **module 还是 classic 按语法判**：作者脚本里有顶层 `import`/`export` 的必须走
+ *   `type="module"`（classic 下 `import` 直接是语法错误）。实测一张卡的 5 个脚本里 2 个是模块
+ *   （一个 `import` 整份 MVU 插件 bundle、一个 `export const Schema` 再注册）。
+ *   判据只问语法不问名字；没有 import/export 的仍走 classic——那类脚本常靠 `var` 挂全局，
+ *   module 作用域会把它们关起来。
+ * - **顺序**：classic 同步 append 即按序执行；module 天生 defer，但同一文档里按 append 顺序执行，
+ *   且一律晚于 classic——这与酒馆助手一致（那边模块也是后跑）。
  * - **报回父页**：跑完发一帧 `liyuanScriptHostBooted`，父页据此确认宿主活了（诊断用，
  *   不参与任何判据）。
  */
@@ -46,21 +52,27 @@ try{
   function readList(){
     try{ var p=parentWin(); return p?p["${AUTHOR_SCRIPTS_GLOBAL}"]:null; }catch(e){ return null; }
   }
+  // 顶层 import/export ⇒ ES 模块。只看行首（字符串里的 "import" 不算）。
+  function isModule(code){
+    return /^[ \\t]*(?:import|export)[\\s{'"*]/m.test(code);
+  }
   function run(list){
-    var ok=0,bad=0;
+    var ok=0,bad=0,mods=0;
     for(var i=0;i<list.length;i++){
       var item=list[i]||{};
+      var code=String(item.content||"");
       try{
         var el=document.createElement("script");
         el.setAttribute("data-liyuan-author-script",String(item.id||i));
-        el.textContent=String(item.content||"");
+        if(isModule(code)){el.type="module";mods++;}
+        el.textContent=code;
         document.body.appendChild(el);
         ok++;
       }catch(e){ bad++; console.error("[liyuan scriptHost] 脚本执行失败",item&&item.name,e); }
     }
     try{
       var pw=parentWin();
-      if(pw)pw.postMessage({liyuanScriptHostBooted:{ok:ok,failed:bad,total:list.length}},"*");
+      if(pw)pw.postMessage({liyuanScriptHostBooted:{ok:ok,failed:bad,total:list.length,modules:mods}},"*");
     }catch(e2){}
   }
   // 父页在渲染期就挂好了清单，正常一次就读到。轮询只是兜底（并发渲染/提交时序的意外），

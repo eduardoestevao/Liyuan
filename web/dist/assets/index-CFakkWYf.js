@@ -292,21 +292,27 @@ try{
   function readList(){
     try{ var p=parentWin(); return p?p["${Ki}"]:null; }catch(e){ return null; }
   }
+  // 顶层 import/export ⇒ ES 模块。只看行首（字符串里的 "import" 不算）。
+  function isModule(code){
+    return /^[ \\t]*(?:import|export)[\\s{'"*]/m.test(code);
+  }
   function run(list){
-    var ok=0,bad=0;
+    var ok=0,bad=0,mods=0;
     for(var i=0;i<list.length;i++){
       var item=list[i]||{};
+      var code=String(item.content||"");
       try{
         var el=document.createElement("script");
         el.setAttribute("data-liyuan-author-script",String(item.id||i));
-        el.textContent=String(item.content||"");
+        if(isModule(code)){el.type="module";mods++;}
+        el.textContent=code;
         document.body.appendChild(el);
         ok++;
       }catch(e){ bad++; console.error("[liyuan scriptHost] 脚本执行失败",item&&item.name,e); }
     }
     try{
       var pw=parentWin();
-      if(pw)pw.postMessage({liyuanScriptHostBooted:{ok:ok,failed:bad,total:list.length}},"*");
+      if(pw)pw.postMessage({liyuanScriptHostBooted:{ok:ok,failed:bad,total:list.length,modules:mods}},"*");
     }catch(e2){}
   }
   // 父页在渲染期就挂好了清单，正常一次就读到。轮询只是兜底（并发渲染/提交时序的意外），

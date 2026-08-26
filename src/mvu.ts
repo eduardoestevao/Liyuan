@@ -187,6 +187,290 @@ function parseScalar(raw: string): unknown {
 	return raw;
 }
 
+// ————————————————— 初值的第二种声明形式：Zod schema 的 prefault —————————————————
+
+/**
+ * MVU 的初值有**两种声明形式**，`[initvar]` 只是其一。
+ *
+ * 另一种是卡的运行时脚本里注册一份 Zod schema，初值写成字段的 `prefault(…)`：
+ * ```
+ * export const Schema = z.object({ 根: z.object({
+ *   世界: z.object({ 当前时间: z.string().prefault('清晨') }).prefault({}),
+ * }).prefault({}) });
+ * $(() => { registerMvuSchema(Schema); });
+ * ```
+ * MVU 拿空对象过一遍 schema，prefault 就把整棵初始树填出来。
+ *
+ * 普查（14 卡）：3 张卡带 Zod schema，其中 2 张**同时**有 `[initvar]`（schema 只当校验层），
+ * 1 张把初值**只**写在 prefault 里 —— 那张卡在梨园里整个悬浮球面板都是 `--`，
+ * 因为 `findInitVar` 找不到东西。这就是本节补的缺口。
+ *
+ * ## 为什么解析声明、而不是把作者的 schema 真跑起来
+ * 跑起来需要 Zod 与 MVU 插件 bundle，而那份 bundle 实测要求宿主页面提供 `Vue` 与 `z` 全局
+ * （真浏览器把两条 CDN 模块拉下来后分别报 `ReferenceError: Vue is not defined` /
+ * `z is not defined`）——那等于把梨园伪装成酒馆，还要为一种声明形式引进两个重量级运行时。
+ * 而 prefault 声明本身就是**纯文本里的静态数据**，与 `[initvar]` 的 YAML 同性质，解析它才对等。
+ *
+ * 判据是 **`registerMvuSchema`——MVU 自己发行的 API 名**（同 `[initvar]` /
+ * `<StatusPlaceHolderImpl/>`，全生态逐字相同），不是任何卡作者的措辞：换卡不增行。
+ * 容错纪律同 parseInitVarYaml：认不出的表达式跳过该键，**宁可漏一个字段，不可毁整棵树**。
+ */
+
+/** 从 pos 起跳过空白与 JS 注释 */
+function skipTrivia(src: string, pos: number): number {
+	let i = pos;
+	for (;;) {
+		while (i < src.length && /\s/.test(src[i]!)) i++;
+		if (src.startsWith("//", i)) {
+			const nl = src.indexOf("\n", i);
+			i = nl < 0 ? src.length : nl + 1;
+			continue;
+		}
+		if (src.startsWith("/*", i)) {
+			const end = src.indexOf("*/", i + 2);
+			i = end < 0 ? src.length : end + 2;
+			continue;
+		}
+		return i;
+	}
+}
+
+/** 跳过从 pos 起的一整段字符串/模板串（pos 必须指着引号），返回收尾引号之后的位置 */
+function skipString(src: string, pos: number): number {
+	const quote = src[pos]!;
+	let i = pos + 1;
+	while (i < src.length) {
+		if (src[i] === "\\") {
+			i += 2;
+			continue;
+		}
+		if (src[i] === quote) return i + 1;
+		i++;
+	}
+	return i;
+}
+
+/**
+ * 从 `open`（必须是 `(`/`[`/`{`）起找配平的闭括号下标；找不到返回 -1。
+ * 字符串与注释里的括号不计数。
+ */
+function matchBracket(src: string, open: number): number {
+	if (!"([{".includes(src[open] ?? "")) return -1;
+	let depth = 0;
+	let i = open;
+	while (i < src.length) {
+		const c = src[i]!;
+		if (c === '"' || c === "'" || c === "`") {
+			i = skipString(src, i);
+			continue;
+		}
+		if (src.startsWith("//", i) || src.startsWith("/*", i)) {
+			i = skipTrivia(src, i);
+			continue;
+		}
+		if (c === "(" || c === "[" || c === "{") depth++;
+		else if (c === ")" || c === "]" || c === "}") {
+			depth--;
+			if (depth === 0) return i;
+		}
+		i++;
+	}
+	return -1;
+}
+
+/** 从 pos 起读到**顶层**的分隔符（`stop` 里任一字符），返回该位置；括号/字符串内的不算 */
+function scanToTopLevel(src: string, pos: number, stop: string): number {
+	let i = pos;
+	let depth = 0;
+	while (i < src.length) {
+		const c = src[i]!;
+		if (c === '"' || c === "'" || c === "`") {
+			i = skipString(src, i);
+			continue;
+		}
+		if (src.startsWith("//", i) || src.startsWith("/*", i)) {
+			i = skipTrivia(src, i);
+			continue;
+		}
+		if (c === "(" || c === "[" || c === "{") depth++;
+		else if (c === ")" || c === "]" || c === "}") depth--;
+		else if (depth === 0 && stop.includes(c)) return i;
+		i++;
+	}
+	return i;
+}
+
+/**
+ * 解析 prefault 的实参（一个 JS 字面量）：字符串 / 数字 / 布尔 / null / 数组 / 对象。
+ * 认不出返回 `undefined`（调用方据此跳过该键——含函数、表达式等）。
+ */
+function parseJsLiteral(raw: string): unknown {
+	const s = raw.trim();
+	if (!s) return undefined;
+	if (s === "true") return true;
+	if (s === "false") return false;
+	if (s === "null") return null;
+	if (/^-?\d+(?:\.\d+)?$/.test(s)) return Number(s);
+	if ((s.startsWith("'") && s.endsWith("'")) || (s.startsWith('"') && s.endsWith('"'))) return s.slice(1, -1);
+	if ((s.startsWith("[") && s.endsWith("]")) || (s.startsWith("{") && s.endsWith("}"))) {
+		try {
+			return JSON.parse(s);
+		} catch {
+			// 单引号数组（`['甲']`）：只换引号位置的单引号，不碰字符串内部
+			try {
+				return JSON.parse(s.replace(/'([^'\\]*)'/g, '"$1"'));
+			} catch {
+				return undefined;
+			}
+		}
+	}
+	return undefined;
+}
+
+/**
+ * 在表达式**顶层**链上找 `.prefault(X)` / `.default(X)` 的实参原文（取最后一个）。
+ * 嵌在括号里的（如 `z.array(z.object({a: z.string().prefault('x')}))` 内层那个）不算。
+ */
+function trailingDefaultArg(expr: string): string | undefined {
+	let found: string | undefined;
+	let i = 0;
+	while (i < expr.length) {
+		const c = expr[i]!;
+		if (c === '"' || c === "'" || c === "`") {
+			i = skipString(expr, i);
+			continue;
+		}
+		if (c === "(" || c === "[" || c === "{") {
+			const close = matchBracket(expr, i);
+			// 顶层的 `.prefault(` / `.default(` 才收
+			const before = expr.slice(0, i);
+			const m = /\.(prefault|default)\s*$/.exec(before);
+			if (m && close > i) found = expr.slice(i + 1, close);
+			i = close < 0 ? expr.length : close + 1;
+			continue;
+		}
+		i++;
+	}
+	return found;
+}
+
+/**
+ * 把一个 schema 表达式求成「它的默认值」：
+ * - `z.object({…})` → 由**子字段默认值**组成的对象（子字段自带 prefault，故对象自己那个
+ *   `.prefault({})` 只是「缺失时先当空对象再往里填」，被子字段覆盖）
+ * - 其它（`z.string()` / `z.enum()` / `z.array()` / `z.coerce.number().transform(…)`）→ 取顶层链的 prefault
+ * - 裸标识符（命名子 schema，如同一份脚本里 `const CharacterKnowledge = z.object(…)`）→ 查符号表
+ * 认不出 ⇒ `undefined`。
+ */
+function evalSchemaExpr(expr: string, symbols: Map<string, string>, depth = 0): unknown {
+	if (depth > 24) return undefined; // 循环引用防线
+	const s = expr.trim();
+	if (/^[A-Za-z_$][\w$]*$/.test(s)) {
+		const ref = symbols.get(s);
+		return ref === undefined ? undefined : evalSchemaExpr(ref, symbols, depth + 1);
+	}
+	/**
+	 * `z.object(` 必须在表达式**开头**才算对象 schema。
+	 * 不能在整段里乱找：`z.array(z.object({…})).prefault([])` 里面也有一个 `z.object(`，
+	 * 认了它就把「数组的元素形状」当成了字段的值——实测那张卡的 `帖子流` 本该是 `[]`，
+	 * 却被填成一条空帖子对象，球拿它当数组遍历就是错的。
+	 */
+	if (/^z\s*\.\s*object\s*\(/.test(s)) {
+		const callOpen = s.indexOf("(");
+		const callClose = matchBracket(s, callOpen);
+		if (callClose > 0) {
+			const inner = s.slice(callOpen + 1, callClose).trim();
+			if (inner.startsWith("{")) {
+				const objClose = matchBracket(inner, 0);
+				if (objClose > 0) {
+					const fields = parseSchemaFields(inner.slice(1, objClose), symbols, depth + 1);
+					if (Object.keys(fields).length > 0) return fields;
+				}
+			}
+		}
+	}
+	const arg = trailingDefaultArg(s);
+	return arg === undefined ? undefined : parseJsLiteral(arg);
+}
+
+/** 解析 `z.object({ … })` 花括号内的 `键: 表达式,` 列表 */
+function parseSchemaFields(body: string, symbols: Map<string, string>, depth: number): MvuTree {
+	const out: MvuTree = {};
+	let i = 0;
+	while (i < body.length) {
+		i = skipTrivia(body, i);
+		if (i >= body.length) break;
+		// 键：'引号包裹'（中文键必然如此）或裸标识符
+		let key: string;
+		const c = body[i]!;
+		if (c === "'" || c === '"') {
+			const end = body.indexOf(c, i + 1);
+			if (end < 0) break;
+			key = body.slice(i + 1, end);
+			i = end + 1;
+		} else {
+			const m = /^[^\s:,}]+/.exec(body.slice(i));
+			if (!m) {
+				i++;
+				continue;
+			}
+			key = m[0];
+			i += m[0].length;
+		}
+		i = skipTrivia(body, i);
+		if (body[i] !== ":") {
+			// 不是 `键:` 形状（展开运算符、方法调用等）→ 跳到下一个顶层逗号
+			i = scanToTopLevel(body, i, ",") + 1;
+			continue;
+		}
+		i++;
+		const valStart = i;
+		i = scanToTopLevel(body, i, ",");
+		const value = evalSchemaExpr(body.slice(valStart, i), symbols, depth);
+		if (value !== undefined) out[key] = value;
+		i++; // 越过逗号
+	}
+	return out;
+}
+
+/** 收集 `const X = …;` / `export const X = …;`，供裸标识符引用时查表 */
+function collectSymbols(src: string): Map<string, string> {
+	const out = new Map<string, string>();
+	const re = /(?:^|\n)\s*(?:export\s+)?const\s+([A-Za-z_$][\w$]*)\s*=\s*/g;
+	let m: RegExpExecArray | null;
+	while ((m = re.exec(src)) !== null) {
+		const start = m.index + m[0].length;
+		const end = scanToTopLevel(src, start, ";");
+		out.set(m[1]!, src.slice(start, end));
+		re.lastIndex = end;
+	}
+	return out;
+}
+
+/**
+ * 一段作者脚本 → Zod schema 声明出的初始树；不是 schema 脚本返回 null。
+ *
+ * 入口判据＝脚本里调了 `registerMvuSchema(X)`（MVU 发行的 API 名），树取自实参 `X`
+ * 指向的声明。**不按导出名字找**（不认 `Schema` 这类作者措辞）。
+ */
+export function parseMvuSchemaDefaults(src: string): MvuTree | null {
+	if (!src || !src.includes("registerMvuSchema")) return null;
+	const call = /registerMvuSchema\s*\(\s*([A-Za-z_$][\w$]*)\s*\)/.exec(src);
+	if (!call) return null;
+	const tree = evalSchemaExpr(call[1]!, collectSymbols(src));
+	if (!tree || typeof tree !== "object" || Array.isArray(tree)) return null;
+	return Object.keys(tree).length > 0 ? (tree as MvuTree) : null;
+}
+
+/** 一组作者脚本里第一份可解的 schema 初始树（顺序即声明序） */
+export function findSchemaDefaults(scripts: Array<{ content?: string }>): MvuTree | null {
+	for (const s of scripts) {
+		const tree = parseMvuSchemaDefaults(s?.content ?? "");
+		if (tree) return tree;
+	}
+	return null;
+}
+
 /** 一次 MVU 记账的结果 */
 export interface MvuPatchResult {
 	tree: MvuTree;
@@ -312,7 +596,13 @@ function substituteMacros(node: unknown, userName: string, charName: string): un
 }
 
 /**
- * 懒建初始树：MVU 卡且 state 还没有 `.mvu` 时，从卡的 `[initvar]` 建一棵初始树填进去。
+ * 懒建初始树：MVU 卡且 state 还没有 `.mvu` 时，从卡的初值声明建一棵初始树填进去。
+ *
+ * **初值有两种声明形式，按优先级试**：
+ * 1. 世界书 `[initvar]`（老形式，findInitVar）——那是作者写下的**实际初始数据**
+ * 2. 运行时脚本里注册的 Zod schema 的 `prefault`（findSchemaDefaults）——那是**字段默认值**
+ * 顺序不能反：两张卡同时有两者，`[initvar]` 才是它们的真初值，schema 只当校验层。
+ * 只有第三张（初值只写在 prefault 里）会落到第 2 条——它此前整个面板都是 `--`。
  *
  * **懒建而非会话创建时一次性建**：因为 (1) 老会话/导入的会话没有建树步骤也要能显示；(2) 读点
  * （前端 currentState / 场记开演前）调用即补，不依赖任何特定生命周期钩子。幂等：已有 `.mvu`
@@ -327,9 +617,10 @@ export function seedMvuIfNeeded(
 	bookEntries: Array<{ comment?: string; content?: string }>,
 	userName: string,
 	charName: string,
+	authorScripts: Array<{ content?: string }> = [],
 ): typeof state {
 	if (state.mvu && typeof state.mvu === "object") return state; // 已有树（含空树 {}）→ 不覆盖
-	const tree = findInitVar(bookEntries);
+	const tree = findInitVar(bookEntries) ?? findSchemaDefaults(authorScripts);
 	if (!tree) return state; // 非 MVU 卡 / 无可解初值
 	const seeded = substituteMacros(tree, userName, charName) as Record<string, unknown>;
 	return { ...state, mvu: seeded };

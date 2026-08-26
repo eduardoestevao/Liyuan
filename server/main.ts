@@ -41,9 +41,9 @@ import {
 } from "../src/access.ts";
 import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
 import { streamSimple } from "@liyuan/ai/compat";
-import { loadCardFile, updateCardFields } from "../src/card.ts";
-import { findInitVar, seedMvuIfNeeded } from "../src/mvu.ts";
-import { authorScriptManifest } from "../src/authorScripts.ts";
+import { loadCardFile, readCardRawJson, updateCardFields } from "../src/card.ts";
+import { findInitVar, findSchemaDefaults, seedMvuIfNeeded } from "../src/mvu.ts";
+import { authorScriptManifest, extractAuthorScripts } from "../src/authorScripts.ts";
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
@@ -391,8 +391,9 @@ mkdirSync(stateDir, { recursive: true });
  * 磁盘缓存仍是旧分支的账本，只有树快照能给出当前分支的正确值。
  * 树上无快照（未记账的新会话）时回落磁盘缓存：旧会话与导入建账都只有文件。
  *
- * MVU 卡：读出的 state 若还没建变量树（首拍/老会话，见 src/mvu.ts），从卡 [initvar] 懒建初始树，
- * 使状态栏面板在开局就有数据（之后由场记每拍推动）。按 cardPath 记忆卡书，避免每次读盘。
+ * MVU 卡：读出的 state 若还没建变量树（首拍/老会话，见 src/mvu.ts），从卡的初值声明懒建初始树
+ * （世界书 `[initvar]` 优先，没有就退到卡自带脚本里 Zod schema 的 prefault），使状态栏面板与
+ * 作者悬浮球在开局就有数据（之后由场记每拍推动）。按 cardPath 记忆卡料，避免每次读盘。
  */
 let mvuBookCache: { path: string; entries: Array<{ comment?: string; content?: string }> } | null = null;
 const cardBookForMvu = (): Array<{ comment?: string; content?: string }> => {
@@ -403,6 +404,20 @@ const cardBookForMvu = (): Array<{ comment?: string; content?: string }> => {
 		const entries = loadCardFile(abs).book.map((e) => ({ comment: e.comment, content: e.content }));
 		mvuBookCache = { path: cardPath, entries };
 		return entries;
+	} catch {
+		return [];
+	}
+};
+/** 卡自带运行时脚本（初值第二形式的住处）；与卡书同一套 memo 纪律 */
+let mvuScriptCache: { path: string; scripts: Array<{ content?: string }> } | null = null;
+const cardScriptsForMvu = (): Array<{ content?: string }> => {
+	if (!cardPath) return [];
+	if (mvuScriptCache?.path === cardPath) return mvuScriptCache.scripts;
+	try {
+		const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
+		const scripts = extractAuthorScripts(readCardRawJson(abs).raw, "card");
+		mvuScriptCache = { path: cardPath, scripts };
+		return scripts;
 	} catch {
 		return [];
 	}
@@ -419,19 +434,21 @@ const currentState = (): WorldState => {
 		}
 		return loadState(join(stateDir, `${session.sessionId}.json`));
 	})();
-	return seedMvuIfNeeded(raw, cardBookForMvu(), names.userName, names.charName) as WorldState;
+	return seedMvuIfNeeded(raw, cardBookForMvu(), names.userName, names.charName, cardScriptsForMvu()) as WorldState;
 };
 
 /**
- * 本卡的 MVU 变量树归梨园管吗——判据同 seedMvuIfNeeded 的前提：卡里有可解的 `[initvar]` 初始树。
+ * 本卡的 MVU 变量树归梨园管吗——**判据必须与 seedMvuIfNeeded 的前提逐字同义**：
+ * 卡有可解的初值声明（世界书 `[initvar]` 或卡自带脚本里的 Zod schema prefault）。
+ * 两处判据一旦分家，就会出现「树建了但面板挂载点不补」这类只在某类卡上现形的怪毛病。
  * 归梨园管，梨园就要连 MVU 插件「回复后追加面板挂载点」那一步也一起干（src/mvu.ts）。
- * 按 cardPath memo：显示侧每条消息都要问一次，别重复解 YAML。
+ * 按 cardPath memo：显示侧每条消息都要问一次，别重复解 YAML / 扫脚本。
  */
 let mvuOwnedCache: { path: string; owned: boolean } | null = null;
 const hasMvuTree = (): boolean => {
 	if (!cardPath) return false;
 	if (mvuOwnedCache?.path === cardPath) return mvuOwnedCache.owned;
-	const owned = findInitVar(cardBookForMvu()) !== null;
+	const owned = findInitVar(cardBookForMvu()) !== null || findSchemaDefaults(cardScriptsForMvu()) !== null;
 	mvuOwnedCache = { path: cardPath, owned };
 	return owned;
 };

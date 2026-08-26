@@ -913,8 +913,15 @@ export class StageEngine {
 		// 触发是结构信号（本拍有正文＝封笔），扮演者无感；场记读「已写出的正文＋当前账本」
 		// 出 patch，判断在模型、落账由 harness 死板执行（叶守卫在 runScribeTurn 内）。
 		if (entryId && !aborted && finalText) {
-			// MVU 卡：开演前若树还没建（首拍/老会话），从卡 [initvar] 懒建；规则喂给场记当参考。
-			const seededState = seedMvuIfNeeded(state, materials.card.book, materials.config.userName, materials.card.name);
+			// MVU 卡：开演前若树还没建（首拍/老会话），从卡的初值声明懒建——世界书 [initvar] 优先，
+			// 没有就退到卡自带脚本里 Zod schema 的 prefault（见 seedMvuIfNeeded）。规则喂给场记当参考。
+			const seededState = seedMvuIfNeeded(
+				state,
+				materials.card.book,
+				materials.config.userName,
+				materials.card.name,
+				materials.cardAuthorScripts,
+			);
 			const mvuRules = seededState.mvu ? findMvuRules(materials.card.book) : undefined;
 			const r = await runScribeTurn(
 				{

@@ -1,6 +1,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { findMvuRules, findInitVar, parseInitVarYaml, applyMvuPatch, formatMvuTree, isMvuPanelMount, mountMvuPanel, MVU_STATUS_PLACEHOLDER, isMvuRulesEntry, stripMvuRuleEntries } from "../src/mvu.ts";
+import { findMvuRules, findInitVar, parseInitVarYaml, applyMvuPatch, formatMvuTree, isMvuPanelMount, mountMvuPanel, MVU_STATUS_PLACEHOLDER, isMvuRulesEntry, stripMvuRuleEntries, parseMvuSchemaDefaults, findSchemaDefaults, seedMvuIfNeeded } from "../src/mvu.ts";
+import { extractAuthorScripts } from "../src/authorScripts.ts";
 import { prepareDisplayText, skinAtDepth } from "../src/postprocess.ts";
 import { displayRules, extractRegexScripts } from "../src/cardfront.ts";
 import { findLocalCard, findLocalLorebook, localCards, type LocalCard } from "./fixtures.ts";
@@ -285,4 +286,145 @@ test("真书：带树的书里规则条目被摘、initvar 条目留着；无树
 	assert.deepEqual(initvarState(r.entries), initvarState(withTree.entries), "initvar 条目的启用状态不许被本刀改动");
 	// 无树的书一字不动
 	if (noTree) assert.equal(stripMvuRuleEntries(noTree.entries).dropped.length, 0);
+});
+
+// ————————————————— 初值的第二种声明形式：Zod schema 的 prefault —————————————————
+
+const SCHEMA_SRC = `
+import { registerMvuSchema } from 'https://cdn/mvu_zod.js';
+
+const Knowledge = z.enum(['知道', '不知']);
+const CharacterKnowledge = z.object({
+  '甲事': Knowledge.prefault('不知'),
+  '乙事': Knowledge.prefault('不知'),
+}).strict().prefault({});
+
+export const Schema = z.object({
+  根: z.object({
+    世界: z.object({
+      当前时间: z.string().prefault('清晨'),
+      当前地点: z.string().prefault('某房间'),
+      天气: z.string().prefault('夜'),
+    }).prefault({}),
+    主角: z.object({
+      已知事实: z.array(z.string()).prefault([]),
+      倾向: z.coerce.number().transform(v => _.clamp(v, 0, 100)).prefault(0),
+      在线: z.boolean().prefault(false),
+    }).prefault({}),
+    在场: z.object({
+      角色: z.array(z.string()).prefault(['甲']),
+    }).prefault({}),
+    情报: z.object({
+      // 数组的元素形状不是字段的值：这里必须是 []
+      帖子流: z.array(z.object({ 标题: z.string().prefault('') })).prefault([]),
+    }).prefault({}),
+    矩阵: z.object({ 甲: CharacterKnowledge }).prefault({}),
+  }).prefault({}),
+});
+
+$(() => { registerMvuSchema(Schema); });
+`;
+
+test("schema 初值：整棵树按 prefault 解出来", () => {
+	const t = parseMvuSchemaDefaults(SCHEMA_SRC);
+	assert.ok(t);
+	assert.deepEqual(t, {
+		根: {
+			世界: { 当前时间: "清晨", 当前地点: "某房间", 天气: "夜" },
+			主角: { 已知事实: [], 倾向: 0, 在线: false },
+			在场: { 角色: ["甲"] },
+			情报: { 帖子流: [] },
+			矩阵: { 甲: { 甲事: "不知", 乙事: "不知" } },
+		},
+	});
+});
+
+test("schema 初值：数组字段是 []，不是元素形状（认 z.object 必须锚在表达式开头）", () => {
+	const t = parseMvuSchemaDefaults(SCHEMA_SRC)!;
+	assert.deepEqual((t.根 as Record<string, unknown>).情报, { 帖子流: [] });
+});
+
+test("schema 初值：命名子 schema 的引用能查表展开", () => {
+	const t = parseMvuSchemaDefaults(SCHEMA_SRC)!;
+	const 矩阵 = ((t.根 as Record<string, unknown>).矩阵 as Record<string, unknown>).甲;
+	assert.deepEqual(矩阵, { 甲事: "不知", 乙事: "不知" });
+});
+
+test("schema 初值：判据是 registerMvuSchema（MVU 发行的 API 名），没有就 null", () => {
+	assert.equal(parseMvuSchemaDefaults("const Schema = z.object({a: z.string().prefault('x')});"), null);
+	assert.equal(parseMvuSchemaDefaults(""), null);
+	assert.equal(parseMvuSchemaDefaults("registerMvuSchema()"), null);
+	assert.equal(parseMvuSchemaDefaults("registerMvuSchema(不存在的名字)"), null);
+});
+
+test("schema 初值：无 prefault 的字段被跳过，不塞 undefined/null 进树", () => {
+	const src = `registerMvuSchema(S);
+	const S = z.object({ a: z.object({ 有: z.string().prefault('x'), 无: z.string() }).prefault({}) });`;
+	const t = parseMvuSchemaDefaults(src)!;
+	assert.deepEqual(t, { a: { 有: "x" } });
+	assert.ok(!("无" in (t.a as Record<string, unknown>)));
+});
+
+test("schema 初值：认不出的表达式只丢那个键，不毁整棵树", () => {
+	const src = `registerMvuSchema(S);
+	const S = z.object({ 好: z.string().prefault('ok'), 怪: z.custom(() => 某个函数()), 也好: z.string().prefault('ok2') });`;
+	const t = parseMvuSchemaDefaults(src)!;
+	assert.deepEqual(t, { 好: "ok", 也好: "ok2" });
+});
+
+test("schema 初值：注释里的 prefault 不参与（跳注释）", () => {
+	const src = `registerMvuSchema(S);
+	const S = z.object({
+	  // 旧写法：z.string().prefault('作废')
+	  值: z.string().prefault('生效'),
+	});`;
+	assert.deepEqual(parseMvuSchemaDefaults(src), { 值: "生效" });
+});
+
+test("findSchemaDefaults：多份脚本里取第一份可解的", () => {
+	assert.equal(findSchemaDefaults([{ content: "无关脚本" }, { content: "" }]), null);
+	const t = findSchemaDefaults([{ content: "$(()=>{})" }, { content: SCHEMA_SRC }]);
+	assert.ok(t && "根" in t);
+});
+
+test("播种优先级：[initvar] 在前，schema prefault 兜底", () => {
+	// initvar 与 schema 故意给不同的值，胜者才认得出来
+	const book = [{ comment: "[initvar]", content: "世界:\n  当前时间: 正午\n" }];
+	// 两者都有 → 用 [initvar]（那是作者写下的实际初值，schema 只是校验层）
+	const both = seedMvuIfNeeded({}, book, "旅人", "某角色", [{ content: SCHEMA_SRC }]);
+	assert.deepEqual(both.mvu, { 世界: { 当前时间: "正午" } });
+	// 只有 schema → 用 prefault（此前这类卡整个面板都是 --）
+	const only = seedMvuIfNeeded({}, [], "旅人", "某角色", [{ content: SCHEMA_SRC }]);
+	assert.ok(only.mvu && "根" in only.mvu);
+	// 两者都没有 → 不建树（没见过的卡零变化）
+	assert.equal(seedMvuIfNeeded({}, [], "旅人", "某角色", [{ content: "无关" }]).mvu, undefined);
+	// 已有树 → 不覆盖（剧情已推进的树才是权威）
+	const kept = seedMvuIfNeeded({ mvu: { 已推进: true } }, book, "旅人", "某角色", [{ content: SCHEMA_SRC }]);
+	assert.deepEqual(kept.mvu, { 已推进: true });
+});
+
+test("实卡：初值只写在 schema prefault 里的卡能被播种", (t) => {
+	// 形状判据：卡自带脚本里有可解的 schema 初值，且卡书里没有 [initvar]
+	const card = findLocalCard(
+		(c) =>
+			findSchemaDefaults(extractAuthorScripts(c.raw, "card")) !== null &&
+			findInitVar(
+				(() => {
+					const src = (c.data.character_book as { entries?: unknown })?.entries ?? [];
+					const list = Array.isArray(src) ? src : Object.values(src as Record<string, unknown>);
+					return list.map((e) => ({ comment: (e as { comment?: string }).comment, content: (e as { content?: string }).content }));
+				})(),
+			) === null,
+	);
+	if (!card) return t.skip("本地没有这种形状的卡");
+	const tree = findSchemaDefaults(extractAuthorScripts(card.raw, "card"))!;
+	// 不断言具体字段（那是卡的私有内容）：断言形状不变量
+	const rootKeys = Object.keys(tree);
+	assert.equal(rootKeys.length, 1, "schema 只有一个变量根");
+	const root = tree[rootKeys[0]!] as Record<string, unknown>;
+	assert.ok(Object.keys(root).length >= 5, "根下应有多个分组");
+	// 值必须是真数据，不能全是空壳（否则面板还是 --）
+	const flat = JSON.stringify(root);
+	assert.ok(flat.length > 500, "解出来的树要有实质内容");
+	assert.ok(!flat.includes("undefined"), "树里不许出现 undefined");
 });

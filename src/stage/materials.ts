@@ -25,6 +25,7 @@ import {
 import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
+import { extractAuthorScripts } from "../authorScripts.ts";
 import {
 	assemble,
 	type AssembledPiece,
@@ -220,6 +221,15 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 			return [];
 		}
 	})();
+	// 卡自带运行时脚本：MVU 初值的第二种声明形式（Zod schema 的 prefault）住在这儿，
+	// 场记开演前的懒建播种要用（见 src/mvu.ts seedMvuIfNeeded）。与上面同一份原文，坏卡不拖垮装载。
+	const cardAuthorScripts = (() => {
+		try {
+			return extractAuthorScripts(readCardRawJson(cardAbs).raw, "card");
+		} catch {
+			return [];
+		}
+	})();
 
 	// 世界书：已挂载独立书（0..N）+ 补充设定集 overlay；卡内 character_book 不自动进上下文
 	const fileGroups: LorebookEntry[][] = [];
@@ -328,6 +338,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	const materials: StageMaterials = {
 		config,
 		card,
+		cardAuthorScripts,
 		entries,
 		presetDoc,
 		presetBefore,
