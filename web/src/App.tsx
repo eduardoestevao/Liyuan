@@ -171,11 +171,12 @@ const WIDE_PANELS = new Set<PanelId>(["card", "lorebook"]);
 
 /**
  * 悬浮窗形态：侧栏那个窄条盛不下的面板。
- * 侧栏宽度是布局算出来的（`.side` = max(300px, (100% - 聊天列) / 2 - 26px)），改不动；
- * 世界线的分叉图每多一层存档就宽 112px 且带固定 width 不缩放，撞死在窄栏里。
- * 这类面板改用悬浮窗（可拖可缩放、位置记忆），入口与开合逻辑不变。
+ * 侧栏宽度是布局算出来的（`.side` = max(300px, (100% - 聊天列) / 2 - 26px)），改不动。
+ * 世界线的分叉图每多一层存档就宽 112px，撞死在窄栏里；登场名录是四张表在窄栏里
+ * 只能纵向排队、名字还被截断——两者要的不一样（一个要大画布、一个要横向铺开），
+ * 但都要「比侧栏宽」。这类面板改用悬浮窗（可拖可缩放、位置记忆），入口与开合逻辑不变。
  */
-const FLOAT_PANELS = new Set<PanelId>(["worldline"]);
+const FLOAT_PANELS = new Set<PanelId>(["worldline", "roster"]);
 const isFloatPanel = (id: PanelId | AgentPanelId | null): id is PanelId =>
 	id != null && FLOAT_PANELS.has(id as PanelId);
 
@@ -220,7 +221,7 @@ function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null } {
 		const raw = JSON.parse(localStorage.getItem("liyuan.panels") ?? "{}") as Record<string, unknown>;
 		const pick = (v: unknown, group: PanelId[]) => (group.includes(v as PanelId) ? (v as PanelId) : null);
 		const left = pick(raw.left, LEFT_OPENABLE);
-		// settings 走中央下拉，worldline 走悬浮窗，旧 prefs 里的这两个都不还原成左栏
+		// settings 走中央下拉，悬浮窗形态的面板自成一侧，旧 prefs 里的这些都不还原成左栏
 		return {
 			left: left === ("settings" as PanelId) || isFloatPanel(left) ? null : left,
 			right: pick(raw.right, RIGHT_OPENABLE),
@@ -1802,7 +1803,7 @@ export default function App() {
 					</button>
 					<button
 						type="button"
-						className={`tb-btn ${centerMenu === "panels" || activeAgentName || leftPanel === "roster" ? "active" : ""}`}
+						className={`tb-btn ${centerMenu === "panels" || activeAgentName || floatPanel === "roster" ? "active" : ""}`}
 						onClick={() => toggleCenter("panels")}
 						aria-label="面板"
 						data-tip="面板"
@@ -1948,7 +1949,7 @@ export default function App() {
 										panels={agentPanels}
 										charName={charName}
 										activeAgent={activeAgentName}
-										rosterActive={leftPanel === "roster"}
+										rosterActive={floatPanel === "roster"}
 										onOpenRoster={() => {
 											openLeft("roster");
 											setCenterMenu(null);
@@ -2293,7 +2294,7 @@ export default function App() {
 								</button>
 								<button
 									type="button"
-									className={`dock-btn ${leftPanel === "roster" ? "active" : ""}`}
+									className={`dock-btn ${floatPanel === "roster" ? "active" : ""}`}
 									title="登场名录"
 									aria-label="登场名录"
 									onClick={() => {

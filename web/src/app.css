@@ -7224,3 +7224,16 @@ label.drawer-btn {
 	.floatwin-head { cursor: default; }
 	.floatwin-grip { display: none; }
 }
+
+/* 名录在悬浮窗里横向铺开：窄栏时四张表纵向排队要一直滚，宽了就并排。
+   auto-fit + minmax 让列数跟着窗宽走——窗口拖窄了自然退回单列，不必另写断点。 */
+.floatwin .roster-panel {
+	display: grid;
+	grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+	gap: 0 22px;
+	align-items: start;
+}
+/* 有了整列宽度就不必再把名字截到 12em（窄栏才需要） */
+.floatwin .roster-panel .roster-name {
+	max-width: 16em;
+}
