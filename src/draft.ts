@@ -75,16 +75,19 @@ const textOfParts = (content: unknown): string => {
 
 /** 在消息 content 里替换第一处 old（string 与 parts 两种形态）；未命中返回 null */
 function replaceInContent(content: unknown, op: DraftOp): unknown | null {
+	// 新文本按字面代入：走替换**函数**而非替换串，否则 op.new 里的 `$&`/`$'`/`` $` ``/`$$`
+	// 会被 String.replace 当替换模式解释（正文含代码片段时真会踩到）。语义不变：仍只替第一处。
+	const literal = () => op.new;
 	if (typeof content === "string") {
 		if (!content.includes(op.old)) return null;
-		return content.replace(op.old, op.new);
+		return content.replace(op.old, literal);
 	}
 	if (!Array.isArray(content)) return null;
 	for (let i = 0; i < content.length; i++) {
 		const p = content[i] as { type?: unknown; text?: unknown };
 		if (p && typeof p === "object" && p.type === "text" && typeof p.text === "string" && p.text.includes(op.old)) {
 			const parts = content.slice();
-			parts[i] = { ...(p as object), text: (p.text as string).replace(op.old, op.new) };
+			parts[i] = { ...(p as object), text: (p.text as string).replace(op.old, literal) };
 			return parts;
 		}
 	}

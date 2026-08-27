@@ -377,12 +377,17 @@ export function buildSrcDoc(html: string, scripts: boolean, seamless: boolean, v
 	const tail = scripts && seamless && !takeover ? HEIGHT_REPORTER_SNIPPET : "";
 	if (isFull) {
 		let withHead: string;
+		// 注入必须走「替换函数」而非替换字符串：head 里嵌着整份 minified jQuery，含大量 `$1`/`$&`/`$'`
+		// 等序列。若放进 String.replace 的替换串，JS 会把它们当**替换模式**解释——jQuery 的
+		// `t.replace(rtrimCSS,"$1")`（选择器去空白）会被改成 `t.replace(rtrimCSS,"")`，
+		// 破坏带尾随空白选择器的解析 → 委托事件（`.on(evt, sel, fn)`）的 seed 匹配全废、页签点不动。
+		// 函数返回值按字面写入，`$` 不被解释（8/27 某卡 7 页签状态栏实证）。
 		if (/<head[\s>]/i.test(trimmed)) {
 			// 只改第一个 <head>（文档真 head；脚本字符串里的 <head> 通常更靠后）
-			withHead = trimmed.replace(/<head([^>]*)>/i, `<head$1>${head}`);
+			withHead = trimmed.replace(/<head([^>]*)>/i, (_m, attrs: string) => `<head${attrs}>${head}`);
 		} else if (/<html[\s>]/i.test(trimmed)) {
 			// 缺 head 时插入，保证 CSP/量高用 CSS（含打断 100vh）能生效
-			withHead = trimmed.replace(/<html([^>]*)>/i, `<html$1><head>${head}</head>`);
+			withHead = trimmed.replace(/<html([^>]*)>/i, (_m, attrs: string) => `<html${attrs}><head>${head}</head>`);
 		} else {
 			withHead = `<!doctype html><html><head>${head}</head><body>${trimmed}</body></html>`;
 		}

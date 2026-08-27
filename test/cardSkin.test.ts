@@ -128,3 +128,11 @@ test("预筛：前一条规则造出的标记，后一条规则仍能命中（�
 	const eat = { name: "eat", source: String.raw`<mark_x>([\s\S]*?)<\/mark_x>`, flags: "gi", replace: "[$1]" };
 	assert.equal(applyCardSkin("前占位后", [make, eat] as never, M), "前[值]后");
 });
+
+test("名字里的 $ 序列按字面代入（不被 String.replace 当替换模式）", () => {
+	// 回归 8/27：substMacros 曾把名字直接当替换串，名字里的 `$``（前文）会被展开成
+	// 模板中命中点之前的文本 → "[甲[乙]"。expandSkinReplacement 永不展开 `$``，故按字面留住才对。
+	const rule = { name: "n", source: String.raw`标记`, flags: "g", replace: "[{{char}}]" };
+	const out = applyCardSkin("标记", [rule] as never, { charName: "甲$`乙", userName: "旅人" });
+	assert.equal(out, "[甲$`乙]");
+});

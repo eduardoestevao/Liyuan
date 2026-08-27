@@ -265,4 +265,19 @@ test("isAuditLine：动笔前一次性读题/规划不摘——只摘逐句逐�
 	assert.ok(isAuditLine("写完后检查：这段反应是否只是在表演人设标签？"));
 });
 
+test("applyDraftOps：新文本里的 $ 序列按字面代入（string 与 parts 两种形态）", () => {
+	// 回归 8/27：`.replace(op.old, op.new)` 会把 op.new 里的 `$&`（命中文本）/`$``（前文）
+	// 当替换模式展开——正文含代码片段时真会踩到。同族于 frameDoc 注入那刀。
+	const payload = "$&-$`-$$";
+	// string content 分支（assistant 直接给字符串）
+	const a = applyDraftOps([user("开始"), { role: "assistant", content: "甲X乙" }, op("X", payload)]);
+	assert.equal(a.applied, 1);
+	assert.equal((a.messages[1] as { content: string }).content, `甲${payload}乙`);
+	// parts 分支
+	const b = applyDraftOps([user("开始"), asst("丙X丁"), op("X", payload)]);
+	assert.equal(b.applied, 1);
+	const parts = (b.messages[1] as { content: Array<{ text: string }> }).content;
+	assert.equal(parts[0]!.text, `丙${payload}丁`);
+});
+
 

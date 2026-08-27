@@ -15,7 +15,9 @@ const LITERAL_REPLACE_THRESHOLD = 8_000;
 function substMacros(text: string, macros: { charName: string; userName: string }, forRegex: boolean): string {
 	const char = forRegex ? escapeReg(macros.charName) : macros.charName;
 	const user = forRegex ? escapeReg(macros.userName) : macros.userName;
-	return text.replace(/\{\{\s*char\s*\}\}/gi, char).replace(/\{\{\s*user\s*\}\}/gi, user);
+	// 名字必须按字面代入：走替换**函数**而非替换串，否则名字里的 `$&`/`$'`/`` $` ``/`$$`
+	// 会被 String.replace 当替换模式解释（与 expandSkinReplacement 防的是同一件事）。
+	return text.replace(/\{\{\s*char\s*\}\}/gi, () => char).replace(/\{\{\s*user\s*\}\}/gi, () => user);
 }
 
 /**

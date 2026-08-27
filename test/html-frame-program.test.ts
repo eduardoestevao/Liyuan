@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { buildSrcDoc, looksLikeProgramApp, programViewportHeight, resolveViewportUnits } from "../web/src/frameDoc.ts";
+import { IFRAME_TAVERN_GLOBALS_SNIPPET } from "../web/src/tavernShim.ts";
 
 test("programViewportHeight: 约 78vh 且有上下限", () => {
 	assert.equal(programViewportHeight({ innerHeight: 1000 }), 780);
@@ -135,4 +136,23 @@ test("buildSrcDoc: 补齐酒馆的 border-box 基底（作者写作时的宿主�
 	}
 	// 接管型样式主权完全归卡，基底只给透明兜底——不在此列
 	assert.ok(!/\*\{box-sizing:border-box\}/.test(buildSrcDoc(takeoverDoc, true, true)), "接管型不插手样式主权");
+});
+
+test("脚本注入不腐蚀 $ 序列：head 里的垫片(含 minified jQuery 的 $1/$&)按字面写入", () => {
+	// 回归 8/27 某卡 7 页签状态栏：buildSrcDoc 曾用 `.replace(re, "<head$1>"+head)` 注入，
+	// head 里 minified jQuery 的 `t.replace(rtrimCSS,"$1")` 被 String.replace 当替换模式
+	// 解释成 `t.replace(rtrimCSS,"")`，破坏带尾随空白选择器的解析 → jQuery 事件委托
+	// （.on(evt, sel, fn)）全废、卡的页签点不动。判据＝注入的垫片必须逐字出现在产物里。
+	// 前提：垫片里确实含 String.replace 会特殊解释的 $ 序列（否则本测试形同虚设）
+	assert.ok(/\$(\d|&|`|')/.test(IFRAME_TAVERN_GLOBALS_SNIPPET), "垫片应含 $ 序列，否则回归测试无意义");
+	for (const [label, html] of [
+		["<head> 开头", "<head><style>.x{color:red}</style></head><body><div>甲</div></body>"],
+		["<html> 开头（无 head）", "<html><body><div>乙</div></body></html>"],
+	] as const) {
+		const doc = buildSrcDoc(html, true, true);
+		assert.ok(
+			doc.includes(IFRAME_TAVERN_GLOBALS_SNIPPET),
+			`${label}：注入的垫片被腐蚀（$ 序列被 String.replace 当替换模式解释）`,
+		);
+	}
 });
