@@ -19,6 +19,7 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import { IconClose, IconRefresh } from "./icons.tsx";
+import { readUiJson, writeUiJson } from "../uiStore.ts";
 
 export interface FloatRect {
 	x: number;
@@ -36,25 +37,14 @@ const KEEP_VISIBLE = 120;
 const storeKey = (id: string) => `liyuan.float.${id}`;
 
 function readRect(id: string): FloatRect | null {
-	try {
-		const raw = localStorage.getItem(storeKey(id));
-		if (!raw) return null;
-		const v = JSON.parse(raw) as Partial<FloatRect>;
-		if (typeof v.x !== "number" || typeof v.y !== "number") return null;
-		if (typeof v.w !== "number" || typeof v.h !== "number") return null;
-		return { x: v.x, y: v.y, w: v.w, h: v.h };
-	} catch {
-		return null;
-	}
+	const v = readUiJson<Partial<FloatRect>>(storeKey(id));
+	if (!v) return null;
+	if (typeof v.x !== "number" || typeof v.y !== "number") return null;
+	if (typeof v.w !== "number" || typeof v.h !== "number") return null;
+	return { x: v.x, y: v.y, w: v.w, h: v.h };
 }
 
-function writeRect(id: string, r: FloatRect): void {
-	try {
-		localStorage.setItem(storeKey(id), JSON.stringify(r));
-	} catch {
-		/* 隐私模式 / 存储被禁：位置不记忆，窗口照常能用 */
-	}
-}
+const writeRect = (id: string, r: FloatRect): void => writeUiJson(storeKey(id), r);
 
 /** 默认铺开一块够宽的画布；小屏按视口收 */
 function defaultRect(): FloatRect {

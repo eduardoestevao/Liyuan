@@ -7237,3 +7237,99 @@ label.drawer-btn {
 .floatwin .roster-panel .roster-name {
 	max-width: 16em;
 }
+
+/* ---------- 梨园自己的悬浮球（components/PanelOrb.tsx） ---------- */
+/* z 55：在悬浮窗(60)之下——球是启动器，窗开着时不该压在内容上。
+   作者卡自带的球用到 9999/2147483647，本球一律在它之下，不抢作者地盘。 */
+.orb-root {
+	position: fixed;
+	z-index: 55;
+	display: flex;
+	align-items: flex-start;
+	gap: 8px;
+}
+.orb-backdrop {
+	position: fixed;
+	inset: 0;
+	z-index: 54;
+}
+.orb-ball {
+	width: 44px;
+	height: 44px;
+	flex: 0 0 auto;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 50%;
+	border: 1px solid var(--hairline);
+	background: color-mix(in srgb, var(--surface) 92%, #fff);
+	color: var(--text-soft);
+	box-shadow: var(--shadow-3);
+	cursor: grab;
+	touch-action: none;
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+	transition: color 0.15s, border-color 0.15s, transform 0.12s;
+}
+.orb-ball:hover {
+	color: var(--text-strong);
+	transform: scale(1.04);
+}
+.orb-ball:active {
+	cursor: grabbing;
+}
+/* 有面板正开着：描一圈强调色，不用小红点（球本身就小） */
+.orb-ball.has-active,
+.orb-ball.open {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+.orb-menu {
+	display: flex;
+	flex-direction: column;
+	min-width: 148px;
+	max-width: 60vw;
+	padding: 5px;
+	border-radius: var(--radius-l);
+	border: 1px solid var(--hairline);
+	background: color-mix(in srgb, var(--surface) 96%, #fff);
+	box-shadow: var(--shadow-3);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+	animation: orb-menu-in 0.14s ease-out;
+}
+/* 朝屏幕内侧展开：球贴左边就往右开，贴右边就往左开（往左时菜单排到球前面） */
+.orb-menu.to-left {
+	order: -1;
+}
+@keyframes orb-menu-in {
+	from { opacity: 0; transform: translateY(-3px); }
+	to { opacity: 1; transform: none; }
+}
+.orb-item {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	padding: 7px 9px;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--text);
+	font-size: 13px;
+	text-align: left;
+	cursor: pointer;
+}
+.orb-item:hover {
+	background: color-mix(in srgb, var(--surface) 60%, var(--hairline));
+	color: var(--text-strong);
+}
+.orb-item.current {
+	color: var(--accent);
+	font-weight: 600;
+}
+.orb-item-label {
+	min-width: 0;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}

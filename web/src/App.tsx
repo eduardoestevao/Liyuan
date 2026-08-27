@@ -85,6 +85,7 @@ import type { DisplayRule } from "../../src/cardfront.ts";
 import { authorScriptSig } from "../../src/authorScripts.ts";
 import { skinAtDepth } from "../../src/postprocess.ts";
 import { PanelDock } from "./components/PanelDock.tsx";
+import { PanelOrb } from "./components/PanelOrb.tsx";
 import { PersonaPanel } from "./components/PersonaPanel.tsx";
 import { PowersPanel } from "./components/PowersPanel.tsx";
 import { PresetPanel } from "./components/PresetPanel.tsx";
@@ -177,8 +178,12 @@ const WIDE_PANELS = new Set<PanelId>(["card", "lorebook"]);
  * 但都要「比侧栏宽」。这类面板改用悬浮窗（可拖可缩放、位置记忆），入口与开合逻辑不变。
  */
 const FLOAT_PANELS = new Set<PanelId>(["worldline", "roster"]);
-const isFloatPanel = (id: PanelId | AgentPanelId | null): id is PanelId =>
-	id != null && FLOAT_PANELS.has(id as PanelId);
+/**
+ * 悬浮窗形态判据。agent 自建面板一律算在内——它们正是「梨园自己的自定义面板」，
+ * 和世界线/名录一起归悬浮球那套入口，不再挤在侧栏窄条里。
+ */
+const isFloatPanel = (id: PanelId | AgentPanelId | null): id is PanelId | AgentPanelId =>
+	id != null && (FLOAT_PANELS.has(id as PanelId) || id.startsWith("agent:"));
 
 const PANEL_LABEL: Record<PanelId, string> = {
 	sessions: "会话",
@@ -295,7 +300,7 @@ export default function App() {
 	const [leftPanel, setLeftPanel] = useState<PanelId | AgentPanelId | null>(initialPanels.left);
 	const [rightPanel, setRightPanel] = useState<PanelId | null>(initialPanels.right);
 	/** 悬浮窗当前显示的面板（与左右栏并列的第三种形态，同时只开一个） */
-	const [floatPanel, setFloatPanel] = useState<PanelId | null>(null);
+	const [floatPanel, setFloatPanel] = useState<PanelId | AgentPanelId | null>(null);
 	/** 悬浮窗「刷新」用：+1 强制重挂载窗内面板（与侧栏 manualTick 同机制） */
 	const [floatTick, setFloatTick] = useState(0);
 	// 手机（≤999px，与 CSS 抽屉断点一致）：左右栏是全屏抽屉，同时只能开一个。
@@ -1758,7 +1763,7 @@ export default function App() {
 
 	const coarse = typeof matchMedia !== "undefined" && matchMedia("(pointer: coarse)").matches;
 
-	const activeAgentName = leftPanel?.startsWith("agent:") ? leftPanel.slice("agent:".length) : null;
+	const activeAgentName = floatPanel?.startsWith("agent:") ? floatPanel.slice("agent:".length) : null;
 
 	const openSessionFromWelcome = (path: string) => {
 		// 主页点当前会话 = 展开进对话；点其它 = 切换后进入
@@ -2467,24 +2472,75 @@ export default function App() {
 
 				{sidePanel(rightPanel, "right")}
 			</div>
-			{floatPanel && (
-				<FloatWindow
-					id={floatPanel}
-					title={PANEL_LABEL[floatPanel]}
-					icon={(() => {
-						const Icon = PANEL_ICON[floatPanel];
-						return <Icon size={15} />;
-					})()}
-					onRefresh={() => {
-						// 与侧栏刷新同规矩：先清该面板的 GET 缓存，再 remount，否则旧缓存会让「刷新」假成功
-						apiGetCacheClearForPanel(floatPanel);
-						setFloatTick((t) => t + 1);
-					}}
-					onClose={() => setFloatPanel(null)}
-				>
-					<Fragment key={`${floatPanel}-${floatTick}`}>{renderPanel(floatPanel)}</Fragment>
-				</FloatWindow>
-			)}
+			{floatPanel &&
+				(() => {
+					// agent 自建面板与内置面板共用同一个壳，只是标题/图标/刷新与内容各自不同
+					const ag = activeAgentName ? agentPanels.find((p) => p.name === activeAgentName) : undefined;
+					if (activeAgentName && !ag) return null; // 面板被 close 掉了
+					const Icon = ag ? IconDock : PANEL_ICON[floatPanel as PanelId];
+					return (
+						<FloatWindow
+							id={floatPanel}
+							title={ag ? ag.name : PANEL_LABEL[floatPanel as PanelId]}
+							icon={<Icon size={15} />}
+							{...(ag
+								? {}
+								: {
+										onRefresh: () => {
+											// 与侧栏刷新同规矩：先清该面板的 GET 缓存，再 remount，否则旧缓存会让「刷新」假成功
+											apiGetCacheClearForPanel(floatPanel);
+											setFloatTick((t) => t + 1);
+										},
+									})}
+							onClose={() => setFloatPanel(null)}
+						>
+							{ag ? (
+								<ArtifactPanel
+									panel={ag}
+									data={worldState?.panelData?.[ag.name]}
+									onSaved={(p) => {
+										setAgentPanels((list) =>
+											list.map((x) =>
+												x.name === p.name
+													? { ...x, kind: p.kind as typeof x.kind, content: p.content, updatedAt: p.updatedAt }
+													: x,
+											),
+										);
+									}}
+								/>
+							) : (
+								<Fragment key={`${floatPanel}-${floatTick}`}>{renderPanel(floatPanel as PanelId)}</Fragment>
+							)}
+						</FloatWindow>
+					);
+				})()}
+			{/*
+			  * 梨园自己的悬浮球：常驻的面板启动器（世界线 / 登场名录 / agent 自建面板）。
+			  * 顶栏与底栏的老入口都留着——它是多一条路，不是替换掉肌肉记忆。
+			  */}
+			<PanelOrb
+				entries={[
+					...[...FLOAT_PANELS].map((id) => ({
+						id,
+						label: PANEL_LABEL[id],
+						icon: (() => {
+							const Icon = PANEL_ICON[id];
+							return <Icon size={14} />;
+						})(),
+						active: floatPanel === id,
+					})),
+					...agentPanels.map((p) => ({
+						id: agentId(p.name),
+						label: p.name,
+						icon: <IconDock size={14} />,
+						active: floatPanel === agentId(p.name),
+					})),
+				]}
+				onPick={(id) => {
+					setCenterMenu(null);
+					setFloatPanel((cur) => (cur === id ? null : (id as PanelId | AgentPanelId)));
+				}}
+			/>
 			{storeOpen && (
 				<StoreModal
 					defaultName={storeDefaultName}
