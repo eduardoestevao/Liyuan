@@ -5507,6 +5507,15 @@ label.drawer-btn {
 }
 .wl-tree {
 	display: block;
+}
+/*
+ * 分叉图要原尺寸 + 横向滚动，不许缩放到「塞得下」。
+ * 必须写成 `.panel-body svg.wl-tree` 才生效：通用规则 `.panel-body svg { max-width: 100% }`
+ * 特异度更高，一直在静默盖掉这里裸写的 `max-width: none`——图因此从来没滚过，
+ * 只会随存档变多越缩越小（实测 23 个存档在旧侧栏里缩到 0.25 倍，节点直径 9.5px、
+ * 标签等效 2.75px，等于看不清）。缩放丢的是可读性，滚动只是多划一下。
+ */
+.panel-body svg.wl-tree {
 	max-width: none;
 }
 .wl-edge {
@@ -7126,3 +7135,92 @@ label.drawer-btn {
 /* 预设块删除按钮（8/12 用户点名：提示词/状态栏都要能删） */
 .preset-del-btn { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); opacity: 0.85; }
 .preset-del-btn:hover { opacity: 1; }
+
+/* ---------- 悬浮窗：面板的第三种形态（见 components/FloatWindow.tsx） ---------- */
+/* z 60：盖住顶栏(50)，但让 tooltip(80)/世界线节点菜单(90)/居中弹窗(200) 照常盖在本窗之上 */
+.floatwin {
+	position: fixed;
+	z-index: 60;
+	display: flex;
+	flex-direction: column;
+	min-width: 0;
+	min-height: 0;
+	overflow: hidden;
+	background: color-mix(in srgb, var(--surface) 96%, #fff);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-l);
+	box-shadow: var(--shadow-3);
+	backdrop-filter: blur(8px);
+	-webkit-backdrop-filter: blur(8px);
+	animation: floatwin-in 0.16s ease-out;
+}
+@keyframes floatwin-in {
+	from { opacity: 0; transform: scale(0.985); }
+	to { opacity: 1; transform: none; }
+}
+.floatwin-head {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 9px 10px 9px 14px;
+	border-bottom: 1px solid var(--hairline);
+	cursor: move;
+	/* 拖动时不要选中标题文字 */
+	user-select: none;
+	-webkit-user-select: none;
+	touch-action: none;
+	flex: 0 0 auto;
+}
+.floatwin-title {
+	display: flex;
+	align-items: center;
+	gap: 7px;
+	min-width: 0;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-strong);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+.floatwin-actions {
+	display: flex;
+	align-items: center;
+	gap: 2px;
+	cursor: default;
+	flex: 0 0 auto;
+}
+.floatwin-body {
+	flex: 1 1 auto;
+	min-height: 0;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+/* 右下角缩放柄：两道斜线，不抢视觉 */
+.floatwin-grip {
+	position: absolute;
+	right: 0;
+	bottom: 0;
+	width: 18px;
+	height: 18px;
+	cursor: nwse-resize;
+	touch-action: none;
+	background:
+		linear-gradient(135deg, transparent 45%, var(--hairline) 45%, var(--hairline) 55%, transparent 55%),
+		linear-gradient(135deg, transparent 70%, var(--hairline) 70%, var(--hairline) 80%, transparent 80%);
+}
+/* 小屏：拖动缩放没有意义，直接铺满 */
+@media (max-width: 999px) {
+	.floatwin {
+		inset: 0 !important;
+		width: auto !important;
+		height: auto !important;
+		border-radius: 0;
+		border: 0;
+		z-index: 60;
+	}
+	.floatwin-head { cursor: default; }
+	.floatwin-grip { display: none; }
+}

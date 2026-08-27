@@ -31,6 +31,7 @@ import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
 import { CardPanel } from "./components/CardPanel.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
+import { FloatWindow } from "./components/FloatWindow.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
 import { UpdateModal, UpdateToast } from "./components/UpdateFlow.tsx";
 import { PanelRefreshContext } from "./components/kit.tsx";
@@ -168,6 +169,16 @@ const RIGHT_OPENABLE: PanelId[] = [...RIGHT_PANELS, "assistant"];
 /** 长文面板用宽档（横切基建 §1 面板宽度） */
 const WIDE_PANELS = new Set<PanelId>(["card", "lorebook"]);
 
+/**
+ * 悬浮窗形态：侧栏那个窄条盛不下的面板。
+ * 侧栏宽度是布局算出来的（`.side` = max(300px, (100% - 聊天列) / 2 - 26px)），改不动；
+ * 世界线的分叉图每多一层存档就宽 112px 且带固定 width 不缩放，撞死在窄栏里。
+ * 这类面板改用悬浮窗（可拖可缩放、位置记忆），入口与开合逻辑不变。
+ */
+const FLOAT_PANELS = new Set<PanelId>(["worldline"]);
+const isFloatPanel = (id: PanelId | AgentPanelId | null): id is PanelId =>
+	id != null && FLOAT_PANELS.has(id as PanelId);
+
 const PANEL_LABEL: Record<PanelId, string> = {
 	sessions: "会话",
 	worldline: "世界线",
@@ -209,8 +220,11 @@ function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null } {
 		const raw = JSON.parse(localStorage.getItem("liyuan.panels") ?? "{}") as Record<string, unknown>;
 		const pick = (v: unknown, group: PanelId[]) => (group.includes(v as PanelId) ? (v as PanelId) : null);
 		const left = pick(raw.left, LEFT_OPENABLE);
-		// settings 走中央下拉，旧 prefs 里的 settings 忽略
-		return { left: left === ("settings" as PanelId) ? null : left, right: pick(raw.right, RIGHT_OPENABLE) };
+		// settings 走中央下拉，worldline 走悬浮窗，旧 prefs 里的这两个都不还原成左栏
+		return {
+			left: left === ("settings" as PanelId) || isFloatPanel(left) ? null : left,
+			right: pick(raw.right, RIGHT_OPENABLE),
+		};
 	} catch {
 		return { left: null, right: null };
 	}
@@ -279,6 +293,10 @@ export default function App() {
 	const initialPanels = useMemo(loadPanelPrefs, []);
 	const [leftPanel, setLeftPanel] = useState<PanelId | AgentPanelId | null>(initialPanels.left);
 	const [rightPanel, setRightPanel] = useState<PanelId | null>(initialPanels.right);
+	/** 悬浮窗当前显示的面板（与左右栏并列的第三种形态，同时只开一个） */
+	const [floatPanel, setFloatPanel] = useState<PanelId | null>(null);
+	/** 悬浮窗「刷新」用：+1 强制重挂载窗内面板（与侧栏 manualTick 同机制） */
+	const [floatTick, setFloatTick] = useState(0);
 	// 手机（≤999px，与 CSS 抽屉断点一致）：左右栏是全屏抽屉，同时只能开一个。
 	// 用 ref 避免把它塞进每个 setter 的依赖；开一侧时若在手机上，先关另一侧。
 	const mobileRef = useRef(typeof matchMedia !== "undefined" && matchMedia("(max-width: 999px)").matches);
@@ -294,8 +312,15 @@ export default function App() {
 		mq.addEventListener("change", sync);
 		return () => mq.removeEventListener("change", sync);
 	}, []);
-	/** 开左栏：手机上先关右栏（单开不变量）。传 null 或函数式更新按原样透传 */
+	/**
+	 * 开左栏：手机上先关右栏（单开不变量）。传 null 或函数式更新按原样透传。
+	 * 悬浮窗形态的面板从这里改道——入口（底栏钮 / `/line` / 会话面板里的跳转）都不必知道它换了形态。
+	 */
 	const openLeft = useCallback((next: PanelId | AgentPanelId | null) => {
+		if (isFloatPanel(next)) {
+			setFloatPanel(next);
+			return;
+		}
 		if (mobileRef.current && next !== null) setRightPanel(null);
 		setLeftPanel(next);
 	}, []);
@@ -1071,7 +1096,7 @@ export default function App() {
 				return next.slice(0, 8) as PanelId[];
 			});
 			setLeftKeep((prev) => {
-				const base: Array<PanelId | AgentPanelId> = [...LEFT_PANELS, "sessions", "worldline"];
+				const base: Array<PanelId | AgentPanelId> = [...LEFT_PANELS, "sessions"];
 				for (const p of prev) if (!base.includes(p)) base.push(p);
 				return base.slice(0, 8);
 			});
@@ -1446,6 +1471,11 @@ export default function App() {
 	// 面板开合：点同侧同钮=收起；开侧栏时收起中央下拉
 	const togglePanel = (id: PanelId) => {
 		setCenterMenu(null);
+		if (isFloatPanel(id)) {
+			// 悬浮窗自成一侧：开合只看它自己，不影响左右栏
+			setFloatPanel((cur) => (cur === id ? null : id));
+			return;
+		}
 		if (LEFT_OPENABLE.includes(id)) {
 			const next = leftPanel === id ? null : id;
 			openLeft(next);
@@ -2250,7 +2280,7 @@ export default function App() {
 								</button>
 								<button
 									type="button"
-									className={`dock-btn ${leftPanel === "worldline" ? "active" : ""}`}
+									className={`dock-btn ${floatPanel === "worldline" ? "active" : ""}`}
 									title="世界线"
 									aria-label="世界线"
 									onClick={() => {
@@ -2435,6 +2465,24 @@ export default function App() {
 
 				{sidePanel(rightPanel, "right")}
 			</div>
+			{floatPanel && (
+				<FloatWindow
+					id={floatPanel}
+					title={PANEL_LABEL[floatPanel]}
+					icon={(() => {
+						const Icon = PANEL_ICON[floatPanel];
+						return <Icon size={15} />;
+					})()}
+					onRefresh={() => {
+						// 与侧栏刷新同规矩：先清该面板的 GET 缓存，再 remount，否则旧缓存会让「刷新」假成功
+						apiGetCacheClearForPanel(floatPanel);
+						setFloatTick((t) => t + 1);
+					}}
+					onClose={() => setFloatPanel(null)}
+				>
+					<Fragment key={`${floatPanel}-${floatTick}`}>{renderPanel(floatPanel)}</Fragment>
+				</FloatWindow>
+			)}
 			{storeOpen && (
 				<StoreModal
 					defaultName={storeDefaultName}
