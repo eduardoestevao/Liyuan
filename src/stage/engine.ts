@@ -26,7 +26,7 @@ import {
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
 import { dir } from "../paths.ts";
 import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
-import { formatRosterIndex, formatState } from "../state.ts";
+import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
 import type { LorebookEntry } from "../types.ts";
 import {
@@ -214,7 +214,7 @@ export interface StageEngineDeps {
 	 * 未注入 = 台上无面板工具（依赖缺失的工具不上清单）。
 	 */
 	loadPanels?: (sessionId: string) => Record<string, { name: string; kind: "markdown" | "svg" | "html"; content: string; archived?: boolean }>;
-	writePanel?: (sessionId: string, input: { name: string; kind: string; content: string }) => { ok: true; created: boolean; reopened: boolean; activeCount: number; overLimit: boolean } | { ok: false; error: string };
+	writePanel?: (sessionId: string, input: { name: string; kind: string; content: string; data?: Record<string, unknown> }) => { ok: true; created: boolean; reopened: boolean; activeCount: number; overLimit: boolean } | { ok: false; error: string };
 	closePanel?: (sessionId: string, name: string) => { ok: boolean; error?: string };
 	/**
 	 * 世界线存档表（worldline_list 工具用）。宿主摊平后注入
@@ -489,6 +489,8 @@ export class StageEngine {
 	 * 每拍开头清空——报错/空手/中断都会从 #turn 里提前 return，只有这里清才不会漏到下一拍。
 	 */
 	#pendingSave: string | null = null;
+	/** 本拍 panel_write 声明的面板数据（面板名→初始树）；封笔后并进状态树，见 performTurn */
+	#pendingPanelData: Record<string, Record<string, unknown>> = {};
 
 	constructor(deps: StageEngineDeps) {
 		this.#deps = deps;
@@ -531,6 +533,7 @@ export class StageEngine {
 		const ev = this.#deps.events ?? {};
 		this.#busy = true;
 		this.#pendingSave = null; // 上一拍若中途 return，登记的存档请求不许漏到这一拍
+		this.#pendingPanelData = {};
 		ev.onTurnStart?.();
 		let endInfo: StageTurnEndInfo = { aborted: false };
 		try {
@@ -608,11 +611,14 @@ export class StageEngine {
 			.join("\n");
 		const activated = scanEntries(materials.entries, windowText, config.maxLoreInjections);
 
-		// 面板快照（M1 读磁盘缓存；写侧与分支化随 M3）
+		// 面板快照（M1 读磁盘缓存；写侧与分支化随 M3）。
+		// 声明了数据的面板喂**数据**不喂外观——一张 HTML 面板的标签动辄四千字，
+		// 每拍原样喂给模型纯属白烧，它要的只是里面那几十个字的事实。
 		let panelIndex: string | undefined;
 		try {
 			const panels = loadPanels(join(dir(cwd, "artifacts"), `${sm.getSessionId()}.json`));
-			panelIndex = formatPanelSnapshot(panels) ?? formatPanelIndex(panels) ?? undefined;
+			panelIndex =
+				formatPanelSnapshot(panels, { data: state.panelData }) ?? formatPanelIndex(panels) ?? undefined;
 		} catch {
 			panelIndex = undefined;
 		}
@@ -923,6 +929,21 @@ export class StageEngine {
 				materials.cardAuthorScripts,
 			);
 			const mvuRules = seededState.mvu ? findMvuRules(materials.card.book) : undefined;
+			/**
+			 * 本拍新声明的面板数据并进账本，赶在场记之前——这样场记这一拍就能看见新面板的树、
+			 * 顺手把它推到本拍剧情的状态。**已有的树不覆盖**：agent 重写外观时可能连 data 一起再给
+			 * 一遍（那是它写模板时的初值），拿它盖掉推进过的值就等于每次重画都把面板打回开局。
+			 */
+			const declared = Object.entries(this.#pendingPanelData);
+			const scribeState = declared.length
+				? {
+						...seededState,
+						panelData: declared.reduce(
+							(acc, [name, tree]) => (acc[name] ? acc : { ...acc, [name]: tree }),
+							{ ...(seededState.panelData ?? {}) } as Record<string, Record<string, unknown>>,
+						),
+					}
+				: seededState;
 			const r = await runScribeTurn(
 				{
 					// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
@@ -933,7 +954,7 @@ export class StageEngine {
 					onActivity: (d) => ev.onActivity?.(d),
 				},
 				{
-					state: seededState,
+					state: scribeState,
 					userText: lastUserText,
 					assistantText: finalText,
 					charName: materials.card.name,
@@ -942,8 +963,23 @@ export class StageEngine {
 				},
 			);
 			if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);
+			/**
+			 * 场记这拍没落账（无变化/解析失败/切了分支），新声明的面板数据就没人写下来——
+			 * 而 panel_write 不会再调一次，那棵树会永久丢失、面板永远显示不出值。所以补一笔。
+			 * r.kind === "applied" 时不必补：scribeState 已经带着声明进去、随账本一起落了。
+			 */
+			if (declared.length && r.kind !== "applied") {
+				try {
+					sm.appendCustomEntry(STATE_ENTRY_TYPE, scribeState);
+					const f = this.#deps.getStateFile?.(sm.getSessionId());
+					if (f) saveState(f, scribeState);
+				} catch {
+					// 补写失败只是这拍面板没值，不影响正文
+				}
+			}
 			sm.flush();
 		}
+		this.#pendingPanelData = {};
 
 		// 世界线存档（M-D7）：模型本拍调过 worldline_store 才有值。
 		// **必须排在场记之后**——rp-state 刚落在叶上，回退到此点账本才对得齐
@@ -1396,8 +1432,14 @@ export class StageEngine {
 			...(this.#deps.loadPanels
 				? {
 						loadPanels: () => this.#deps.loadPanels!(sm.getSessionId()),
-						writePanel: (input: { name: string; kind: string; content: string }) =>
-							this.#deps.writePanel!(sm.getSessionId(), input),
+						writePanel: (input: { name: string; kind: string; content: string; data?: Record<string, unknown> }) => {
+								// 数据与外观分家：外观交给宿主落盘，数据攒着，封笔后随账本一起进状态树
+								// （那儿才有分支/快照；同 storeSave 的「本拍内只登记意图」）。
+								if (input.data && Object.keys(input.data).length > 0) {
+									this.#pendingPanelData[input.name] = input.data;
+								}
+								return this.#deps.writePanel!(sm.getSessionId(), input);
+							},
 						closePanel: (name: string) => this.#deps.closePanel!(sm.getSessionId(), name),
 					}
 				: {}),

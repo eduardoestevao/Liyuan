@@ -1734,6 +1734,7 @@ export default function App() {
 							{ag ? (
 								<ArtifactPanel
 									panel={ag}
+									data={worldState?.panelData?.[ag.name]}
 									onSaved={(p) => {
 										// 乐观更新；随后 WS panels 帧会再对齐
 										setAgentPanels((list) =>

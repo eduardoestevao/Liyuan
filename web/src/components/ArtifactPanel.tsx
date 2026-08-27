@@ -10,6 +10,7 @@
 import { useEffect, useState, type ReactNode } from "react";
 
 import { apiPut } from "../api.ts";
+import { fillPanelTemplate } from "../../../src/panelTemplate.ts";
 import type { RpPanel } from "../wire.ts";
 
 /** srcdoc 文档头：CSP 锁死一切外部加载（只留内联样式），加一段与主题同调的基础排版 */
@@ -29,9 +30,12 @@ type PanelKind = (typeof KINDS)[number];
 
 export function ArtifactPanel({
 	panel,
+	data,
 	onSaved,
 }: {
 	panel: RpPanel;
+	/** 该面板的数据树（WorldState.panelData[面板名]）；模板里的 {{路径}} 用它填 */
+	data?: Record<string, unknown>;
 	/** 保存成功后可选回调（父级可乐观更新；通常靠 WS panels 帧即可） */
 	onSaved?: (p: { name: string; kind: string; content: string; updatedAt: number }) => void;
 }) {
@@ -85,6 +89,13 @@ export function ArtifactPanel({
 	};
 
 	const dirty = editing && (draft !== panel.content || kind !== panel.kind);
+
+	/**
+	 * 屏幕上显示的是**填过数据的外观**：面板里的 `{{路径}}` 换成 `panelData` 里的当前值。
+	 * markdown 走 React 渲染（React 自己会转义），svg/html 拼进 srcDoc 故要转义标记字符。
+	 * 编辑态显示原始模板——用户要改的是模板本身，不是填好的结果。
+	 */
+	const shown = fillPanelTemplate(panel.content, data, { escapeMarkup: panel.kind !== "markdown" });
 
 	return (
 		<div className="artifact-root">
@@ -150,14 +161,14 @@ export function ArtifactPanel({
 					}
 				/>
 			) : panel.kind === "markdown" ? (
-				<div className="panel-body artifact-md">{renderMarkdown(panel.content)}</div>
+				<div className="panel-body artifact-md">{renderMarkdown(shown)}</div>
 			) : (
 				<div className="panel-body artifact-frame-wrap">
 					<iframe
 						className="artifact-frame"
 						title={panel.name}
 						sandbox=""
-						srcDoc={`<!doctype html><html><head>${FRAME_HEAD}</head><body>${panel.content}</body></html>`}
+						srcDoc={`<!doctype html><html><head>${FRAME_HEAD}</head><body>${shown}</body></html>`}
 					/>
 				</div>
 			)}

@@ -39,7 +39,7 @@ export interface PanelDeps {
 	/** 取全部面板（含已归档）；返回 name→panel */
 	loadPanels: () => Record<string, PanelLike>;
 	/** 写/更新一面板。返回写结果（调用方负责把 panels 持久化） */
-	writePanel: (input: { name: string; kind: string; content: string }) => PanelWriteOutput;
+	writePanel: (input: { name: string; kind: string; content: string; data?: Record<string, unknown> }) => PanelWriteOutput;
 	/** 归档一面板。返回是否成功（调用方负责持久化） */
 	closePanel: (name: string) => { ok: boolean; error?: string };
 }
@@ -65,6 +65,9 @@ export const panelWrite: ToolSpec<PanelDeps> = {
 		"写/更新一个元信息面板（地图、装备库、线索板、关系图等），同名重写即更新。" +
 		`最多 ${6} 个活跃面板（超限仍可写，但会被提醒收拾）。` +
 		"面板不是正文——长内容、结构化信息放面板，正文里自然引用即可。" +
+		"面板上会变的数值（数量、进度、状态……）用 data 单独给一份，" +
+		"外观里写 {{路径}} 占位（如 {{体力}}），显示时会换成当前值；" +
+		"之后每拍由记账自动推进这些值，你不必再为了改几个数重写整个面板。" +
 		"收起面板用 panel_close。",
 	parameters: () => ({
 		type: "object",
@@ -72,6 +75,13 @@ export const panelWrite: ToolSpec<PanelDeps> = {
 			name: { type: "string", description: "面板名（页签标题，同名写入即更新）" },
 			kind: { type: "string", enum: ["markdown", "svg", "html"], description: "markdown / svg / html" },
 			content: { type: "string", description: "面板内容（markdown 文本 / SVG 源码 / HTML 片段）" },
+			data: {
+				type: "object",
+				description:
+					"可选：这个面板上会随剧情变化的数值，任意嵌套的对象（如 {\"体力\":8,\"位置\":\"北岭\",\"补给\":{\"干粮\":3}}）。" +
+					"外观里用 {{体力}}、{{补给.干粮}} 这样的占位符引用——路径是这棵树里的路径，不必再写面板名。" +
+					"给了 data 之后，每拍记账会自动更新这些值；正文侧看到的也是这份数据而不是面板源码。",
+			},
 		},
 		required: ["name", "kind", "content"],
 	}),
@@ -84,10 +94,16 @@ export const panelWrite: ToolSpec<PanelDeps> = {
 		}
 		const content = strArg(args, "content");
 		if (!content) return { text: "缺少 content 参数（面板内容）。收起面板请用 panel_close。" };
+		// data 可选；只认对象（数组/标量当没给——树的根必须是对象才谈得上「路径」）
+		const rawData = (args as Record<string, unknown>).data;
+		const data =
+			rawData && typeof rawData === "object" && !Array.isArray(rawData)
+				? (rawData as Record<string, unknown>)
+				: undefined;
 
 		let r: PanelWriteOutput;
 		try {
-			r = deps.writePanel({ name, kind, content });
+			r = deps.writePanel({ name, kind, content, ...(data ? { data } : {}) });
 		} catch (err) {
 			return { text: `写面板失败：${errText(err)}` };
 		}

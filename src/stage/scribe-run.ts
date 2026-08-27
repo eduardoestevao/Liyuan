@@ -63,7 +63,11 @@ export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput):
 	const leafBefore = deps.getLeafId();
 	// MVU 卡（state.mvu 有树）才把树+规则喂给场记，让它连 mvu_patch 一起判断；非 MVU 卡 prompt 逐字如旧
 	const mvu = state.mvu && typeof state.mvu === "object" ? { tree: state.mvu, rules: mvuRules } : undefined;
-	const prompt = buildScribeTurnPrompt({ state, userText, assistantText, charName, userName, mvu });
+	// 声明了数据的活跃面板才进 prompt；一个都没有时 prompt 逐字如旧
+	const panels = Object.entries(state.panelData ?? {})
+		.filter(([, tree]) => tree && typeof tree === "object" && Object.keys(tree).length > 0)
+		.map(([name, tree]) => ({ name, tree }));
+	const prompt = buildScribeTurnPrompt({ state, userText, assistantText, charName, userName, mvu, panels });
 	const resp = await deps.sideText(prompt.systemPrompt, prompt.userText);
 	if (typeof resp !== "string") return { kind: "failed", error: resp.error };
 
@@ -74,9 +78,12 @@ export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput):
 		const detail = flat.length <= 400 ? flat : `…${flat.slice(-160)}`;
 		return { kind: "failed", error: `输出不可解析（${resp.length} 字）：${detail}` };
 	}
-	// 两个补丁都空才算无变化——MVU 卡可能账本没动但树动了（如买了个物品，只落 mvu）
+	// 三个补丁都空才算无变化——账本没动但树/面板动了也要记（如只是面板上的一个计数变了）
 	const mvuHasChanges = !!parsed.mvuPatch && Object.keys(parsed.mvuPatch).length > 0;
-	if (Object.keys(parsed.patch).length === 0 && !mvuHasChanges) return { kind: "skipped", reason: "empty-patch" };
+	const panelHasChanges = !!parsed.panelPatch && Object.keys(parsed.panelPatch).length > 0;
+	if (Object.keys(parsed.patch).length === 0 && !mvuHasChanges && !panelHasChanges) {
+		return { kind: "skipped", reason: "empty-patch" };
+	}
 
 	// R9 叶守卫：调用期间树动过（swipe/rewind/切线）→ 整体丢弃
 	if (deps.getLeafId() !== leafBefore) {
@@ -92,6 +99,21 @@ export async function runScribeTurn(deps: ScribeRunDeps, input: ScribeRunInput):
 		const mv = applyMvuPatch(result.state.mvu, parsed.mvuPatch!);
 		result.state.mvu = mv.tree;
 		result.applied.push(...mv.applied.map((a) => `mvu:${a}`));
+	}
+	// 面板数据补丁：同一套落值方式，只是按面板分桶。
+	// **只更新已存在的面板**——场记凭空报一个面板名多半是幻觉，不给它建面板的权力。
+	if (panelHasChanges) {
+		const existing = result.state.panelData ?? {};
+		const next: Record<string, Record<string, unknown>> = { ...existing };
+		for (const [name, flat] of Object.entries(parsed.panelPatch!)) {
+			const before = existing[name];
+			if (!before || typeof before !== "object") continue;
+			if (!flat || Object.keys(flat).length === 0) continue;
+			const pv = applyMvuPatch(before, flat);
+			next[name] = pv.tree;
+			result.applied.push(...pv.applied.map((a) => `面板[${name}]:${a}`));
+		}
+		result.state.panelData = next;
 	}
 	deps.appendStateEntry(result.state);
 	if (deps.stateFile) {

@@ -99,3 +99,30 @@ test("inventory：全字符串数组不产生警告（不误报）", () => {
 	const r = applyPatch(defaultState(), { inventory: ["猎刀", "草药"] });
 	assert.deepEqual(r.warnings, []);
 });
+
+test("panelData 随账本往返不丢（applyPatch / 存盘读回）", () => {
+	const s0 = { ...defaultState(), panelData: { 队伍: { 体力: 8, 补给: { 干粮: 3 } } } };
+
+	// applyPatch 只改它认识的字段，面板数据整份带过去（structuredClone，与 mvu 同理）
+	const r = applyPatch(s0, { location: "北岭" });
+	assert.equal(r.warnings.length, 0);
+	assert.deepEqual(r.state.panelData, { 队伍: { 体力: 8, 补给: { 干粮: 3 } } });
+	// 深拷贝：改新的不影响旧的
+	r.state.panelData!.队伍.体力 = 1;
+	assert.equal(s0.panelData.队伍.体力, 8);
+
+	// 存盘读回
+	const dir = mkdtempSync(join(tmpdir(), "liyuan-paneldata-"));
+	try {
+		const f = join(dir, "state.json");
+		saveState(f, s0);
+		assert.deepEqual(loadState(f).panelData, s0.panelData);
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+
+	// 用户/前端直接 patch 这个字段不被接受（它由 panel_write 声明、由场记推进）
+	const rejected = applyPatch(defaultState(), { panelData: { 队伍: { 体力: 1 } } });
+	assert.ok(rejected.warnings.some((w) => w.includes("未知字段")));
+	assert.equal(rejected.state.panelData, undefined);
+});

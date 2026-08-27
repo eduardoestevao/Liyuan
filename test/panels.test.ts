@@ -7,6 +7,7 @@ import { test } from "node:test";
 import {
 	activePanels,
 	closePanel,
+	fillPanelTemplate,
 	formatPanelIndex,
 	formatPanelSnapshot,
 	loadPanels,
@@ -113,4 +114,58 @@ test("formatPanelSnapshot：含当前 content；手改后模型可见", () => {
 	const clipped = formatPanelSnapshot(r.ok ? r.panels : {}, { maxPerPanel: 20, maxTotal: 500 });
 	assert.ok(clipped && clipped.includes("截断"));
 	assert.ok(clipped && !clipped.includes(long));
+});
+
+// ---------- 面板两层：外观在面板文件、数据在 WorldState（v1.5.3） ----------
+
+test("formatPanelSnapshot：声明了数据的面板喂数据，不喂外观标签", () => {
+	const r = writePanel({}, {
+		name: "队伍",
+		kind: "html",
+		content: "<!DOCTYPE html><style>.x{color:red}</style><div id=hp></div>",
+	});
+	const panels = r.ok ? r.panels : {};
+	const snap = formatPanelSnapshot(panels, { data: { 队伍: { 体力: 8, 位置: "北岭" } } })!;
+	assert.ok(snap.includes("体力"), "数据进快照");
+	assert.ok(snap.includes("北岭"));
+	assert.ok(!snap.includes("DOCTYPE"), "外观标签一个字都不该进注入");
+	assert.ok(!snap.includes("color:red"));
+	assert.ok(snap.includes("当前数据"), "表头标明这是数据不是源码");
+});
+
+test("formatPanelSnapshot：没数据的面板逐字保持旧行为（守回归）", () => {
+	const r = writePanel({}, { name: "线索板", kind: "markdown", content: "- 一封没有落款的信" });
+	const panels = r.ok ? r.panels : {};
+	const before = formatPanelSnapshot(panels);
+	// 传了 data 但不含这个面板 → 与不传 data 完全一致
+	assert.equal(formatPanelSnapshot(panels, { data: { 别的面板: { a: 1 } } }), before);
+	assert.equal(formatPanelSnapshot(panels, { data: {} }), before);
+	// 空树不算「有数据」（否则面板会显示成一份空数据、外观反而看不见）
+	assert.equal(formatPanelSnapshot(panels, { data: { 线索板: {} } }), before);
+	assert.ok(before!.includes("没有落款"));
+});
+
+test("fillPanelTemplate：{{路径}} 换成当前值；取不到的原样留着", () => {
+	const tree = { 队伍: { 体力: 8, 位置: "北岭", 成员: ["旅人", "船夫"] }, 已出发: true, 空: null };
+	const f = (s: string, o?: { escapeMarkup?: boolean }) => fillPanelTemplate(s, tree, o);
+
+	assert.equal(f("体力 {{队伍.体力}} / 位置 {{队伍.位置}}"), "体力 8 / 位置 北岭");
+	assert.equal(f("{{ 队伍.位置 }}"), "北岭", "允许占位符内留空格");
+	assert.equal(f("{{已出发}}"), "true", "布尔转字符串");
+	assert.equal(f("{{队伍.成员}}"), "旅人、船夫", "数组按顿号连接");
+
+	// 取不到 / 拿到对象或 null：原样留着，让写错的路径露出来
+	assert.equal(f("{{队伍.士气}}"), "{{队伍.士气}}");
+	assert.equal(f("{{不存在.深.路径}}"), "{{不存在.深.路径}}");
+	assert.equal(f("{{队伍}}"), "{{队伍}}", "对象不塞进模板");
+	assert.equal(f("{{空}}"), "{{空}}");
+
+	// 无树时原样返回
+	assert.equal(fillPanelTemplate("{{队伍.体力}}", undefined), "{{队伍.体力}}");
+});
+
+test("fillPanelTemplate：拼进 srcDoc 的要转义，markdown 不要", () => {
+	const tree = { 名: "<b>甲</b> & 乙" };
+	assert.equal(fillPanelTemplate("{{名}}", tree, { escapeMarkup: true }), "&lt;b&gt;甲&lt;/b&gt; &amp; 乙");
+	assert.equal(fillPanelTemplate("{{名}}", tree), "<b>甲</b> & 乙");
 });

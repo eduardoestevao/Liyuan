@@ -33,6 +33,11 @@ export interface ScribePromptInput {
 	/** MVU 卡的变量树上下文（非 MVU 卡不传 → prompt 不含 MVU 段，行为与旧版逐字一致） */
 	mvu?: ScribeMvuContext;
 	/**
+	 * agent 自建面板的数据树（只列**声明了数据**的活跃面板；没有则不传 → prompt 不含面板段）。
+	 * 与 mvu 是同一件事换个主人：那棵是卡的树，这些是梨园自己面板的树。
+	 */
+	panels?: Array<{ name: string; tree: MvuTree }>;
+	/**
 	 * @deprecated 已不再做先斩后奏检测；保留字段以免旧调用方报错，忽略。
 	 */
 	detectUnaskedTurn?: boolean;
@@ -46,6 +51,11 @@ export interface ScribeResult {
 	 * 非 MVU 卡 / 无变化时为 undefined 或 {}。模型只填「哪条路径→什么新值」，不碰任何卡方言。
 	 */
 	mvuPatch?: Record<string, unknown>;
+	/**
+	 * 面板数据补丁：`{ "面板名": { "路径.用点分隔": 新值 } }`。
+	 * 按面板分层而不是把面板名拼进路径——面板名是用户/agent 起的，里面真有点号就会切错。
+	 */
+	panelPatch?: Record<string, Record<string, unknown>>;
 	/** 恒为空：连续性审查已关闭 */
 	warnings: string[];
 	/** 恒为 null：先斩后奏审查已关闭 */
@@ -54,6 +64,7 @@ export interface ScribeResult {
 
 export function buildScribeTurnPrompt(input: ScribePromptInput): { systemPrompt: string; userText: string } {
 	const { state, userText, assistantText, charName, userName, mvu } = input;
+	const panels = input.panels?.filter((p) => p.tree && typeof p.tree === "object") ?? [];
 	const knownCharacters = Object.keys(state.characters);
 	const nameGuide = knownCharacters.length
 		? `名字必须使用账本中已有的写法（当前已有：${knownCharacters.join("、")}；用户角色「${userName}」）`
@@ -70,6 +81,16 @@ export function buildScribeTurnPrompt(input: ScribePromptInput): { systemPrompt:
 - 只填路径与新值，不要写 op/JSONPatch/UpdateVariable 之类任何指令语法。`
 		: "";
 
+	// 面板段：仅在有「声明了数据的面板」时追加。没有则为空串 → prompt 与旧版逐字一致（守回归）。
+	const panelSystemSection = panels.length
+		? `
+
+剧中还有 ${panels.length} 个展示面板，各自带一棵数据树（面板的外观是写死的模板，屏幕上显示的值来自这些树）。多输出一个字段：
+"panel_patch"：形如 { "面板名": { "路径.用点分隔": 新值 } }。
+- 面板名与路径都照抄下面【面板数据·当前值】里的写法；只列**发生变化**的面板与路径。
+- 判断依据同上：本轮剧情真的发生了什么；无变化则 "panel_patch" 为 {}。`
+		: "";
+
 	const systemPrompt = `你是一场角色扮演的场记。阅读【当前账本】与【本轮对话】，只做一件事：输出 JSON，更新需要记账的持久变化。
 
 输出唯一字段：
@@ -79,9 +100,9 @@ export function buildScribeTurnPrompt(input: ScribePromptInput): { systemPrompt:
 - "inventory"：字符串数组，整体替换——只在物品归属变化时给出变化后的完整清单，条目注明归属（如「黄铜怀表（${userName}持有）」）。
 - "flags"：键值对，按键合并（值为字符串）。
 - "plot_threads"：字符串数组，整体替换——新增或了结剧情线时给出完整清单。
-要点：否定性事件也要记账（赠礼被拒→物品仍在原主处；承诺被收回→记入 flags）；新的承诺、约定、伏笔进 plot_threads；没有变化的字段不要出现在 patch 中；完全无变化则 "patch" 为 {}。${mvuSystemSection}
+要点：否定性事件也要记账（赠礼被拒→物品仍在原主处；承诺被收回→记入 flags）；新的承诺、约定、伏笔进 plot_threads；没有变化的字段不要出现在 patch 中；完全无变化则 "patch" 为 {}。${mvuSystemSection}${panelSystemSection}
 
-只输出 JSON 对象，例如 {"patch":{...}${mvu ? `,"mvu_patch":{...}` : ""}} 或 {"patch":{}${mvu ? `,"mvu_patch":{}` : ""}}。不要输出 warnings、不要输出其他文字。`;
+只输出 JSON 对象，例如 {"patch":{...}${mvu ? `,"mvu_patch":{...}` : ""}${panels.length ? `,"panel_patch":{...}` : ""}} 或 {"patch":{}${mvu ? `,"mvu_patch":{}` : ""}${panels.length ? `,"panel_patch":{}` : ""}}。不要输出 warnings、不要输出其他文字。`;
 
 	// MVU 树当前值 + 更新规则：放 user 段（数据不是指令），供场记判断哪些值该动。
 	const mvuUserSection = mvu
@@ -91,8 +112,16 @@ export function buildScribeTurnPrompt(input: ScribePromptInput): { systemPrompt:
 ${formatMvuTree(mvu.tree)}${mvu.rules ? `\n\n【状态树·更新规则（卡作者所写）】\n${mvu.rules.trim()}` : ""}`
 		: "";
 
+	// 面板当前值同样放 user 段（数据不是指令）
+	const panelUserSection = panels.length
+		? `
+
+【面板数据·当前值】
+${panels.map((p) => `〔${p.name}〕\n${formatMvuTree(p.tree)}`).join("\n\n")}`
+		: "";
+
 	const user = `【当前账本】
-${JSON.stringify(state, null, 2)}${mvuUserSection}
+${JSON.stringify(state, null, 2)}${mvuUserSection}${panelUserSection}
 
 【本轮对话】
 ${userName}：${userText}
@@ -152,8 +181,28 @@ export function parseScribeResult(text: string): ScribeResult | null {
 						obj.mvu_patch && typeof obj.mvu_patch === "object" && !Array.isArray(obj.mvu_patch)
 							? (obj.mvu_patch as Record<string, unknown>)
 							: undefined;
+				// 面板补丁必须是两层对象（面板名 → {路径:值}）；模型给成一层就整个丢弃，
+				// 宁可这拍不更新，也别把 {"路径":值} 当成一个叫「路径」的面板凭空建出来。
+				const rawPanel =
+					obj.panel_patch && typeof obj.panel_patch === "object" && !Array.isArray(obj.panel_patch)
+						? (obj.panel_patch as Record<string, unknown>)
+						: undefined;
+				let panelPatch: Record<string, Record<string, unknown>> | undefined;
+				if (rawPanel) {
+					const acc: Record<string, Record<string, unknown>> = {};
+					for (const [name, v] of Object.entries(rawPanel)) {
+						if (v && typeof v === "object" && !Array.isArray(v)) acc[name] = v as Record<string, unknown>;
+					}
+					if (Object.keys(acc).length) panelPatch = acc;
+				}
 					// 审查字段一律丢弃（即使旧模型仍返回）
-				return { patch, ...(mvuPatch ? { mvuPatch } : {}), warnings: [], unaskedTurn: null };
+				return {
+					patch,
+					...(mvuPatch ? { mvuPatch } : {}),
+					...(panelPatch ? { panelPatch } : {}),
+					warnings: [],
+					unaskedTurn: null,
+				};
 			}
 		} catch {
 			// 本候选不成（前言里的孤 {），试下一个

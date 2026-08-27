@@ -10,6 +10,10 @@
 import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { readJsonFile } from "./jsonio.ts";
+import { formatMvuTree } from "./mvu.ts";
+
+// 模板填充是纯函数、前端也要用，独立成模块（本文件带 node:fs，进不了浏览器 bundle）
+export { fillPanelTemplate } from "./panelTemplate.ts";
 
 export type PanelKind = "markdown" | "svg" | "html";
 export const PANEL_KINDS: readonly PanelKind[] = ["markdown", "svg", "html"];
@@ -120,12 +124,18 @@ export const PANEL_INJECT_MAX_PER = 8_000;
 export const PANEL_INJECT_MAX_TOTAL = 24_000;
 
 /**
- * 末端注入用的活跃面板**当前内容**快照（用户手改后须进上下文，不能只给名字）。
+ * 末端注入用的活跃面板快照。
+ *
+ * **有数据的面板喂数据，没数据的照旧喂内容。** 面板拆成两层之后（外观在这儿、数据在
+ * `WorldState.panelData`），注入侧要的是事实不是标签——实测 agent 写的 HTML 面板动辄
+ * 四千字，每拍把整份标签原样喂给模型，它要的却只是里面那几十个字。markdown 面板没有
+ * 这个问题（内容本身就是事实），故不带数据的面板逐字保持旧行为。
+ *
  * 超长按面板/总量截断，完整内容仍可用 panel_read。
  */
 export function formatPanelSnapshot(
 	panels: PanelMap,
-	opts?: { maxPerPanel?: number; maxTotal?: number },
+	opts?: { maxPerPanel?: number; maxTotal?: number; data?: Record<string, Record<string, unknown>> },
 ): string | null {
 	const maxPer = opts?.maxPerPanel ?? PANEL_INJECT_MAX_PER;
 	const maxTotal = opts?.maxTotal ?? PANEL_INJECT_MAX_TOTAL;
@@ -135,13 +145,15 @@ export function formatPanelSnapshot(
 	const parts: string[] = [];
 	let used = 0;
 	for (const p of active) {
-		let body = p.content;
+		const tree = opts?.data?.[p.name];
+		const hasData = tree && typeof tree === "object" && Object.keys(tree).length > 0;
+		let body = hasData ? formatMvuTree(tree) : p.content;
 		let clipped = false;
 		if (body.length > maxPer) {
 			body = `${body.slice(0, maxPer)}\n…（已截断，完整内容用 panel_read）`;
 			clipped = true;
 		}
-		const head = `### ${p.name}（${p.kind}${clipped ? "，截断" : ""}）`;
+		const head = `### ${p.name}（${hasData ? "当前数据" : p.kind}${clipped ? "，截断" : ""}）`;
 		const block = `${head}\n${body}`;
 		if (used + block.length > maxTotal) {
 			parts.push(`### ${p.name}（${p.kind}）\n…（注入篇幅已满，用 panel_read 查看全文）`);

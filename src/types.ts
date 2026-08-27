@@ -75,6 +75,19 @@ export interface WorldState {
 	 * 前端把它 postMessage 进 iframe 的 window.__liyuanVariables，卡脚本的 setInterval 自行点亮面板。
 	 */
 	mvu?: Record<string, unknown>;
+	/**
+	 * agent 自建面板的**数据**（键为面板名，值为该面板的一棵树）。
+	 *
+	 * 与 `mvu` 同构、同一套推进方式（场记每拍出平铺 path→值，applyMvuPatch 落值），
+	 * 区别只是主人不同：`mvu` 是卡的树，这里是梨园自己面板的树。**不合用一个字段**——
+	 * `seedMvuIfNeeded` 靠「state.mvu 有没有」判幂等，把梨园的数据塞进去会让卡的树永远种不上。
+	 *
+	 * 面板因此被拆成两层：**外观**（HTML/SVG/markdown，agent 写一次）留在 `.rp-artifacts`，
+	 * **数据**在这里。好处有两个——数据白嫖 rp-state 的快照/分支/叶守卫（rewind 后面板数据
+	 * 跟着回退，外观是模板不必回退），以及**注入侧从此喂数据不喂标签**：一张 HTML 面板的
+	 * 外观动辄四千字，每拍原样喂给模型纯属白烧 token，模型要的只是里面那几十个字的事实。
+	 */
+	panelData?: Record<string, Record<string, unknown>>;
 }
 
 export interface CharacterState {
