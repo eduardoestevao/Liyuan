@@ -104,6 +104,9 @@ export interface SkillFile {
 	body: string;
 	/** 存储目录名（skills/<dir>/SKILL.md；编辑器按它定位文件，通常与 name 一致） */
 	dir?: string;
+	/** frontmatter `disable-model-invocation: true`：对模型隐身（不上 skill_read 清单，也读不到正文）。
+	 *  与办事笔记（src/skills.ts）同一个键、同一个语义；编辑器仍列出它，只有送模那一侧滤掉。 */
+	disableModelInvocation?: boolean;
 }
 
 /**
@@ -142,9 +145,16 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 			description: description.slice(0, 1024),
 			body: rawLines.slice(endIdx + 1).join("\n").trim(),
 			dir: dir.name,
+			...(meta.get("disable-model-invocation") === "true" ? { disableModelInvocation: true } : {}),
 		});
 	}
 	return out;
+}
+
+/** 送模那一侧看得见的 skill：关掉的整条不存在（不进 skill_read 清单，也读不到正文）。
+ *  编辑器与助手管理工具照旧走 scanSkillFiles，要能看见关掉的那些才改得动。 */
+export function modelVisibleSkillFiles(cwd: string): SkillFile[] {
+	return scanSkillFiles(cwd).filter((s) => !s.disableModelInvocation);
 }
 
 /** 装载一拍所需全部素材；卡缺失/损坏时抛错（引擎转告用户，不演） */
@@ -207,7 +217,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		if (stamp === cached.stamp) {
 			resetDisplayTagExtras();
 			if (cached.value.presetDoc) addHistoryStripTags(FORMAT_STACK_TAGS);
-			return { ...cached.value, skillFiles: scanSkillFiles(cwd) };
+			return { ...cached.value, skillFiles: modelVisibleSkillFiles(cwd) };
 		}
 	}
 
@@ -344,7 +354,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetBefore,
 		presetDepth,
 		declaredMarkers,
-		skillFiles: scanSkillFiles(cwd),
+		skillFiles: modelVisibleSkillFiles(cwd),
 		presetAssembly,
 		presetRuleTexts,
 		markerMaterials,

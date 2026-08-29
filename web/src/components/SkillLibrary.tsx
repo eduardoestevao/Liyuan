@@ -8,9 +8,9 @@
 
 import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "../api.ts";
-import { ConfirmButton } from "./kit.tsx";
+import { ConfirmButton, Toggle } from "./kit.tsx";
 
-type StageSkill = { dir: string; name: string; description: string; chars: number; body: string };
+type StageSkill = { dir: string; name: string; description: string; chars: number; body: string; disabled: boolean };
 type EditState = { dir: string | null; name: string; description: string; body: string };
 
 export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
@@ -44,6 +44,25 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 			});
 			toast("info", "已保存，下一拍装载即生效");
 			setEdit(null);
+			await reload();
+		} catch (e) {
+			toast("error", e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+
+	/** 对模型隐身开关（与「办事笔记」那栏同一个键 disable-model-invocation）：整条重存，正文原样带回 */
+	const setExposed = async (s: StageSkill, exposed: boolean) => {
+		setBusy(true);
+		try {
+			await apiPost("/api/stage-skills", {
+				dir: s.dir,
+				name: s.name,
+				description: s.description,
+				body: s.body,
+				disabled: !exposed,
+			});
 			await reload();
 		} catch (e) {
 			toast("error", e instanceof Error ? e.message : String(e));
@@ -142,6 +161,10 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 								{s.description} · {s.chars.toLocaleString()} 字
 							</span>
 						</div>
+						<label className="expose-toggle" title="开＝名字与说明上 skill_read 清单，剧情模型按需读；关＝对模型隐身（本页仍在，随时开回来）">
+							<span className="expose-label">{s.disabled ? "已隐藏" : "已暴露"}</span>
+							<Toggle checked={!s.disabled} disabled={busy || !!edit} onChange={(v) => void setExposed(s, v)} />
+						</label>
 						<div className="preset-block-acts">
 							<button
 								className="act"

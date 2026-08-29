@@ -6,13 +6,17 @@ import { test } from "node:test";
 
 import {
 	enableProfile,
+	findModelEntry,
 	type LiyuanAgentConfig,
-	mergeModelsById,
+	mergeModelEntries,
+	modelEntryKey,
+	modelsForRuntime,
 	normalizeAgentConfig,
 	saveAgentConfig,
 	seedProviderFromRuntime,
 	loadAgentConfig,
 	saveProfile,
+	syncAgentConfigToRuntime,
 } from "../src/agent-config.ts";
 
 function makeTmpDir(): string {
@@ -24,24 +28,24 @@ function writeConfig(cwd: string, config: LiyuanAgentConfig): void {
 	writeFileSync(join(cwd, "liyuan.agent.json"), JSON.stringify(config, null, "\t"), "utf8");
 }
 
-test("mergeModelsById：保留旧条目的 compat 等额外字段", () => {
+test("mergeModelEntries：保留旧条目的 compat 等额外字段", () => {
 	const old = [
 		{ id: "deepseek/deepseek-v4-flash", reasoning: true, compat: { supportsDeveloperRole: false, thinkingFormat: "deepseek" } },
 	];
 	const incoming = [
 		{ id: "deepseek/deepseek-v4-flash", reasoning: true, contextWindow: 1000000 },
 	];
-	const merged = mergeModelsById(old, incoming);
+	const merged = mergeModelEntries(old, incoming);
 	assert.equal(merged.length, 1);
 	assert.equal(merged[0].id, "deepseek/deepseek-v4-flash");
 	assert.equal(merged[0].contextWindow, 1000000); // 新值生效
 	assert.deepEqual(merged[0].compat, { supportsDeveloperRole: false, thinkingFormat: "deepseek" }); // 旧值保留
 });
 
-test("mergeModelsById：incoming 的显式值覆盖旧值", () => {
+test("mergeModelEntries：incoming 的显式值覆盖旧值", () => {
 	const old = [{ id: "m1", contextWindow: 8000, compat: { foo: true } }];
 	const incoming = [{ id: "m1", contextWindow: 128000, compat: { foo: false } }];
-	const merged = mergeModelsById(old, incoming);
+	const merged = mergeModelEntries(old, incoming);
 	assert.equal(merged[0].contextWindow, 128000);
 	assert.deepEqual(merged[0].compat, { foo: false });
 });
@@ -149,6 +153,108 @@ test("saveAgentConfig → loadAgentConfig 往返保留 model compat", () => {
 		const loaded = loadAgentConfig(cwd).config;
 		assert.deepEqual(loaded.providers.ds.models![0].compat, { supportsDeveloperRole: false });
 		assert.deepEqual(loaded.providers.ds.models![0].thinkingLevelMap, { off: null });
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+/* ---------- 同一个模型多条条目（各带各的思考档） ---------- */
+
+test("条目身份：label 优先，没起名回落 id", () => {
+	assert.equal(modelEntryKey({ id: "flash" }), "flash");
+	assert.equal(modelEntryKey({ id: "flash", label: "flash off" }), "flash off");
+	// 空白 label 不算起过名
+	assert.equal(modelEntryKey({ id: "flash", label: "   " }), "flash");
+});
+
+test("normalizeAgentConfig：同 id 的多条条目一条都不丢，label 各自保留", () => {
+	const cfg = normalizeAgentConfig({
+		version: 1,
+		providers: {
+			opencode: {
+				models: [
+					{ id: "flash", label: "flash high", thinkingLevel: "high" },
+					{ id: "flash", label: "flash off", thinkingLevel: "off" },
+					{ id: "pro", thinkingLevel: "high" },
+				],
+			},
+		},
+	});
+	const list = cfg.providers.opencode.models!;
+	assert.equal(list.length, 3, "三条条目全在——同 id 不许被并掉");
+	assert.deepEqual(list.map((m) => modelEntryKey(m)), ["flash high", "flash off", "pro"]);
+	assert.equal(findModelEntry(list, "flash off")!.thinkingLevel, "off");
+	assert.equal(findModelEntry(list, "flash high")!.thinkingLevel, "high");
+	assert.equal(findModelEntry(list, "不存在"), undefined);
+});
+
+test("normalizeModelEntry：空 label 不留键（免得配置里一堆没用的空字段）", () => {
+	const cfg = normalizeAgentConfig({
+		version: 1,
+		providers: { p: { models: [{ id: "m", label: "  " }] } },
+	});
+	assert.ok(!("label" in cfg.providers.p.models![0]), "空 label 应当被删掉");
+});
+
+test("mergeModelEntries：按条目配对，不把 high 那条的字段灌进 off 那条", () => {
+	const old = [
+		{ id: "flash", label: "flash high", thinkingLevel: "high", compat: { a: 1 } },
+		{ id: "flash", label: "flash off", thinkingLevel: "off", compat: { b: 2 } },
+	];
+	const incoming = [
+		{ id: "flash", label: "flash high", thinkingLevel: "high" },
+		{ id: "flash", label: "flash off", thinkingLevel: "off" },
+	];
+	const merged = mergeModelEntries(old, incoming);
+	assert.equal(merged.length, 2);
+	assert.deepEqual(merged[0].compat, { a: 1 });
+	assert.deepEqual(merged[1].compat, { b: 2 }, "off 那条拿回的必须是它自己的 compat");
+});
+
+test("modelsForRuntime：按 id 收成一条，取第一条", () => {
+	const out = modelsForRuntime([
+		{ id: "flash", label: "flash high", thinkingLevel: "high" },
+		{ id: "flash", label: "flash off", thinkingLevel: "off" },
+		{ id: "pro", thinkingLevel: "high" },
+	]);
+	assert.deepEqual(out.map((m) => m.id), ["flash", "pro"]);
+	assert.equal(out[0].thinkingLevel, "high", "取第一条");
+	// thinkingLevel 这个键必须还在：运行时靠它的**存在**把模型标成 reasoning
+	//（packages/coding-agent/src/core/model-registry.ts:664-668 的梨园补丁），删了等于关死思考
+	assert.ok("thinkingLevel" in out[0]);
+});
+
+test("syncAgentConfigToRuntime：写进 models.json 的清单已按 id 收敛，配置本身不动", () => {
+	const cwd = makeTmpDir();
+	try {
+		const agentDir = join(cwd, ".liyuan", "agent");
+		mkdirSync(agentDir, { recursive: true });
+		const config: LiyuanAgentConfig = {
+			version: 1,
+			defaultProvider: "opencode",
+			defaultModel: "flash",
+			defaultModelEntry: "flash off",
+			providers: {
+				opencode: {
+					baseUrl: "https://example.com",
+					api: "openai-completions",
+					apiKey: "sk-test",
+					models: [
+						{ id: "flash", label: "flash high", thinkingLevel: "high" },
+						{ id: "flash", label: "flash off", thinkingLevel: "off" },
+					],
+				},
+			},
+		};
+		syncAgentConfigToRuntime(cwd, agentDir, config);
+		const runtime = JSON.parse(readFileSync(join(agentDir, "models.json"), "utf8")) as {
+			providers: Record<string, { models: Array<{ id: string }> }>;
+		};
+		assert.equal(runtime.providers.opencode.models.length, 1, "运行时清单里一个 id 只能有一条");
+		// 梨园自己那份配置仍是两条
+		saveAgentConfig(cwd, config);
+		assert.equal(loadAgentConfig(cwd).config.providers.opencode.models!.length, 2);
+		assert.equal(loadAgentConfig(cwd).config.defaultModelEntry, "flash off", "剧情模型指向哪条条目要存得住");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

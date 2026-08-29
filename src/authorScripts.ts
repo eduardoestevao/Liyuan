@@ -20,6 +20,10 @@
  * （2 个悬浮球、1 个悬浮窗、1 组全屏面板），11 条是幕后逻辑（注册变量结构、状态约束、
  * 阶段路由、正则操作等）。字段形状统一为
  * `{id,name,type,content,enabled,button,data,info,export_with}`。
+ *
+ * ⚠ **消费面只剩卡（8/29 用户定案）**：预设自带的这类脚本不再交给宿主帧跑。
+ * 解析器仍认两种来源（预设侧写 `tavern_helper`、卡侧写 `TavernHelper`，同一份数据两种历史拼写），
+ * 但 `buildAuthorScripts` 只收卡——见那里的注释。
  */
 
 /** 一条作者脚本（只带宿主要用的字段；button/data/info 暂不消费，别在数据里画没接线的口子） */
@@ -85,14 +89,19 @@ export function extractAuthorScripts(
 	return out;
 }
 
-export function buildAuthorScripts(
-	cardRaw: Record<string, unknown> | null | undefined,
-	presetRaw: Record<string, unknown> | null | undefined,
-): AuthorScript[] {
-	const merged = [...extractAuthorScripts(presetRaw, "preset"), ...extractAuthorScripts(cardRaw, "card")];
+/**
+ * 卡自带的运行时脚本清单（去重后）。
+ *
+ * **只认卡，不认预设**（8/29 用户定案）。`extractAuthorScripts` 仍能解析预设那种写法——
+ * 它是通用解析器，两种命名空间拼写都得认；被撤掉的是「把预设脚本喂给宿主帧」这条**消费**链。
+ * 实测原因：预设侧的声明是为酒馆助手宿主写的，换到梨园的宿主帧里
+ * 既无处依附（悬浮球占着屏幕却点不动）又会误报（每次切预设弹「正则未正确更新」）。
+ * 预设的 `regex_scripts`（显示正则）不受影响，那条一直在正常工作。
+ */
+export function buildAuthorScripts(cardRaw: Record<string, unknown> | null | undefined): AuthorScript[] {
 	const seen = new Set<string>();
 	const out: AuthorScript[] = [];
-	for (const s of merged) {
+	for (const s of extractAuthorScripts(cardRaw, "card")) {
 		const key = `${s.source}:${s.id}`;
 		if (seen.has(key)) continue;
 		seen.add(key);

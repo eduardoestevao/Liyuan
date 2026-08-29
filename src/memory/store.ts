@@ -192,6 +192,8 @@ export async function mergeNarrativeText(
 	maxChunks: number,
 	embedCtx: EmbedContext,
 	maxEntryChars = NARRATIVE_MERGE_MAX_CHARS,
+	/** 当前分支的节点 id 集合；给了就只续写本分支的条目（空集/省略 = 不判，旧行为） */
+	branchIds?: ReadonlySet<string>,
 ): Promise<{ merged: boolean; added: number; total: number; id: string; noop?: boolean }> {
 	const summary = text.trim();
 	if (summary.length < 8) {
@@ -216,6 +218,9 @@ export async function mergeNarrativeText(
 	const canMerge =
 		!!last &&
 		last.meta.source === "narrative" &&
+		// 只续写**本分支**的条目：合并进废弃分支那条，会把它的正文连同新 nodeId 一起「复活」，
+		// 分支隔离当场失效。判不了（没给 branchIds / 老条目无 nodeId）就新开一条，宁可多一条。
+		(!branchIds || branchIds.size === 0 || (!!last.meta.nodeId && branchIds.has(last.meta.nodeId))) &&
 		`${last.text}\n\n${body}`.length <= Math.max(400, maxEntryChars);
 
 	if (canMerge && last) {

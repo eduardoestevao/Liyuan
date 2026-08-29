@@ -76,6 +76,14 @@ export interface MemoryChunkMeta {
 	embedModel?: string;
 	/** 合并入库次数（剧情库） */
 	mergeCount?: number;
+	/**
+	 * 归档时所在的会话树节点 id（剧情库专用，8/29 补）。
+	 * 向量库此前只按 {卡, 会话} 存，没有分支这一维——重roll/rewind 丢弃的那一拍照样入库，
+	 * 下一拍又被召回，模型于是把废弃分支当「上一拍」续写。树/账本/面板本来都是 f(分支)，
+	 * 这里补上同一坐标：只有该节点仍在当前分支的祖先链上，这条记忆才可见。
+	 * 老条目无此字段 → 一律放行（见 service.ts 的 onCurrentBranch）。
+	 */
+	nodeId?: string;
 	/** 最后更新时间 ISO */
 	updatedAt?: string;
 }

@@ -577,6 +577,13 @@ export function CardPanel({
 	const fileRef = useRef<HTMLInputElement>(null);
 	const [importing, setImporting] = useState(false);
 	const [pathInput, setPathInput] = useState("");
+	// 用户自己新建一张卡（8/29：此前只能导入酒馆卡，不能创作）
+	const [creating, setCreating] = useState(false);
+	const [newCardName, setNewCardName] = useState("");
+	const [newFirstMes, setNewFirstMes] = useState("");
+	const [newDesc, setNewDesc] = useState("");
+	/** 卡名 + 开场白是硬底线：没有开场白的卡开不了场（服务端同样拒） */
+	const canCreateCard = newCardName.trim().length > 0 && newFirstMes.trim().length > 0;
 
 	useEffect(() => {
 		if (lib.data?.current) setCurrentPath(lib.data.current);
@@ -739,6 +746,31 @@ export function CardPanel({
 			bumpWatchPanels();
 		}, `已删除「${deletePrompt?.name ?? ""}」${delData ? "" : "（数据保留，重新导入可续玩）"}`);
 
+	/**
+	 * 新建一张空白角色卡（8/29）：与「导入卡」并列的另一条入口——用户自己创作，不必先有酒馆卡。
+	 * 只要卡名 + 开场白（开场白是硬底线，没有它卡开不了场）；描述选填。
+	 * 其余字段（性格/场景/对白示例/备选开场白）留给现成的详情编辑界面。
+	 * 建完**不切当前卡**，卡出现在库里由用户自己点开——与 agent 的 card_create 同一语义。
+	 */
+	const doCreateCard = () =>
+		run(async () => {
+			const name = newCardName.trim();
+			const firstMes = newFirstMes.trim();
+			if (!name) throw new Error("请先填卡名");
+			if (!firstMes) throw new Error("请写开场白——新会话的首条消息");
+			await apiPost<{ name: string; path: string }>("/api/cards", {
+				name,
+				firstMes,
+				...(newDesc.trim() ? { description: newDesc.trim() } : {}),
+			});
+			setCreating(false);
+			setNewCardName("");
+			setNewFirstMes("");
+			setNewDesc("");
+			lib.reload();
+			bumpWatchPanels();
+		});
+
 	const doImport = async (files: FileList | File[]) => {
 		setImporting(true);
 		try {
@@ -892,6 +924,13 @@ export function CardPanel({
 							>
 								{view === "grid" ? <IconList size={14} /> : <IconGrid size={14} />}
 							</button>
+							<button
+								className="drawer-btn"
+								title="自己新建一张角色卡（不必先有酒馆卡）"
+								onClick={() => setCreating((v) => !v)}
+							>
+								＋ 新建卡
+							</button>
 							<button className="drawer-btn" disabled={importing} onClick={() => fileRef.current?.click()}>
 								<IconUploads size={13} /> {importing ? "导入中…" : "导入卡"}
 							</button>
@@ -906,6 +945,48 @@ export function CardPanel({
 								}}
 							/>
 						</div>
+						{creating && (
+							<div className="lore-edit" onClick={(ev) => ev.stopPropagation()}>
+								<Field label="卡名" hint="也是文件名；建完不会自动切换，去库里点开">
+									<input
+										className="panel-search"
+										autoFocus
+										value={newCardName}
+										placeholder="例：青梧"
+										onChange={(ev) => setNewCardName(ev.target.value)}
+										onKeyDown={(ev) => {
+											if (ev.key === "Escape") setCreating(false);
+										}}
+									/>
+								</Field>
+								<Field label="开场白" hint="必填——新会话的首条消息，没有它开不了场">
+									<textarea
+										className="panel-search"
+										rows={3}
+										value={newFirstMes}
+										placeholder="她抬头看了你一眼，把茶碗往你那边推了推。"
+										onChange={(ev) => setNewFirstMes(ev.target.value)}
+									/>
+								</Field>
+								<Field label="描述（选填）" hint="性格/场景/对白示例等建完在详情里补">
+									<textarea
+										className="panel-search"
+										rows={2}
+										value={newDesc}
+										placeholder="外貌、身份、背景…"
+										onChange={(ev) => setNewDesc(ev.target.value)}
+									/>
+								</Field>
+								<div className="panel-row" style={{ marginTop: 6 }}>
+									<button className="drawer-btn" disabled={busy || !canCreateCard} onClick={() => void doCreateCard()}>
+										新建
+									</button>
+									<button className="drawer-btn" onClick={() => setCreating(false)}>
+										取消
+									</button>
+								</div>
+							</div>
+						)}
 						{topTags.length > 0 && (
 							<div className="tag-row">
 								{topTags.map((t) => (

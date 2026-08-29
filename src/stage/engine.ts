@@ -181,11 +181,48 @@ export interface StageEvents {
 	onActivity?: (detail: string) => void;
 }
 
+/**
+ * 旁路一次调用的实测回执。存在的理由只有一个：**让用户看得见旁路到底思考没思考、跑了多久**。
+ * 所以 thinkChars 是主角——`档 off` 旁边跟着 `思考 6619 字`，这个矛盾本身就是要看的东西
+ * （`reasoning:"off"` 在 openai-completions 上会被化成「什么都不发」，端点按自己的默认开思考，
+ * 见 openai-completions.ts:511 与 :698-702）。
+ */
+export interface SideTextStat {
+	/** 哪一路旁路 */
+	kind: "scribe" | "compact";
+	/** provider/id */
+	model: string;
+	/** 条目名；配了旁路条目才有 */
+	entry?: string;
+	/** **请求的**思考档（不等于端点真收到了它）；undefined = 连 reasoning 参数都没发 */
+	thinking?: string;
+	ms: number;
+	/** 实收思考字数。0 = 这一发真的没思考 */
+	thinkChars: number;
+	textChars: number;
+}
+
+/** 旁路回执的人话（活动条与服务端日志共用一份措辞） */
+export function sideStatLine(s: SideTextStat): string {
+	const who = s.entry && s.entry !== s.model ? `${s.entry}（${s.model}）` : s.model;
+	return `${s.kind === "scribe" ? "记账" : "压缩"}旁路 ${who}｜${
+		s.thinking ? `档 ${s.thinking}` : "未发思考档"
+	}｜思考 ${s.thinkChars} 字｜${(s.ms / 1000).toFixed(1)}s`;
+}
+
 export interface StageEngineDeps {
 	cwd: string;
 	getSessionManager: () => StageSessionManager;
 	getModel: () => StageModelLike | undefined;
 	getAuth: (model: StageModelLike) => Promise<{ apiKey?: string; headers?: Record<string, string> }>;
+	/**
+	 * 旁路条目（场记记账 / 长局压缩用哪个模型、哪一档）：给出则旁路调用走它，
+	 * 不给（或用户没配）则跟随剧情模型 —— 逐字旧行为。
+	 *
+	 * **模型和档一起给**：两者出自连接配置里同一条模型条目，拆成两个 dep 就会出现
+	 * 「模型是这条的、档是那条的」这种对不上的状态。见 RpConfig.sideModel。
+	 */
+	getSideEntry?: () => { model: StageModelLike; thinking?: string; label?: string } | undefined;
 	/** 会话当前思考档（用户自由，引擎透传） */
 	getThinking?: () => string | undefined;
 	/** 账本磁盘缓存路径（.liyuan-state/<sessionId>.json）；给出则场记落盘（fs.watch → state 帧） */
@@ -947,7 +984,7 @@ export class StageEngine {
 			const r = await runScribeTurn(
 				{
 					// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
-					sideText: (sp, ut) => this.#sideText(model, sp, ut, { apiKey, headers }, 2048),
+					sideText: (sp, ut) => this.#sideText(model, sp, ut, { apiKey, headers }, 2048, "scribe"),
 					appendStateEntry: (s) => sm.appendCustomEntry(STATE_ENTRY_TYPE, s),
 					getLeafId: () => sm.getLeafId(),
 					stateFile: this.#deps.getStateFile?.(sm.getSessionId()),
@@ -1047,7 +1084,7 @@ export class StageEngine {
 			const c = await runCompaction(
 				{
 					// 4096：摘要要装下前情/人物/伏笔/事实账五节，且要合并上一份摘要
-					sideText: (sp, ut) => this.#sideText(model, sp, ut, auth, 4096),
+					sideText: (sp, ut) => this.#sideText(model, sp, ut, auth, 4096, "compact"),
 					appendSummaryEntry: (data: RpSummaryData) => sm.appendCustomEntry(SUMMARY_ENTRY_TYPE, data),
 					getLeafId: () => sm.getLeafId(),
 					archive: this.#deps.archiveCompacted
@@ -1530,28 +1567,71 @@ export class StageEngine {
 
 	// M-A 起 #revise 精修旁路退役（8/10 验收整体退役，revise.ts 已删除）。
 
-	/** 旁路文本调用（精修/场记用）：静默收集，不外发增量；失败返回 {error} */
+	/** 旁路文本调用（场记/压缩用）：静默收集，不外发增量；失败返回 {error} */
 	async #sideText(
 		model: StageModelLike,
 		systemPrompt: string,
 		userText: string,
 		auth: { apiKey?: string; headers?: Record<string, string> },
 		maxTokens = 8192,
+		kind: SideTextStat["kind"] = "scribe",
 		reasoning: string | undefined = "off",
 	): Promise<string | { error: string }> {
+		/**
+		 * 旁路走哪条条目只有这一个主人：配了旁路条目就走它，没配就跟随剧情模型（入参那个）。
+		 * 两个调用点（场记 / 压缩）因此不必各自判一遍。
+		 */
+		const side = this.#deps.getSideEntry?.();
+		const chosen = side?.model ?? model;
+		/**
+		 * 换了模型就得换 key：入参那份 auth 是调用点按**剧情模型**取的，
+		 * 旁路模型若在另一个渠道上，拿它去发必然 401。
+		 */
+		let sideAuth = auth;
+		if (chosen !== model) {
+			try {
+				sideAuth = await this.#deps.getAuth(chosen);
+			} catch (err) {
+				return {
+					error: `旁路模型 ${chosen.provider ?? "?"}/${chosen.id} 取鉴权失败：${err instanceof Error ? err.message : String(err)}`,
+				};
+			}
+		}
+		/**
+		 * 档跟着条目走——用户在连接配置里给那条条目写的是什么就是什么，这里不替他改。
+		 * 没配旁路条目时才回落调用点的默认（历史行为：off）。
+		 */
+		const level = side ? side.thinking : reasoning;
 		const options: Record<string, unknown> = {
-			apiKey: auth.apiKey,
-			headers: auth.headers,
+			apiKey: sideAuth.apiKey,
+			headers: sideAuth.headers,
 			maxTokens,
 			signal: this.#abort?.signal,
-			// 精修/场记/压缩是 harness 的机械窄题，默认强制关思考：zen go 对 low/high 无可靠节流
-			//（8/02 实测），放开推理会把 maxTokens 整个烧在隐形思考里、正文零输出。
-			// 合约声明是判断题（整卡+预设通读），由调用点透传会话思考档（undefined＝随供应商默认）。
-			...(reasoning !== undefined ? { reasoning } : {}),
+			...(level !== undefined ? { reasoning: level } : {}),
+		};
+		const t0 = Date.now();
+		let thinkChars = 0;
+		let reported = false;
+		/** 成败都要出回执——「跑了很久然后失败」和「很快失败」是两回事 */
+		const report = (textChars: number) => {
+			if (reported) return;
+			reported = true;
+			const stat: SideTextStat = {
+				kind,
+				model: `${chosen.provider ?? "?"}/${chosen.id}`,
+				...(side?.label ? { entry: side.label } : {}),
+				...(level !== undefined ? { thinking: level } : {}),
+				ms: Date.now() - t0,
+				thinkChars,
+				textChars,
+			};
+			const line = sideStatLine(stat);
+			this.#deps.events?.onActivity?.(line);
+			console.log(`[stage-side] ${line}`);
 		};
 		try {
 			const s = this.#deps.streamFn(
-				model,
+				chosen,
 				{
 					systemPrompt,
 					messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }],
@@ -1560,15 +1640,22 @@ export class StageEngine {
 			);
 			let final: AssistantMsgLike | null = null;
 			for await (const e of s) {
-				if (e.type === "done") final = e.message ?? null;
+				if (e.type === "thinking_delta") thinkChars += (e.delta ?? "").length;
+				else if (e.type === "done") final = e.message ?? null;
 				else if (e.type === "error") {
+					report(0);
 					return { error: e.error?.errorMessage || `stopReason=${e.error?.stopReason ?? "?"}` };
 				}
 			}
-			if (!final) return { error: "流未产出最终消息" };
+			if (!final) {
+				report(0);
+				return { error: "流未产出最终消息" };
+			}
 			const text = textOfAssistant(final);
+			report(text.length);
 			return text || { error: "最终消息无文本" };
 		} catch (err) {
+			report(0);
 			return { error: err instanceof Error ? err.message : String(err) };
 		}
 	}

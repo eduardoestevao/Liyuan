@@ -1,7 +1,7 @@
 /**
  * 世界书面板（右栏）：
- * - 绿灯=常驻 constant、蓝灯=关键词触发、灰=停用；order 优先级；selective 次要词
- * - 启停开关（disabledLore 覆盖）与绿/蓝类型正交
+ * - 蓝灯=常驻 constant、绿灯=关键词触发、灰=停用；order 优先级；selective 次要词
+ * - 启停开关（disabledLore 覆盖）与蓝/绿类型正交
  * - 可编辑：constant / order / keys / secondaryKeys / selective / comment / content（写回源文件）
  * - 导入/导出标准世界书 JSON（与酒馆互通的公开格式，产品文案不写 ST）
  */
@@ -37,7 +37,7 @@ function parseKeyLine(s: string): string[] {
 		.filter(Boolean);
 }
 
-/** ST 式状态灯：绿=常驻 · 蓝=关键词 · 灰=停用 */
+/** 状态灯（照酒馆约定）：蓝=常驻 · 绿=关键词 · 灰=停用 */
 function LoreLight({
 	constant,
 	enabled,
@@ -49,12 +49,12 @@ function LoreLight({
 	onClick?: () => void;
 	disabled?: boolean;
 }) {
-	const kind = !enabled ? "off" : constant ? "green" : "blue";
+	const kind = !enabled ? "off" : constant ? "blue" : "green";
 	const title = !enabled
-		? "已停用（开关打开后：绿灯=常驻 / 蓝灯=关键词）"
+		? "已停用（开关打开后：蓝灯=常驻 / 绿灯=关键词）"
 		: constant
-			? "绿灯 · 常驻（每轮注入，点击改为蓝灯关键词）"
-			: "蓝灯 · 关键词触发（命中 key 才注入，点击改为绿灯常驻）";
+			? "蓝灯 · 常驻（每轮注入，点击改为绿灯关键词）"
+			: "绿灯 · 关键词触发（命中 key 才注入，点击改为蓝灯常驻）";
 	return (
 		<button
 			type="button"
@@ -147,7 +147,7 @@ function EntryRow({
 		const keys = parseKeyLine(draftKeys);
 		const secondaryKeys = parseKeyLine(draftSec);
 		if (!draftConstant && keys.length === 0) {
-			// 蓝灯无关键词会永远不触发，仍允许保存（用户可能稍后补）
+			// 绿灯无关键词会永远不触发，仍允许保存（用户可能稍后补）
 		}
 		onPatch(
 			{
@@ -170,7 +170,7 @@ function EntryRow({
 		if (!e.enabled) return;
 		onPatch(
 			{ fingerprint: e.fingerprint, constant: !e.constant },
-			e.constant ? "已改为蓝灯（关键词触发）" : "已改为绿灯（常驻）",
+			e.constant ? "已改为绿灯（关键词触发）" : "已改为蓝灯（常驻）",
 		);
 	};
 
@@ -197,8 +197,8 @@ function EntryRow({
 						<>
 							{e.keys.length > 0 && <div className="lore-keys">关键词：{e.keys.join("、")}</div>}
 							{e.secondaryKeys.length > 0 && <div className="lore-keys">次要：{e.secondaryKeys.join("、")}</div>}
-							{e.constant && <div className="lore-keys">类型：绿灯常驻（不扫关键词）</div>}
-							{!e.constant && <div className="lore-keys">类型：蓝灯关键词{e.keys.length === 0 ? "（无 key，不会触发）" : ""}</div>}
+							{e.constant && <div className="lore-keys">类型：蓝灯常驻（不扫关键词）</div>}
+							{!e.constant && <div className="lore-keys">类型：绿灯关键词{e.keys.length === 0 ? "（无 key，不会触发）" : ""}</div>}
 							<div className="longtext">{full ?? e.preview}</div>
 							<div className="panel-row" style={{ marginTop: 6 }}>
 								<button type="button" className="drawer-btn" disabled={busy} onClick={() => void startEdit()}>
@@ -233,8 +233,8 @@ function EntryRow({
 										value={draftConstant ? "constant" : "keyed"}
 										onChange={(ev) => setDraftConstant(ev.target.value === "constant")}
 									>
-										<option value="constant">绿灯 · 常驻</option>
-										<option value="keyed">蓝灯 · 关键词</option>
+										<option value="constant">蓝灯 · 常驻</option>
+										<option value="keyed">绿灯 · 关键词</option>
 									</select>
 								</Field>
 							</div>
@@ -319,6 +319,14 @@ function BooksSection({
 	});
 	const { busy, run } = useAction(toast);
 	const [importing, setImporting] = useState(false);
+	// 用户手动新建一本世界书（8/29：此前只能导入酒馆 JSON，不能自己创作）
+	const [creating, setCreating] = useState(false);
+	const [newName, setNewName] = useState("");
+	const [newMount, setNewMount] = useState(true);
+	const [newFirstTitle, setNewFirstTitle] = useState("");
+	const [newFirstContent, setNewFirstContent] = useState("");
+	/** 书名 + 首条正文都齐了才能建：空书挂不上、也不出现在书单里（服务端注释有据） */
+	const canCreate = newName.trim().length > 0 && newFirstContent.trim().length > 0;
 
 	const active = useMemo(() => normalizeActiveLorebooks(data?.active ?? null), [data?.active]);
 	const activeSet = useMemo(() => new Set(active), [active]);
@@ -387,6 +395,32 @@ function BooksSection({
 			toast("error", e instanceof Error ? e.message : String(e));
 		}
 	};
+
+	/**
+	 * 新建一本世界书（8/29）：与「导入」并列的另一条入口——用户自己创作，不必先有酒馆 JSON。
+	 * 书名 + 第一条正文都必填（空书挂不上、也列不出来，见服务端 createLorebookWithEntry 注释）。
+	 * 建完直接跳进这本书，用户接着按「＋ 新增条目」继续写。
+	 */
+	const doCreate = () =>
+		run(async () => {
+			const name = newName.trim();
+			const content = newFirstContent.trim();
+			if (!name) throw new Error("请先填书名");
+			if (!content) throw new Error("请写第一条条目的正文");
+			const r = await apiPost<{ path: string; didMount: boolean }>("/api/lorebooks", {
+				name,
+				mount: newMount,
+				first: { title: newFirstTitle.trim() || name, content },
+			});
+			setCreating(false);
+			setNewName("");
+			setNewFirstTitle("");
+			setNewFirstContent("");
+			reload();
+			onView({ kind: "file", path: r.path });
+			if (r.didMount) onMountChanged();
+			bumpWatchPanels();
+		});
 
 	const doImport = async (file: File) => {
 		setImporting(true);
@@ -471,8 +505,60 @@ function BooksSection({
 							<span className="lore-meta">按卡自动</span>
 						</button>
 					</div>
-					{data.books.length === 0 && <div className="sp-empty">还没有世界书，可导入 JSON</div>}
+					{data.books.length === 0 && <div className="sp-empty">还没有世界书——可以「＋ 新建」自己写，也可以导入 JSON</div>}
+					{creating && (
+						<div className="lore-edit" onClick={(ev) => ev.stopPropagation()}>
+							<Field label="书名" hint="文件名同名；建完可直接加条目">
+								<input
+									className="panel-search"
+									autoFocus
+									value={newName}
+									placeholder="例：主世界设定"
+									onChange={(ev) => setNewName(ev.target.value)}
+									onKeyDown={(ev) => {
+										if (ev.key === "Enter") void doCreate();
+										if (ev.key === "Escape") setCreating(false);
+									}}
+								/>
+							</Field>
+							<label className="lore-check">
+								<input type="checkbox" checked={newMount} onChange={(ev) => setNewMount(ev.target.checked)} />
+								建完挂进本会话
+							</label>
+							<Field label="第一条条目" hint="必填——空书挂不上，也不会出现在书单里">
+								<input
+									className="panel-search"
+									value={newFirstTitle}
+									placeholder="标题，留空用书名"
+									onChange={(ev) => setNewFirstTitle(ev.target.value)}
+								/>
+							</Field>
+							<textarea
+								className="panel-search lore-content-edit"
+								rows={3}
+								value={newFirstContent}
+								placeholder="第一条的正文内容（必填）"
+								onChange={(ev) => setNewFirstContent(ev.target.value)}
+							/>
+							<div className="panel-row" style={{ marginTop: 6 }}>
+								<button type="button" className="drawer-btn" disabled={busy || !canCreate} onClick={() => void doCreate()}>
+									新建
+								</button>
+								<button type="button" className="drawer-btn" onClick={() => setCreating(false)}>
+									取消
+								</button>
+							</div>
+						</div>
+					)}
 					<div className="panel-row book-io">
+						<button
+							type="button"
+							className="drawer-btn"
+							title="自己新建一本世界书（不必先有酒馆 JSON）"
+							onClick={() => setCreating((v) => !v)}
+						>
+							＋ 新建世界书
+						</button>
 						<label className="drawer-btn book-import">
 							{importing ? "导入中…" : "导入世界书 JSON"}
 							<input
@@ -679,8 +765,8 @@ export function LorebookPanel({ toast }: { toast: (level: "info" | "warning" | "
 						</h4>
 						<div className="field-hint">
 							仅当前书，不合并其它挂载。
-							<span className="lore-light lore-light-green lore-light-inline" /> 绿灯常驻 ·{" "}
-							<span className="lore-light lore-light-blue lore-light-inline" /> 蓝灯关键词
+							<span className="lore-light lore-light-blue lore-light-inline" /> 蓝灯常驻 ·{" "}
+							<span className="lore-light lore-light-green lore-light-inline" /> 绿灯关键词
 						</div>
 						<div className="panel-row list-toolbar">
 							<select className="panel-search" value={sort} onChange={(e) => setSort(e.target.value as LoreSort)} aria-label="排序">
@@ -722,8 +808,8 @@ export function LorebookPanel({ toast }: { toast: (level: "info" | "warning" | "
 											value={newConstant ? "constant" : "keyed"}
 											onChange={(ev) => setNewConstant(ev.target.value === "constant")}
 										>
-											<option value="keyed">蓝灯 · 关键词</option>
-											<option value="constant">绿灯 · 常驻</option>
+											<option value="keyed">绿灯 · 关键词</option>
+											<option value="constant">蓝灯 · 常驻</option>
 										</select>
 									</Field>
 									<Field label="优先级 order" hint="越小越靠前">

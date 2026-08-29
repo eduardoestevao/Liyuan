@@ -12,8 +12,28 @@ export const AGENT_CONFIG_FILE = "liyuan.agent.json";
 export const PROFILES_DIR = "liyuan-profiles";
 export const ACTIVE_META_FILE = "liyuan.agent.meta.json";
 
-/** 单模型条目：id 必填，其余字段原样保留 */
-export type AgentModelEntry = { id: string } & Record<string, unknown>;
+/**
+ * 单模型条目：id 必填，其余字段原样保留。
+ *
+ * **一个模型可以有多条条目**——同一个 id 配不同的思考档（如「flash high」与「flash off」），
+ * 是两条并列的条目。所以条目的身份不是 id，而是 `label`（缺省回落 id），见 modelEntryKey。
+ * id 仍然是发给上游的那个模型名，label 只活在梨园这一侧。
+ */
+export type AgentModelEntry = { id: string; label?: string } & Record<string, unknown>;
+
+/**
+ * 条目身份：用户起的名，没起就用 id。provider 内唯一。
+ * 剧情模型与旁路模型都按这个键指向条目——**不要再按 id 找条目**，同 id 会有多条。
+ */
+export function modelEntryKey(m: AgentModelEntry): string {
+	const label = typeof m.label === "string" ? m.label.trim() : "";
+	return label || m.id;
+}
+
+/** 按条目身份取条目；找不到返回 undefined */
+export function findModelEntry(models: AgentModelEntry[] | undefined, key: string): AgentModelEntry | undefined {
+	return (models ?? []).find((m) => modelEntryKey(m) === key);
+}
 
 /** 渠道（provider）档案 */
 export type AgentProvider = {
@@ -30,6 +50,12 @@ export interface LiyuanAgentConfig {
 	defaultProvider?: string;
 	/** 默认模型 id */
 	defaultModel?: string;
+	/**
+	 * 剧情模型指向哪条**条目**（modelEntryKey）。与 defaultModel 并存而不是取代它：
+	 * defaultModel 会被投影进 settings.json 给运行时用，那里只认模型 id；
+	 * 而同一个 id 可能有多条条目，「是哪条」只能记在这个梨园侧的字段上。
+	 */
+	defaultModelEntry?: string;
 	/** 默认思考档 */
 	defaultThinkingLevel?: string;
 	shellPath?: string;
@@ -63,7 +89,12 @@ export function normalizeModelEntry(m: unknown): AgentModelEntry | null {
 	const obj = m as Record<string, unknown>;
 	const id = typeof obj.id === "string" ? obj.id.trim() : "";
 	if (!id) return null;
-	return { ...obj, id };
+	const label = typeof obj.label === "string" ? obj.label.trim() : "";
+	// 空 label 不留键：条目身份回落 id，配置文件里也就看不到一个没用的空字段
+	const out: AgentModelEntry = { ...obj, id };
+	if (label) out.label = label;
+	else delete out.label;
+	return out;
 }
 
 export function normalizeModels(list: unknown): AgentModelEntry[] {
@@ -76,10 +107,15 @@ export function normalizeModels(list: unknown): AgentModelEntry[] {
 	return out;
 }
 
-export function mergeModelsById(existing: AgentModelEntry[] | undefined, incoming: AgentModelEntry[]): AgentModelEntry[] {
-	const prev = new Map((existing ?? []).map((m) => [m.id, m]));
+/**
+ * 合并同一条目的新旧字段（用户手改的 compat / thinkingLevelMap / cost 等不被覆盖丢失）。
+ * **按条目身份配对，不按 id**——同 id 可以有多条条目，按 id 配对会把「flash high」的字段
+ * 灌进「flash off」里。
+ */
+export function mergeModelEntries(existing: AgentModelEntry[] | undefined, incoming: AgentModelEntry[]): AgentModelEntry[] {
+	const prev = new Map((existing ?? []).map((m) => [modelEntryKey(m), m]));
 	return incoming.map((m) => {
-		const old = prev.get(m.id);
+		const old = prev.get(modelEntryKey(m));
 		return old ? { ...old, ...m, id: m.id } : m;
 	});
 }
@@ -121,6 +157,7 @@ export function normalizeAgentConfig(raw: unknown): LiyuanAgentConfig {
 		version: 1,
 		defaultProvider: str("defaultProvider"),
 		defaultModel: str("defaultModel"),
+		defaultModelEntry: str("defaultModelEntry"),
 		defaultThinkingLevel: str("defaultThinkingLevel"),
 		shellPath: str("shellPath"),
 		skills: Array.isArray(obj.skills) ? obj.skills.filter((x): x is string => typeof x === "string") : undefined,
@@ -148,8 +185,32 @@ export function saveAgentConfig(cwd: string, config: LiyuanAgentConfig): void {
 }
 
 /**
+ * 条目表 → 运行时模型清单：**按 id 收成一条，取第一条**。
+ *
+ * 梨园这边一个模型可以有多条条目（同 id、不同思考档），但 models.json 是运行时的模型清单，
+ * 那里一个 id 只能是一个模型：同 id 两条进去，`mergeCustomModels`
+ * （packages/coding-agent/src/core/model-registry.ts:487-498）会让后一条**整体顶掉**前一条
+ * ——不是按字段合并，前一条独有的字段直接没了；连 headers 都会被独立地覆盖/删掉（:742-745）。
+ * 所以投影时必须先收干净，别把这种歧义丢给运行时。
+ *
+ * 字段一个都不删（含 thinkingLevel）：models.json 里 `thinkingLevel` 这个键**存在与否**决定了
+ * 运行时把模型标成 reasoning 与否（model-registry.ts:664-668 的梨园补丁），删了等于关死思考。
+ * 条目之间思考档的差异不靠这里表达——那是梨园侧调用时自己传的 reasoning。
+ */
+export function modelsForRuntime(models: AgentModelEntry[]): AgentModelEntry[] {
+	const seen = new Set<string>();
+	const out: AgentModelEntry[] = [];
+	for (const m of models) {
+		if (seen.has(m.id)) continue;
+		seen.add(m.id);
+		out.push(m);
+	}
+	return out;
+}
+
+/**
  * 把梨园 Agent 配置投影到 runtime 读取的文件（实现细节）。
- * - providers → agentDir/models.json
+ * - providers → agentDir/models.json（模型清单按 id 收敛，见 modelsForRuntime）
  * - 默认模型/思考/shell/skills → 项目 .liyuan/settings.json（合并）
  * - 默认模型/思考 → agentDir/settings.json（合并，影响全局默认）
  */
@@ -157,7 +218,11 @@ export function syncAgentConfigToRuntime(cwd: string, agentDir: string, config: 
 	const cfg = normalizeAgentConfig(config);
 
 	// providers → models.json
-	writeJsonBackup(join(agentDir, "models.json"), { providers: cfg.providers });
+	const runtimeProviders: Record<string, AgentProvider> = {};
+	for (const [name, p] of Object.entries(cfg.providers)) {
+		runtimeProviders[name] = { ...p, models: modelsForRuntime(normalizeModels(p.models)) };
+	}
+	writeJsonBackup(join(agentDir, "models.json"), { providers: runtimeProviders });
 
 	const patchSettings = (path: string, fields: Record<string, unknown>) => {
 		let cur: Record<string, unknown> = {};
@@ -418,7 +483,7 @@ export function enableProfile(cwd: string, agentDir: string, id: string): Liyuan
 	for (const [name, provider] of Object.entries(config.providers)) {
 		const diskProvider = onDisk.providers[name];
 		if (diskProvider && Array.isArray(diskProvider.models) && Array.isArray(provider.models)) {
-			provider.models = mergeModelsById(diskProvider.models, provider.models);
+			provider.models = mergeModelEntries(diskProvider.models, provider.models);
 		}
 	}
 	saveAgentConfig(cwd, config);

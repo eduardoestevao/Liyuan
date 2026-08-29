@@ -8,6 +8,7 @@
 
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
+import { scanSkillFiles } from "./materials.ts";
 
 /** frontmatter 值与目录名都压成单行（解析器按行读，换行会截断语义） */
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
@@ -26,6 +27,8 @@ export interface StageSkillInput {
 	name: string;
 	description: string;
 	body: string;
+	/** 对模型隐身开关；不给＝沿用文件里现有的值（改正文的调用方不必知道有这个键） */
+	disabled?: boolean;
 }
 
 /** 保存（新建或覆盖已有目录）。返回实际存储目录名。 */
@@ -44,8 +47,21 @@ export function saveStageSkill(cwd: string, input: StageSkillInput): { dir: stri
 		if (existsSync(file)) throw new Error(`已有同名 skill「${dir}」，请换名或编辑原条目`);
 		if (existsSync(folder)) throw new Error(`目录 skills/${dir} 已被占用（不是 skill）`);
 	}
+	// 整文件重写，故未点名 disabled 时先把现值读回来——否则 agent 改一次正文就把用户关掉的开关打开了。
+	// 读回走 scanSkillFiles（frontmatter 只有那一个解析器），不另写一份。
+	const disabled =
+		input.disabled ?? (input.dir ? scanSkillFiles(cwd).some((s) => s.dir === dir && s.disableModelInvocation) : false);
 	mkdirSync(folder, { recursive: true });
-	const text = ["---", `name: ${name}`, `description: ${description}`, "---", "", input.body.trim(), ""].join("\n");
+	const text = [
+		"---",
+		`name: ${name}`,
+		`description: ${description}`,
+		...(disabled ? ["disable-model-invocation: true"] : []),
+		"---",
+		"",
+		input.body.trim(),
+		"",
+	].join("\n");
 	writeFileSync(file, text, "utf8");
 	return { dir };
 }

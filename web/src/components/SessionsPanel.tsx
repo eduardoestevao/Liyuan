@@ -69,6 +69,10 @@ function Item({
 	onDelete,
 	/** 当前会话再点：回主页 / 进对话，由父组件决定 */
 	currentHint,
+	/** 多选态：整行改成选中/取消，逐条动作让位（免得手机上误触重命名/删除） */
+	picking = false,
+	selected = false,
+	onToggleSelect,
 }: {
 	s: WireSessionInfo;
 	busy: boolean;
@@ -76,10 +80,22 @@ function Item({
 	onRename: (path: string, name: string) => void;
 	onDelete: (path: string) => void;
 	currentHint?: string;
+	picking?: boolean;
+	selected?: boolean;
+	onToggleSelect?: (path: string) => void;
 }) {
 	const [renaming, setRenaming] = useState(false);
 	return (
-		<div className={`session-row ${s.current ? "current" : ""}`}>
+		<div className={`session-row ${s.current ? "current" : ""} ${picking && selected ? "picked" : ""}`}>
+			{picking && (
+				<input
+					type="checkbox"
+					className="session-pick"
+					checked={selected}
+					aria-label={`选择「${sessionTitle(s)}」`}
+					onChange={() => onToggleSelect?.(s.path)}
+				/>
+			)}
 			{renaming ? (
 				<div className="session-item">
 					<RenameBox
@@ -95,8 +111,8 @@ function Item({
 				<button
 					className="session-item"
 					type="button"
-					title={s.current ? currentHint : undefined}
-					onClick={() => onOpen(s.path)}
+					title={picking ? undefined : s.current ? currentHint : undefined}
+					onClick={() => (picking ? onToggleSelect?.(s.path) : onOpen(s.path))}
 				>
 					<span className="session-title">{sessionTitle(s)}</span>
 					{s.preview && <span className="session-preview">{s.preview}</span>}
@@ -106,33 +122,35 @@ function Item({
 					</span>
 				</button>
 			)}
-			<span className="session-acts">
-				<button
-					className="act"
-					title="重命名"
-					aria-label="重命名会话"
-					onClick={(e) => {
-						e.stopPropagation();
-						setRenaming(true);
-					}}
-				>
-					<IconPencil size={13} />
-				</button>
-				<a className="act" href={exportUrl(s.path)} download title="导出 .jsonl" aria-label="导出会话">
-					<IconDownload size={13} />
-				</a>
-				{!s.current && (
-					<ConfirmButton
-						disabled={busy}
-						title="删除会话（含其全部分支，不可恢复）"
-						aria-label="删除会话"
-						confirmText="确认删除"
-						onConfirm={() => onDelete(s.path)}
+			{!picking && (
+				<span className="session-acts">
+					<button
+						className="act"
+						title="重命名"
+						aria-label="重命名会话"
+						onClick={(e) => {
+							e.stopPropagation();
+							setRenaming(true);
+						}}
 					>
-						<IconTrash size={13} />
-					</ConfirmButton>
-				)}
-			</span>
+						<IconPencil size={13} />
+					</button>
+					<a className="act" href={exportUrl(s.path)} download title="导出 .jsonl" aria-label="导出会话">
+						<IconDownload size={13} />
+					</a>
+					{!s.current && (
+						<ConfirmButton
+							disabled={busy}
+							title="删除会话（含其全部分支，不可恢复）"
+							aria-label="删除会话"
+							confirmText="确认删除"
+							onConfirm={() => onDelete(s.path)}
+						>
+							<IconTrash size={13} />
+						</ConfirmButton>
+					)}
+				</span>
+			)}
 		</div>
 	);
 }
@@ -207,6 +225,35 @@ export function SessionsPanel({
 	const remove = (path: string) =>
 		run(async () => {
 			await apiDelete(`/api/sessions?path=${encodeURIComponent(path)}`);
+			onRefresh();
+		});
+
+	// ---- 多选删除：path 可重复给，服务端一次删完只回一条 ----
+	const [picking, setPicking] = useState(false);
+	const [picked, setPicked] = useState<string[]>([]);
+	// 列表变了（删完/新建/切卡）就把已消失的选中项剪掉，免得删一个不存在的路径
+	useEffect(() => {
+		if (!sessions) return;
+		setPicked((ps) => {
+			const alive = ps.filter((p) => sessions.some((s) => s.path === p && !s.current));
+			return alive.length === ps.length ? ps : alive;
+		});
+	}, [sessions]);
+
+	const togglePick = (path: string) =>
+		setPicked((ps) => (ps.includes(path) ? ps.filter((p) => p !== path) : [...ps, path]));
+
+	const allPicked = others.length > 0 && picked.length === others.length;
+	const exitPicking = () => {
+		setPicking(false);
+		setPicked([]);
+	};
+
+	const removePicked = () =>
+		run(async () => {
+			const qs = picked.map((p) => `path=${encodeURIComponent(p)}`).join("&");
+			await apiDelete(`/api/sessions?${qs}`);
+			exitPicking();
 			onRefresh();
 		});
 
@@ -290,6 +337,33 @@ export function SessionsPanel({
 					placeholder="过滤标题；回车搜全文…"
 					onEnter={() => void doSearch()}
 				/>
+				{hits === null && others.length > 0 && (
+					<div className="panel-row list-toolbar session-pick-bar">
+						{picking ? (
+							<>
+								<button className="drawer-btn" onClick={() => setPicked(allPicked ? [] : others.map((s) => s.path))}>
+									{allPicked ? "全不选" : `全选 ${others.length}`}
+								</button>
+								<ConfirmButton
+									className="drawer-btn preset-del-btn"
+									disabled={busy || picked.length === 0}
+									confirmText={`确认删除 ${picked.length} 个`}
+									title="删除所选会话（含各自全部分支，不可恢复）"
+									onConfirm={removePicked}
+								>
+									删除所选 {picked.length}
+								</ConfirmButton>
+								<button className="drawer-btn" onClick={exitPicking}>
+									取消
+								</button>
+							</>
+						) : (
+							<button className="drawer-btn" onClick={() => setPicking(true)}>
+								多选
+							</button>
+						)}
+					</div>
+				)}
 				{searching && <div className="sp-empty">全文搜索中…</div>}
 				{hits !== null && !searching && (
 					<div className="session-list">
@@ -317,7 +391,18 @@ export function SessionsPanel({
 						{sessions === null && <div className="info-line">读取中…</div>}
 						{sessions !== null && matched.length === 0 && <div className="info-line">暂无会话</div>}
 						{others.map((s) => (
-							<Item key={s.path} s={s} busy={busy} onOpen={onOpen} onRename={rename} onDelete={remove} currentHint={currentHint} />
+							<Item
+								key={s.path}
+								s={s}
+								busy={busy}
+								onOpen={onOpen}
+								onRename={rename}
+								onDelete={remove}
+								currentHint={currentHint}
+								picking={picking}
+								selected={picked.includes(s.path)}
+								onToggleSelect={togglePick}
+							/>
 						))}
 					</div>
 				)}

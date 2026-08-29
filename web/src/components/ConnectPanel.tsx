@@ -17,8 +17,8 @@ import {
 	type CurrentModelInfo,
 	type LiyuanAgentConfig,
 	type ModelEntry,
-	type ModelInfo,
 	type ModelsResponse,
+	type RpConfigView,
 } from "../api.ts";
 import { ConfirmButton, Field, PanelStatus, useAction, usePanelData } from "./kit.tsx";
 
@@ -188,28 +188,17 @@ function draftFromConfig(id: string, name: string, config: LiyuanAgentConfig): D
 	};
 }
 
-function modelThinkingOf(cfg: LiyuanAgentConfig, provider: string, modelId: string): string {
-	const p = cfg.providers?.[provider];
-	const list = Array.isArray(p?.models) ? p.models : [];
-	const m = list.find((x) => String(x.id) === modelId);
-	return typeof m?.thinkingLevel === "string" ? m.thinkingLevel.trim() : "";
+/**
+ * 条目身份：用户起的名，没起就用 id。与 src/agent-config.ts 的 modelEntryKey 是同一条约定。
+ * **别再按 id 找条目**——同一个模型可以有多条条目（如「flash high」与「flash off」）。
+ */
+function entryKeyOf(m: ModelEntry): string {
+	const label = typeof m.label === "string" ? m.label.trim() : "";
+	return label || String(m.id);
 }
 
-function modelContextOf(cfg: LiyuanAgentConfig, provider: string, modelId: string): number | undefined {
-	const p = cfg.providers?.[provider];
-	const list = Array.isArray(p?.models) ? p.models : [];
-	const m = list.find((x) => String(x.id) === modelId);
-	const n = m?.contextWindow;
-	return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : undefined;
-}
-
-function modelMaxTokensOf(cfg: LiyuanAgentConfig, provider: string, modelId: string): number | undefined {
-	const p = cfg.providers?.[provider];
-	const list = Array.isArray(p?.models) ? p.models : [];
-	const m = list.find((x) => String(x.id) === modelId);
-	const n = m?.maxTokens;
-	return typeof n === "number" && Number.isFinite(n) && n > 0 ? n : undefined;
-}
+/* 按 model id 查条目的那三个 helper 已删：同一个 id 可以有多条条目，按 id 查恒命中第一条
+ * ——「选了 flash off 却显示 flash low 的档」就是它们干的。查条目一律走 entryKeyOf / currentEntryIndex。 */
 
 /** 解析 token 数字：128000 / 500k / 1.5m / 16k */
 function parseTokenCount(raw: string, kind: "context" | "maxOut"): number {
@@ -462,6 +451,8 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 	const modelsData = usePanelData(() => apiGet<ModelsResponse>("/api/models"), { cacheKey: "/api/models" });
 	const agentCfg = usePanelData(() => apiGet<AgentConfigResponse>("/api/agent-config"), { cacheKey: "/api/agent-config" });
 	const profilesData = usePanelData(() => apiGet<{ profiles: ProfileListItem[] }>("/api/agent-profiles"), { cacheKey: "/api/agent-profiles" });
+	/** 旁路模型指向哪条条目，住在 liyuan.config.json（与其它面板共用同一份缓存） */
+	const rpConfig = usePanelData(() => apiGet<{ config: RpConfigView }>("/api/config"), { cacheKey: "/api/config" });
 	const { busy, run } = useAction(toast);
 
 	const [mode, setMode] = useState<Mode>(null);
@@ -477,11 +468,42 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 	const allModels = modelsData.data?.models ?? [];
 	const activeConfig: LiyuanAgentConfig = agentCfg.data?.config ?? { version: 1, providers: {} };
 	const profiles = profilesData.data?.profiles ?? [];
+	/** null = 旁路跟随剧情模型 */
+	const sideEntry = rpConfig.data?.config?.sideModel ?? null;
+	/** 剧情模型指向哪条条目；旧配置没有这个字段，那时只能按 id 认 */
+	const storyKey = typeof activeConfig.defaultModelEntry === "string" ? activeConfig.defaultModelEntry.trim() : "";
+	/**
+	 * 「当前生效」那一栏改的是**当前这一条条目**，不是「所有同 id 的条目」。
+	 * storyKey 指得明就按它，指不明（旧配置还没点过条目）才退回第一条同 id 的
+	 * ——与清单上「剧情」标、以及 models.json 的收敛口径同一个规矩。
+	 */
+	const currentEntryIndex = (models: ModelEntry[]): number => {
+		if (!current) return -1;
+		if (storyKey) {
+			const i = models.findIndex((m) => entryKeyOf(m) === storyKey);
+			if (i >= 0) return i;
+		}
+		return models.findIndex((m) => String(m.id) === current.id);
+	};
+
+	/**
+	 * 当前生效的那条条目。三个「当前生效」输入框（思考档/上下文/最大回复）都读它——
+	 * 按 id 找会命中同 id 的第一条，于是选了 flash off 却显示 flash low 的档。
+	 */
+	const currentEntry = (() => {
+		if (!current) return undefined;
+		const models = activeConfig.providers?.[current.provider]?.models;
+		if (!Array.isArray(models)) return undefined;
+		const i = currentEntryIndex(models);
+		return i >= 0 ? models[i] : undefined;
+	})();
+	const numOf = (v: unknown): number | undefined =>
+		typeof v === "number" && Number.isFinite(v) && v > 0 ? v : undefined;
 
 	/** 当前生效展示：优先配置文件（模型条目 > default），再回退会话，避免「配置 high、顶栏仍 off」 */
 	const liveThinking = (() => {
 		if (!current) return "";
-		const fromModel = modelThinkingOf(activeConfig, current.provider, current.id);
+		const fromModel = typeof currentEntry?.thinkingLevel === "string" ? currentEntry.thinkingLevel.trim() : "";
 		if (fromModel) return fromModel;
 		const def =
 			typeof activeConfig.defaultThinkingLevel === "string" ? activeConfig.defaultThinkingLevel.trim() : "";
@@ -490,12 +512,11 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 	})();
 	const liveContext =
 		(current
-			? modelContextOf(activeConfig, current.provider, current.id) ??
-				(current.contextWindow > 0 ? current.contextWindow : undefined)
+			? numOf(currentEntry?.contextWindow) ?? (current.contextWindow > 0 ? current.contextWindow : undefined)
 			: undefined) ?? 128000;
 	const liveMaxTokens =
 		(current
-			? modelMaxTokensOf(activeConfig, current.provider, current.id) ??
+			? numOf(currentEntry?.maxTokens) ??
 				(typeof current.maxTokens === "number" && current.maxTokens > 0 ? current.maxTokens : undefined)
 			: undefined) ?? 0;
 	const liveStreaming =
@@ -548,10 +569,15 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			setJsonOverride(null);
 		});
 
-	const selectModel = (m: ModelInfo) =>
+	/**
+	 * 选一条条目当剧情模型：切模型 + 应用**这条条目**的思考档。
+	 * 入参是条目而不是 registry 模型——同一个模型可以有多条条目，只给 id 说不准是哪条的档。
+	 */
+	const selectModelEntry = (provider: string, entry: ModelEntry) =>
 		run(async () => {
-			await apiPost<{ current: CurrentModelInfo }>("/api/models/select", { provider: m.provider, id: m.id });
-			const perModel = modelThinkingOf(activeConfig, m.provider, m.id);
+			const key = entryKeyOf(entry);
+			await apiPost<{ current: CurrentModelInfo }>("/api/models/select", { provider, id: entry.id });
+			const perModel = typeof entry.thinkingLevel === "string" ? entry.thinkingLevel.trim() : "";
 			if (perModel) {
 				try {
 					await apiPost("/api/models/thinking", { level: perModel });
@@ -561,8 +587,10 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			}
 			const cfg = {
 				...activeConfig,
-				defaultProvider: m.provider,
-				defaultModel: m.id,
+				defaultProvider: provider,
+				defaultModel: entry.id,
+				// 记「哪条条目」：defaultModel 必须留 id（它会投影进 settings.json 给运行时用）
+				defaultModelEntry: key,
 				...(perModel ? { defaultThinkingLevel: perModel } : {}),
 			};
 			await apiPut("/api/agent-config", { config: cfg });
@@ -572,8 +600,18 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 				await apiPut("/api/agent-profiles", { id: active.id, name: active.name, config: cfg });
 			}
 			reloadAll();
-			toast("info", perModel ? `已切换：${m.name} · ${perModel}` : `已切换：${m.name}`);
+			toast("info", perModel ? `已切换：${key} · ${perModel}` : `已切换：${key}`);
 		});
+
+	/**
+	 * 指定/取消旁路条目（记账与压缩走它）。null = 跟随剧情模型。
+	 * 只存「哪条条目」，档跟着条目走——这里不另给一个档位选择器。
+	 */
+	const setSideEntry = (sel: { provider: string; entry: string } | null) =>
+		run(async () => {
+			await apiPut("/api/config", { sideModel: sel });
+			rpConfig.reload();
+		}, sel ? `旁路：${sel.entry}` : "旁路：跟随剧情模型");
 
 	const setThinking = (level: string) =>
 		run(async () => {
@@ -584,9 +622,11 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			if (current) {
 				const p = cfg.providers[current.provider];
 				if (p && Array.isArray(p.models)) {
+					// 只改当前这一条：同 id 还有别的条目（各配各的档），不能一改改一片
+					const idx = currentEntryIndex(p.models);
 					cfg.providers[current.provider] = {
 						...p,
-						models: p.models.map((m) => (String(m.id) === current.id ? { ...m, thinkingLevel: lv } : m)),
+						models: p.models.map((m, k) => (k === idx ? { ...m, thinkingLevel: lv } : m)),
 					};
 				}
 			}
@@ -607,7 +647,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			};
 			const prev = cfg.providers[current.provider];
 			const models = Array.isArray(prev?.models) ? [...prev.models] : [];
-			const idx = models.findIndex((m) => String(m.id) === current.id);
+			const idx = currentEntryIndex(models);
 			if (idx >= 0) {
 				models[idx] = { ...models[idx], id: current.id, contextWindow: n };
 			} else {
@@ -631,7 +671,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			};
 			const prev = cfg.providers[current.provider];
 			const models = Array.isArray(prev?.models) ? [...prev.models] : [];
-			const idx = models.findIndex((m) => String(m.id) === current.id);
+			const idx = currentEntryIndex(models);
 			if (idx >= 0) {
 				models[idx] = { ...models[idx], id: current.id, maxTokens: n };
 			} else {
@@ -788,20 +828,55 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 			setProbe({ ok: true, detail: `检查到 ${r.models.length} 个模型（点 ＋ 加入已选）` });
 		});
 
+	/**
+	 * 加一条模型条目。**同一个模型可以加多条**——那正是「一个模型配几个思考档」的做法
+	 * （如「flash high」与「flash off」）。重名时自动起一个能区分的条目名，用户可以再改成
+	 * 看得懂的；不起名的话两条长得一模一样，之后指哪条都说不清。
+	 */
 	const addModelById = (id: string) => {
 		const mid = id.trim();
 		if (!mid) return;
-		if (draft.models.some((m) => m.id === mid)) {
-			toast("warning", `「${mid}」已在清单中`);
-			return;
+		const used = new Set(draft.models.map((m) => entryKeyOf(m)));
+		const entry: ModelEntry = { id: mid, thinkingLevel: "" };
+		if (used.has(mid)) {
+			let n = 2;
+			while (used.has(`${mid} #${n}`)) n++;
+			entry.label = `${mid} #${n}`;
 		}
-		patchDraft({ models: [...draft.models, { id: mid, thinkingLevel: "" }] });
+		patchDraft({ models: [...draft.models, entry] });
 	};
+
+	/** 改第 i 条条目。**按下标不按 id**——同 id 有多条，按 id 改会一改改一片 */
+	const patchModelAt = (i: number, fn: (m: ModelEntry) => ModelEntry) =>
+		patchDraft({ models: draft.models.map((x, k) => (k === i ? fn(x) : x)) });
+	const removeModelAt = (i: number) => patchDraft({ models: draft.models.filter((_, k) => k !== i) });
+	/**
+	 * 条目名撞车的那些键。条目身份就是这个键，两条同键就没法指认「是哪条」——
+	 * 但**不替用户改名**：把撞了的标出来，让他自己决定谁叫什么。
+	 */
+	const dupEntryKeys = (() => {
+		const seen = new Map<string, number>();
+		for (const m of draft.models) seen.set(entryKeyOf(m), (seen.get(entryKeyOf(m)) ?? 0) + 1);
+		return new Set([...seen].filter(([, n]) => n > 1).map(([k]) => k));
+	})();
 
 	const genPreview = useMemo(() => draftToConfig(draft), [draft]);
 
 	const activeProviders = Object.keys(activeConfig.providers ?? {});
-	const modelsOfActive = (provider: string) => allModels.filter((m) => m.provider === provider);
+	/**
+	 * 该渠道下的模型**条目**（一个模型可以有多条）。清单以条目为单位——
+	 * registry 那份模型清单是按 id 收敛过的（models.json 一个 id 只能是一个模型），
+	 * 拿它当清单会把「flash high / flash off」显示成同一行。
+	 */
+	const entriesOfActive = (provider: string): ModelEntry[] => {
+		const list = activeConfig.providers?.[provider]?.models;
+		return Array.isArray(list) ? list : [];
+	};
+	/**
+	 * 运行时真有的模型。条目清单直接来自配置，id 写错了照样显示——
+	 * 拿这个集合把「运行时没有这个模型」当场标出来，别等用户点下去收一个看不懂的错。
+	 */
+	const knownModelIds = new Set(allModels.map((m) => `${m.provider}/${m.id}`));
 
 	const renderEditor = (isGen: boolean) => (
 		<div className="conn-body">
@@ -865,21 +940,19 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 					<div className="conn-models conn-discovered">
 						<div className="conn-models-head">
 							<span className="field-label">可用模型（{discovered.length}）</span>
-							<span className="field-hint">点 ＋ 加入已选</span>
+							<span className="field-hint">点 ＋ 加入已选；同一个模型可以加多条（各配一个思考档）</span>
 						</div>
 						<ul className="conn-model-list">
 							{discovered.map((id) => {
-								const inList = draft.models.some((m) => m.id === id);
+								// 「已加入」只是告知，**不再顶掉 ＋**：同一个模型要配几个思考档就加几条
+								const n = draft.models.filter((m) => m.id === id).length;
 								return (
-									<li key={id} className={`conn-model-row ${inList ? "in-list" : ""}`}>
+									<li key={id} className={`conn-model-row ${n > 0 ? "in-list" : ""}`}>
 										<span className="conn-model-id">{id}</span>
-										{inList ? (
-											<span className="conn-model-added">已加入</span>
-										) : (
-											<button type="button" className="conn-model-plus" onClick={() => addModelById(id)}>
-												＋
-											</button>
-										)}
+										{n > 0 && <span className="conn-model-added">已加入 {n} 条</span>}
+										<button type="button" className="conn-model-plus" onClick={() => addModelById(id)}>
+											＋
+										</button>
 									</li>
 								);
 							})}
@@ -895,21 +968,43 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 						<div className="sp-empty">检查模型后点 ＋，或手填</div>
 					) : (
 						<ul className="conn-model-list">
-							{draft.models.map((m) => (
-								<li key={m.id} className="conn-model-card">
+							{draft.models.map((m, i) => (
+								<li key={i} className="conn-model-card">
 									<div className="conn-model-card-head">
 										<span className="conn-model-id" title={m.id}>
 											{m.id}
 										</span>
-										<button
-											type="button"
-											className="act"
-											onClick={() => patchDraft({ models: draft.models.filter((x) => x.id !== m.id) })}
-										>
+										{dupEntryKeys.has(entryKeyOf(m)) && (
+											<span className="chip chip-cap" title="两条条目名字一样，指定旁路/剧情时分不出是哪条——改一个">
+												条目名重复
+											</span>
+										)}
+										<button type="button" className="act" onClick={() => removeModelAt(i)}>
 											移除
 										</button>
 									</div>
 									<div className="conn-model-fields">
+										<label className="conn-model-field">
+											<span className="conn-model-field-label">条目名</span>
+											<input
+												className="panel-search"
+												placeholder="同一模型加多条时用来区分，如 flash off"
+												spellCheck={false}
+												title="这条条目的名字；留空 = 用模型 id。指定旁路模型时按这个名字认"
+												value={typeof m.label === "string" ? m.label : ""}
+												onChange={(e) =>
+													patchModelAt(i, (x) => {
+														const v = e.target.value;
+														if (!v.trim()) {
+															const { label: _drop, ...rest } = x as ModelEntry & { label?: unknown };
+															void _drop;
+															return { ...rest, id: x.id };
+														}
+														return { ...x, label: v };
+													})
+												}
+											/>
+										</label>
 										<label className="conn-model-field">
 											<span className="conn-model-field-label">思考档</span>
 											<input
@@ -917,13 +1012,7 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 												placeholder="如 high / max / off"
 												spellCheck={false}
 												value={typeof m.thinkingLevel === "string" ? m.thinkingLevel : ""}
-												onChange={(e) =>
-													patchDraft({
-														models: draft.models.map((x) =>
-															x.id === m.id ? { ...x, thinkingLevel: e.target.value } : x,
-														),
-													})
-												}
+												onChange={(e) => patchModelAt(i, (x) => ({ ...x, thinkingLevel: e.target.value }))}
 											/>
 										</label>
 										<label className="conn-model-field">
@@ -944,22 +1033,19 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 												}
 												onChange={(e) => {
 													const raw = e.target.value.trim();
-													patchDraft({
-														models: draft.models.map((x) => {
-															if (x.id !== m.id) return x;
-															if (!raw) {
-																const { contextWindow: _drop, ...rest } = x as ModelEntry & {
-																	contextWindow?: unknown;
-																};
-																void _drop;
-																return { ...rest, id: x.id };
-															}
-															try {
-																return { ...x, contextWindow: parseContextWindow(raw) };
-															} catch {
-																return { ...x, contextWindow: raw };
-															}
-														}),
+													patchModelAt(i, (x) => {
+														if (!raw) {
+															const { contextWindow: _drop, ...rest } = x as ModelEntry & {
+																contextWindow?: unknown;
+															};
+															void _drop;
+															return { ...rest, id: x.id };
+														}
+														try {
+															return { ...x, contextWindow: parseContextWindow(raw) };
+														} catch {
+															return { ...x, contextWindow: raw };
+														}
 													});
 												}}
 												onBlur={() => {
@@ -968,22 +1054,16 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 													if (typeof raw === "number" && raw > 0) return;
 													try {
 														const n = parseContextWindow(String(raw));
-														patchDraft({
-															models: draft.models.map((x) =>
-																x.id === m.id ? { ...x, contextWindow: n } : x,
-															),
-														});
+														patchModelAt(i, (x) => ({ ...x, contextWindow: n }));
 													} catch {
-														const { contextWindow: _drop, ...rest } = m as ModelEntry & {
-															contextWindow?: unknown;
-														};
-														void _drop;
-														patchDraft({
-															models: draft.models.map((x) =>
-																x.id === m.id ? { ...rest, id: x.id } : x,
-															),
+														patchModelAt(i, (x) => {
+															const { contextWindow: _drop, ...rest } = x as ModelEntry & {
+																contextWindow?: unknown;
+															};
+															void _drop;
+															return { ...rest, id: x.id };
 														});
-														toast("warning", `「${m.id}」上下文无效，已清空（可用 500k）`);
+														toast("warning", `「${entryKeyOf(m)}」上下文无效，已清空（可用 500k）`);
 													}
 												}}
 											/>
@@ -1004,22 +1084,19 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 												}
 												onChange={(e) => {
 													const raw = e.target.value.trim();
-													patchDraft({
-														models: draft.models.map((x) => {
-															if (x.id !== m.id) return x;
-															if (!raw) {
-																const { maxTokens: _drop, ...rest } = x as ModelEntry & {
-																	maxTokens?: unknown;
-																};
-																void _drop;
-																return { ...rest, id: x.id };
-															}
-															try {
-																return { ...x, maxTokens: parseMaxTokens(raw) };
-															} catch {
-																return { ...x, maxTokens: raw };
-															}
-														}),
+													patchModelAt(i, (x) => {
+														if (!raw) {
+															const { maxTokens: _drop, ...rest } = x as ModelEntry & {
+																maxTokens?: unknown;
+															};
+															void _drop;
+															return { ...rest, id: x.id };
+														}
+														try {
+															return { ...x, maxTokens: parseMaxTokens(raw) };
+														} catch {
+															return { ...x, maxTokens: raw };
+														}
 													});
 												}}
 												onBlur={() => {
@@ -1028,22 +1105,16 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 													if (typeof raw === "number" && raw > 0) return;
 													try {
 														const n = parseMaxTokens(String(raw));
-														patchDraft({
-															models: draft.models.map((x) =>
-																x.id === m.id ? { ...x, maxTokens: n } : x,
-															),
-														});
+														patchModelAt(i, (x) => ({ ...x, maxTokens: n }));
 													} catch {
-														const { maxTokens: _drop, ...rest } = m as ModelEntry & {
-															maxTokens?: unknown;
-														};
-														void _drop;
-														patchDraft({
-															models: draft.models.map((x) =>
-																x.id === m.id ? { ...rest, id: x.id } : x,
-															),
+														patchModelAt(i, (x) => {
+															const { maxTokens: _drop, ...rest } = x as ModelEntry & {
+																maxTokens?: unknown;
+															};
+															void _drop;
+															return { ...rest, id: x.id };
 														});
-														toast("warning", `「${m.id}」最大回复无效，已清空（可用 16k）`);
+														toast("warning", `「${entryKeyOf(m)}」最大回复无效，已清空（可用 16k）`);
 													}
 												}}
 											/>
@@ -1160,26 +1231,55 @@ export function ConnectPanel({ toast }: { toast: (level: "info" | "warning" | "e
 						{activeProviders.length > 0 && (
 							<ul className="conn-pick-list" style={{ marginTop: 10 }}>
 								{activeProviders.flatMap((pk) =>
-									modelsOfActive(pk).map((m) => {
-										const on = current.provider === m.provider && current.id === m.id;
-										const think = modelThinkingOf(activeConfig, m.provider, m.id);
-										const ctx = modelContextOf(activeConfig, m.provider, m.id) ?? m.contextWindow;
-										const maxOut = modelMaxTokensOf(activeConfig, m.provider, m.id);
+									entriesOfActive(pk).map((entry, i) => {
+										const key = entryKeyOf(entry);
+										const think = typeof entry.thinkingLevel === "string" ? entry.thinkingLevel.trim() : "";
+										const ctx = typeof entry.contextWindow === "number" ? entry.contextWindow : 0;
+										const maxOut = typeof entry.maxTokens === "number" ? entry.maxTokens : 0;
+										// 剧情模型认「哪条条目」。storyKey 缺席（旧配置还没点过条目）时只能按 id 认，
+										// 那就只认**第一条**同 id 的——同 id 两条一起亮等于说有两个剧情模型；
+										// 取第一条也和 models.json 的收敛口径一致（modelsForRuntime 取第一条）。
+										const on =
+											current.provider === pk &&
+											current.id === String(entry.id) &&
+											(storyKey
+												? storyKey === key
+												: entriesOfActive(pk).findIndex((x) => String(x.id) === String(entry.id)) === i);
+										const isSide = sideEntry?.provider === pk && sideEntry?.entry === key;
+										const missing = !knownModelIds.has(`${pk}/${String(entry.id)}`);
 										return (
-											<li key={`${m.provider}/${m.id}`}>
+											<li key={`${pk}/${i}`} className="conn-pick-row">
 												<button
 													type="button"
 													className={`conn-pick-model ${on ? "on" : ""}`}
 													disabled={busy || on}
-													onClick={() => void selectModel(m)}
+													onClick={() => void selectModelEntry(pk, entry)}
 												>
-													<span className="conn-pick-name">{m.name}</span>
+													<span className="conn-pick-name">{key}</span>
 													<span className="conn-pick-meta">
-														{on && <span className="chip chip-cap">使用中</span>}
+														{on && <span className="chip chip-cap">剧情</span>}
+														{isSide && <span className="chip chip-cap">旁路</span>}
+														{missing && <span className="chip chip-cap">不在可用清单</span>}
+														{key !== String(entry.id) ? (
+															<span className="chip chip-cap">{String(entry.id)}</span>
+														) : null}
 														{think ? <span className="chip chip-cap">{think}</span> : null}
 														{ctx > 0 ? <span className="chip chip-cap">{fmtCtx(ctx)}</span> : null}
 														{maxOut ? <span className="chip chip-cap">出{fmtCtx(maxOut)}</span> : null}
 													</span>
+												</button>
+												<button
+													type="button"
+													className={`conn-pick-side ${isSide ? "on" : ""}`}
+													disabled={busy}
+													title={
+														isSide
+															? "取消旁路指定，记账与压缩回到跟随剧情模型"
+															: "把记账与压缩交给这条条目（思考档就用它自己的）"
+													}
+													onClick={() => void setSideEntry(isSide ? null : { provider: pk, entry: key })}
+												>
+													旁路
 												</button>
 											</li>
 										);

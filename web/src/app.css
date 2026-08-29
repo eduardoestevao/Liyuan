@@ -3666,9 +3666,11 @@ input.panel-search.num {
 		min-height: 44px;
 	}
 
-	/* Toast 别挡顶栏按钮 */
+	/* Toast 别挡顶栏按钮；也别挡抽屉头的关闭 X——手机上面板铺满整屏，那个 X 是唯一出口，
+	   被 z40 的气泡压住就只能硬等它消散。让到头下沿：顶栏 47+inset ＋ 头 max(12px,inset)+40+12。
+	   没开面板时气泡同样落这个高度，压的是可滚动的正文，无害。 */
 	.toasts {
-		top: calc(56px + env(safe-area-inset-top));
+		top: calc(99px + env(safe-area-inset-top) + max(12px, env(safe-area-inset-top)));
 		width: min(94vw, 420px);
 	}
 
@@ -3860,6 +3862,23 @@ input.panel-search.num {
 .session-row.current {
 	border-left-color: var(--accent);
 	background: var(--accent-wash);
+}
+/* 多选态：勾选框与整行选中底色（逐条动作此时不渲染，行本身就是选择热区） */
+.session-pick {
+	flex: none;
+	align-self: center;
+	margin-left: 8px;
+	width: 18px;
+	height: 18px;
+	accent-color: var(--accent);
+	cursor: pointer;
+}
+.session-row.picked {
+	background: var(--accent-wash);
+	border-left-color: var(--accent);
+}
+.session-pick-bar {
+	margin-top: 6px;
 }
 .session-row .session-item {
 	flex: 1;
@@ -5044,6 +5063,46 @@ input.panel-search.num {
 	gap: 4px 6px;
 	font-size: 11px;
 	color: var(--text-faint);
+}
+/*
+ * 条目行：主按钮＝设为剧情模型，右侧小钮＝设为旁路。
+ * 一条条目两个角色，摆在同一行上——旁路不是另一套配置，就是这张清单里的某一条。
+ */
+.conn-pick-row {
+	display: flex;
+	align-items: stretch;
+	gap: 4px;
+}
+.conn-pick-row .conn-pick-model {
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.conn-pick-side {
+	flex: 0 0 auto;
+	padding: 0 10px;
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-s);
+	background: var(--surface);
+	color: var(--text-faint);
+	font-size: 11px;
+	white-space: nowrap;
+	cursor: pointer;
+	transition: border-color 0.15s, background 0.15s, color 0.15s;
+}
+.conn-pick-side:hover:not(:disabled) {
+	border-color: var(--accent);
+	background: var(--accent-wash);
+	color: var(--text);
+}
+.conn-pick-side.on {
+	border-color: var(--accent);
+	background: var(--accent-wash);
+	color: var(--text-strong);
+	font-weight: 600;
+}
+.conn-pick-side:disabled {
+	opacity: 0.55;
+	cursor: default;
 }
 .conn-builtin-key {
 	padding-top: 8px;
@@ -7002,9 +7061,12 @@ label.drawer-btn {
 		height: 100%;
 		overscroll-behavior-y: none;
 	}
+	/* 减去 --floatwin-sheet-h：底部抽屉开着时应用主体让位（见文件末尾 .floatwin 那段与
+	   components/FloatWindow.tsx）。两个高度都要减——只减 height 会被 min-height 顶回去。
+	   没开抽屉时变量未定义，回落 0，逐字等于原来的 100dvh/100svh。 */
 	.app {
-		height: 100dvh;
-		min-height: 100svh;
+		height: calc(100dvh - var(--floatwin-sheet-h, 0px));
+		min-height: calc(100svh - var(--floatwin-sheet-h, 0px));
 	}
 	.list {
 		overscroll-behavior: contain;
@@ -7211,17 +7273,46 @@ label.drawer-btn {
 		linear-gradient(135deg, transparent 45%, var(--hairline) 45%, var(--hairline) 55%, transparent 55%),
 		linear-gradient(135deg, transparent 70%, var(--hairline) 70%, var(--hairline) 80%, transparent 80%);
 }
-/* 小屏：拖动缩放没有意义，直接铺满 */
+/* 小屏：不是缩小的窗，也不是铺满的页，而是**从底部升起的抽屉**，且是让位不是盖住。
+   铺满的代价是「看一眼面板 = 离开对话」；只把抽屉抬到输入栏之上也不够——输入栏悬在
+   抽屉底下，和它上面的对话被切断，打字时看不见最近几条。
+   所以 `.app` 自己让出抽屉那么高（那条规则在上面「视口」那段里——`.app` 的高度只有一个主人），
+   消息区（flex:1）被压矮，输入栏（flex:0 0 auto）原样留着，上半屏仍是一个能读能写的完整对话。
+   --floatwin-sheet-h 由 FloatWindow 挂在 :root 上，一份值两处读；窗一关就撤掉，处处回落 0。 */
 @media (max-width: 999px) {
 	.floatwin {
-		inset: 0 !important;
+		left: 0 !important;
+		right: 0 !important;
+		bottom: 0 !important;
+		top: auto !important;
 		width: auto !important;
-		height: auto !important;
-		border-radius: 0;
-		border: 0;
-		z-index: 60;
+		height: var(--floatwin-sheet-h, 50dvh) !important;
+		border-radius: var(--radius-l) var(--radius-l) 0 0;
+		border-bottom: 0;
+		animation: floatwin-sheet-in 0.18s ease-out;
 	}
-	.floatwin-head { cursor: default; }
+	@keyframes floatwin-sheet-in {
+		from { opacity: 0; transform: translateY(14px); }
+		to { opacity: 1; transform: none; }
+	}
+	/* 标题栏兼作抓手：上方一道短横线，是移动端「可以上下拖」的通用记号 */
+	.floatwin-head {
+		position: relative;
+		padding-top: 15px;
+		cursor: ns-resize;
+	}
+	.floatwin-head::before {
+		content: "";
+		position: absolute;
+		top: 6px;
+		left: 50%;
+		width: 34px;
+		height: 4px;
+		transform: translateX(-50%);
+		border-radius: 2px;
+		background: var(--hairline);
+	}
+	/* 右下角缩放柄没有意义了：宽度被视口定死，高度归抓手管 */
 	.floatwin-grip { display: none; }
 }
 
@@ -7233,9 +7324,32 @@ label.drawer-btn {
 	gap: 0 22px;
 	align-items: start;
 }
-/* 有了整列宽度就不必再把名字截到 12em（窄栏才需要） */
+/* 名字与登场时间**不抢同一行**（8/29）。原先 name 上限 16em(208px) 几乎吃掉整列 233px，
+   而 blurb 是 flex:1/min-width:0 → 只剩 0~24px，再叠 word-break:break-word 就逐字竖排：
+   实测一条 14 字的长地点名那行 blurb 24×206px、一条 15 字的长剧情线那行 0×247px，
+   一行字撑出 251px 高——这既是"时间竖着排"也是"大片空白"的同一个根。
+   改成两行：第一行名字（吃满整列，比 16em 还宽，原意图反而更达成）+ 状态/删除，第二行时间整行。
+   用 order 而不改 JSX：DOM 序仍是 名字→时间→状态（读屏顺序照旧通顺），别的形态零影响。 */
+.floatwin .roster-panel .roster-row {
+	flex-wrap: wrap;
+	align-items: baseline;
+}
 .floatwin .roster-panel .roster-name {
-	max-width: 16em;
+	flex: 1 1 auto;
+	min-width: 0;
+	/* 给同行的状态标记（在场/此处/进行中）留出位置：名字吃满整列时标记会被挤到下一行，
+	   那条就变成三行、行高参差。名字超长改省略号——它有 title，悬停仍看得到全名。 */
+	max-width: calc(100% - 4.5em);
+}
+.floatwin .roster-panel .roster-mark,
+.floatwin .roster-panel .roster-row > button {
+	order: 1;
+}
+.floatwin .roster-panel .roster-blurb {
+	order: 2;
+	flex: 1 0 100%;
+	font-size: 12px;
+	line-height: 1.45;
 }
 
 /* ---------- 梨园自己的悬浮球（components/PanelOrb.tsx） ---------- */

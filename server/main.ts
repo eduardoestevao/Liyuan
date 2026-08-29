@@ -39,7 +39,7 @@ import {
 	verifyToken,
 	type AccessData,
 } from "../src/access.ts";
-import { loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
+import { findModelEntry, loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
 import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile, readCardRawJson, updateCardFields } from "../src/card.ts";
 import { findInitVar, findSchemaDefaults, seedMvuIfNeeded } from "../src/mvu.ts";
@@ -113,6 +113,7 @@ import {
 	patchLoreEntryAnywhere,
 	selectCard,
 	setLorebookMounted,
+	thinkingLevelOfEntry,
 	writeMaybeGzip,
 	type CurrentModelInfo,
 	type RestHost,
@@ -552,6 +553,25 @@ const lastStoryUserId = (): string | null => {
 		return { id: String(e.id), type };
 	});
 	return lastStoryUserEntryId(lite, isBackstageText);
+};
+
+/**
+ * 当前分支上的节点 id 集合（向量记忆按分支隔离用，8/29）。
+ *
+ * 剧情库此前只按 {卡, 会话} 存：重roll/rewind 丢弃的那一拍照样入库，下一拍又被【剧情记忆】
+ * 召回，模型把废弃分支当「上一拍」续写。树/账本/面板都是 f(分支)，这里给记忆补上同一坐标。
+ * 取树失败返回空集——下游按「不判、放行」处理（宁可漏掉隔离，不可让记忆整体消失）。
+ */
+const branchNodeIds = (): Set<string> => {
+	try {
+		const out = new Set<string>();
+		for (const e of session.sessionManager.getBranch() as Array<{ id?: unknown }>) {
+			if (typeof e?.id === "string" && e.id) out.add(e.id);
+		}
+		return out;
+	} catch {
+		return new Set<string>();
+	}
 };
 
 /**
@@ -1000,6 +1020,10 @@ const bindSession = async () => {
 					// 挂上 swipe 序号（流式 message 帧无树元数据）
 					resyncAll();
 					// 内置向量记忆：按策略把本轮助手正文入库（异步，失败不影响叙事）
+					// ⚠ 树坐标必须**在进异步块之前**同步取：用户紧接着重roll 会把叶挪回 user 节点，
+					// 那时再取就会给这条记忆打上「每条分支都可见」的坐标，隔离当场失效。
+					const memNodeId = session.sessionManager.getLeafId();
+					const memBranchIds = branchNodeIds();
 					void (async () => {
 						try {
 							const msgs = branchMessages() as Array<{ role?: string; content?: unknown }>;
@@ -1024,6 +1048,7 @@ const bindSession = async () => {
 								cwd,
 								{ sessionId: session.sessionId, card: cardPath || undefined },
 								lastText,
+								{ nodeId: memNodeId, branchIds: memBranchIds },
 							);
 							if (mem.error) {
 								broadcast({
@@ -2169,27 +2194,62 @@ const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 // ---------- 台上引擎（PLAN-RP-HARNESS R1：叙事回合走自建循环，pi 只留幕后） ----------
 
+// 旁路条目解析的告警去重：每拍都会问一次，配错了不能每拍刷一条
+let warnedSideEntry = "";
+
 const stage = new StageEngine({
 	cwd,
 	getSessionManager: () => session.sessionManager as never,
 	getModel: () => session.model as never,
 	getAuth: async (m) => session.modelRegistry.getApiKeyAndHeaders(m as never),
+	/**
+	 * 旁路条目：`config.sideModel` 指向连接配置里的一条模型条目（provider + 条目名）。
+	 * 没配 = 返回 undefined = 引擎跟随剧情模型（旧行为逐字不变）。
+	 * 条目找不到 / 模型不可用 / 没 key 时告警一次并回落——绝不因为一条配错的旁路把整拍记账丢掉。
+	 */
+	getSideEntry: () => {
+		const sel = loadConfig(cwd).sideModel;
+		if (!sel) return undefined;
+		const tag = `${sel.provider}/${sel.entry}`;
+		const warn = (why: string): undefined => {
+			if (warnedSideEntry !== tag + why) {
+				warnedSideEntry = tag + why;
+				console.error(`[stage-side] 旁路条目 ${tag} ${why}，本次回落跟随剧情模型`);
+			}
+			return undefined;
+		};
+		try {
+			const agent = loadAgentConfig(cwd).config;
+			const entry = findModelEntry(agent.providers?.[sel.provider]?.models, sel.entry);
+			if (!entry) return warn("不在连接配置里");
+			const m = session.modelRegistry.find(sel.provider, entry.id);
+			if (!m) return warn(`模型 ${entry.id} 不在可用清单`);
+			if (!session.modelRegistry.hasConfiguredAuth(m)) return warn("缺少 API key");
+			if (warnedSideEntry) warnedSideEntry = "";
+			const thinking = thinkingLevelOfEntry(agent, sel.provider, sel.entry);
+			return { model: m as never, ...(thinking ? { thinking } : {}), label: sel.entry };
+		} catch (err) {
+			return warn(`解析失败（${err instanceof Error ? err.message : String(err)}）`);
+		}
+	},
 	getThinking: () => session.thinkingLevel,
 	// 场记落盘 → fs.watch 自动广播 state 帧（与扩展/REST 写路径同一条）
 	getStateFile: (sessionId) => join(stateDir, `${sessionId}.json`),
 	// memory_search 工具：剧情库 + 外部资料库合并取前 6（与扩展侧同一套语义）
+	// 分支隔离与被动召回同源——模型主动检索也不该捞到重roll 掉的那些拍。
 	searchMemory: async (sessionId, query) => {
 		const scope = { sessionId, card: cardPath || undefined };
+		const ids = branchNodeIds();
 		const [narrative, external] = await Promise.all([
-			memorySearch(cwd, scope, "narrative", query).catch(() => []),
-			memorySearch(cwd, scope, "external", query).catch(() => []),
+			memorySearch(cwd, scope, "narrative", query, undefined, ids).catch(() => []),
+			memorySearch(cwd, scope, "external", query, undefined, ids).catch(() => []),
 		]);
 		return [...narrative, ...external].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 6);
 	},
 	// 【剧情记忆】每拍被动召回：与 memory_search 同一套 scope 绑定，但走 memoryRecallForTurn——
 	// 那里管着设置面板的「每轮自动检索并注入模型」开关（关 = 返回空 = 不出块）。
 	recallMemory: (sessionId, query) =>
-		memoryRecallForTurn(cwd, { sessionId, card: cardPath || undefined }, query).catch(() => []),
+		memoryRecallForTurn(cwd, { sessionId, card: cardPath || undefined }, query, branchNodeIds()).catch(() => []),
 	// 向量库写侧三件（M-D3）：MemoryScope 一律在此绑定（当前对话 + 当前卡），**不经模型**。
 	// 写侧恒落 external——服务层 assertExtraStore 禁止手写剧情库，故工具不给 store 参数。
 	addMemory: (sessionId, input) =>
@@ -2408,6 +2468,10 @@ const stage = new StageEngine({
 			resyncAll();
 			// 向量记忆入库：只在真落了新正文时（中断/错误拍不入）
 			if (!info.entryId || info.error || info.aborted) return;
+			// 树坐标在进异步块前同步取（同上：随后的重roll 会挪叶）。这条路径已有 info.entryId
+			// 就是本拍的落树节点，直接用它当 nodeId 最准。
+			const memNodeId = info.entryId;
+			const memBranchIds = branchNodeIds();
 			void (async () => {
 				try {
 					const msgs = branchMessages() as Array<{ role?: string; content?: unknown }>;
@@ -2927,6 +2991,14 @@ wss.on("connection", (ws, req) => {
 					}
 					case "new":
 						if (refuseWhileStreaming(ws, "新建会话")) return;
+						// 幂等短路（8/29）：当前已是干净的新会话（分支上没有任何剧情 user 消息）时，
+						// 再建一个**语义等价**——同一张卡、同样的开局——却要付一次 hello 帧的全量界面
+						// 重建（messages 整体替换 + 卡皮肤重挂 + 会话列表清空重拉），还在会话列表里
+						// 堆一个空会话。这正是「哪怕单纯重复点击也刷新一次」的来源。
+						if (!lastStoryUserId()) {
+							ws.send(JSON.stringify({ type: "notify", level: "info", text: "当前已是新会话" } satisfies ServerFrame));
+							return;
+						}
 						await runtime.newSession();
 						if (assistantHost) {
 							try {

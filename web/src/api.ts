@@ -144,6 +144,57 @@ export function apiGetCacheClearForPanel(panelId: string): void {
 	for (const pref of prefixes) apiGetCacheClear(pref);
 }
 
+/**
+ * agent 台上工具名 → 它写过的资产对应的 GET 前缀。
+ *
+ * 只列**真正改盘**的工具。读工具（`*_search`/`*_list`/`*_read`/`world_state_get`/`skill_read`）、
+ * 决策工具（`ask`）、以及走 WS 帧直接推前端的世界状态/名录/面板（`panel_*`、记账）都不在此——
+ * 它们不动 GET 端点的数据，清了纯属白重拉（慢链路上 preset 全量就有 119KB）。
+ * 与 `invalidateAfterWrite` 是同一套「写谁清谁」，只是这里的键是 harness 自己发行的工具名，不是路径。
+ * 表里没有的工具名 → 不清（宁可漏清一格靠 180s TTL 兜，也不要每拍全表清）。
+ */
+const TOOL_WRITE_PREFIXES: Record<string, string[]> = {
+	lorebook_write: ["/api/lorebook", "/api/lorebooks"],
+	lorebook_update: ["/api/lorebook", "/api/lorebooks"],
+	lorebook_delete: ["/api/lorebook", "/api/lorebooks"],
+	lorebook_toggle: ["/api/lorebook", "/api/lorebooks"],
+	lorebook_create: ["/api/lorebook", "/api/lorebooks", "/api/config"],
+	lorebook_mount: ["/api/lorebooks", "/api/config"],
+	memory_add: ["/api/memory"],
+	memory_delete: ["/api/memory"],
+	card_create: ["/api/card", "/api/cards", "/api/cardfront"],
+	card_update: ["/api/card", "/api/cards", "/api/cardfront"],
+	card_switch: ["/api/card", "/api/cards", "/api/cardfront", "/api/config"],
+	card_greetings: ["/api/card", "/api/cards"],
+	persona_write: ["/api/personas", "/api/config"],
+	persona_use: ["/api/personas", "/api/config"],
+	persona_delete: ["/api/personas", "/api/config"],
+	preset_write: ["/api/preset", "/api/presets"],
+	preset_save: ["/api/preset", "/api/presets"],
+	preset_create: ["/api/preset", "/api/presets"],
+	preset_saveas: ["/api/preset", "/api/presets"],
+	preset_select: ["/api/preset", "/api/presets"],
+	stage_skill_write: ["/api/skills"],
+	stage_skill_delete: ["/api/skills"],
+};
+
+/**
+ * agent 一轮结束：按**本轮真正调过的写工具**清对应缓存（8/29）。
+ * 服务端的写客户端看不见（`invalidateAfterWrite` 只认前端自己发的写），故 agent 改了资产要主动失效；
+ * 但此前是每轮无条件 `apiGetCacheClear()` 整表清——日常一拍只记账（走 WS，不碰 GET 缓存），
+ * 却把 preset/card 等无关配置全冲了，慢链路（VPS）上就成了「每次开面板都重新加载」。
+ * 现在只清本轮写工具碰过的前缀；本轮没有写工具则一格都不清。返回是否清过（供调用方决定是否还要提示重拉）。
+ */
+export function apiGetCacheClearForToolNames(toolNames: Iterable<string>): boolean {
+	const prefixes = new Set<string>();
+	for (const name of toolNames) {
+		const ps = TOOL_WRITE_PREFIXES[name];
+		if (ps) for (const p of ps) prefixes.add(p);
+	}
+	for (const p of prefixes) apiGetCacheClear(p);
+	return prefixes.size > 0;
+}
+
 export const apiPost = <T,>(path: string, body: unknown) =>
 	api<T>(path, { method: "POST", body: JSON.stringify(body) });
 export const apiPut = <T,>(path: string, body: unknown) =>
@@ -217,14 +268,19 @@ export interface AuthProviderInfo {
 	modelCount: number;
 }
 
-/** Agent 配置中的模型条目 */
-export type ModelEntry = { id: string } & Record<string, unknown>;
+/**
+ * Agent 配置中的模型条目。
+ * 同一个模型可以有多条条目（同 id、不同思考档）；条目的身份是 `label`，没起名就回落 id。
+ */
+export type ModelEntry = { id: string; label?: string } & Record<string, unknown>;
 
 /** 梨园完整 Agent 配置 */
 export interface LiyuanAgentConfig {
 	version: 1;
 	defaultProvider?: string;
 	defaultModel?: string;
+	/** 剧情模型指向哪条条目（条目名）；defaultModel 仍留模型 id 给运行时 */
+	defaultModelEntry?: string;
 	defaultThinkingLevel?: string;
 	shellPath?: string;
 	skills?: string[];
@@ -298,6 +354,8 @@ export interface RpConfigView {
 	creationMode?: "ask" | "silent";
 	/** 固定楼层压缩：每 N 个叙事轮主动压缩早期正文；0=仅被动压缩 */
 	compactEveryNTurns?: number;
+	/** 旁路模型（记账/压缩）：指向连接配置里的一条模型条目；缺省=跟随剧情模型 */
+	sideModel?: { provider: string; entry: string };
 }
 
 export interface CardResponse {

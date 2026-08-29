@@ -69,6 +69,7 @@ import {
 	applyConfigPatch,
 	cardLibrary,
 	configPath,
+	createCardFile,
 	createLorebookWithEntry,
 	currentCardPath,
 	deleteLoreEntryAnywhere,
@@ -747,34 +748,10 @@ tools.push(
 				},
 			},
 			createCard: (input) => {
-				const safe = input.name.replace(/[\\/<>:"|?*]/g, "_").slice(0, 120).trim();
-				if (!safe) throw new Error("卡名无效");
-				const dest = join(cwd, "assets/cards", `${safe}.json`);
-				if (existsSync(dest)) return null;
-				const card: Record<string, unknown> = {
-					spec: "chara_card_v3",
-					spec_version: "3.0",
-					data: {
-						name: safe,
-						description: input.description ?? "",
-						personality: input.personality ?? "",
-						scenario: input.scenario ?? "",
-						first_mes: input.firstMes,
-						mes_example: input.mesExample ?? "",
-						alternate_greetings: input.alternateGreetings ?? [],
-						tags: [],
-						creator: "",
-						character_version: "",
-					},
-				};
-				mkdirSync(dirname(dest), { recursive: true });
-				writeFileSync(dest, JSON.stringify(card, null, 2), "utf8");
-				const c = loadCardFile(dest);
-				if (!c.name) {
-					try { unlinkSync(dest); } catch { /* best-effort */ }
-					throw new Error("角色卡解析失败，已回滚");
-				}
-				return { name: safe, path: dest };
+				// 实现收在 rest.ts 的 createCardFile（8/29 提取）：与 POST /api/cards 共用一份，
+				// 免得「agent 能建、用户不能建」或两份实现各自漂移。path 沿用绝对路径保持原回执。
+				const r = createCardFile(cwd, input);
+				return r ? { name: r.name, path: r.abs } : null;
 			},
 		},
 		loadConfig(cwd).language,

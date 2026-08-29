@@ -87,26 +87,26 @@ test("没有声明 / 坏输入 → 空数组，永不抛", () => {
 	assert.deepEqual(extractAuthorScripts(cardRaw([null, 42, "x"]), "card"), []);
 });
 
-test("合并顺序：预设在前、卡在后（同 cardfront 的 PRESET → SCOPED 链序）", () => {
-	const out = buildAuthorScripts(cardRaw([script({ id: "c" })]), presetRaw([script({ id: "p" })]));
+test("预设自带的脚本不进宿主（8/29 定案：悬浮球占屏点不动、防奶人误报正则）", () => {
+	// 解析器仍认得预设那种写法……
+	assert.equal(extractAuthorScripts(presetRaw([script({ id: "p" })]), "preset").length, 1);
+	// ……但消费面只收卡：预设声明再多也不会被交给宿主帧
+	const out = buildAuthorScripts(cardRaw([script({ id: "c" })]));
 	assert.deepEqual(
 		out.map((s) => `${s.source}:${s.id}`),
-		["preset:p", "card:c"],
+		["card:c"],
 	);
-});
-
-test("跨来源同 id 两条都保留（是两份不同东西）", () => {
-	const out = buildAuthorScripts(cardRaw([script({ id: "same" })]), presetRaw([script({ id: "same" })]));
-	assert.equal(out.length, 2);
+	// 卡里什么都没有时，就是空——不会从预设那边补
+	assert.deepEqual(buildAuthorScripts(null), []);
 });
 
 test("同来源同 id 只留第一条", () => {
-	const out = buildAuthorScripts(cardRaw([script({ id: "dup" }), script({ id: "dup", content: "x=2" })]), null);
+	const out = buildAuthorScripts(cardRaw([script({ id: "dup" }), script({ id: "dup", content: "x=2" })]));
 	assert.equal(out.length, 1);
 	assert.equal(out[0].content, "$(function(){})");
 });
 
-test("cardfront 快照带上 scripts（hello 与 REST 同源的那趟载荷）", () => {
+test("cardfront 快照只带卡的 scripts，预设的不带（hello 与 REST 同源的那趟载荷）", () => {
 	const snap = buildCardFrontSnapshot(
 		{ card: "a.png", userName: "旅人" },
 		cardRaw([script()]) as Record<string, unknown>,
@@ -115,7 +115,7 @@ test("cardfront 快照带上 scripts（hello 与 REST 同源的那趟载荷）",
 	);
 	assert.deepEqual(
 		snap.scripts.map((s) => `${s.source}:${s.id}`),
-		["preset:p", "card:s1"],
+		["card:s1"],
 	);
 	// 没有显示规则不影响脚本：两条通道各走各的
 	assert.equal(snap.hasSkin, false);
@@ -129,20 +129,20 @@ test("无脚本的卡：scripts 为空数组，其余字段行为不变（没见
 // ---- 清单与指纹：正文不进 hello，靠指纹判断变没变 ----
 
 test("清单只带 id/source/len，不带正文（hello 帧要轻）", () => {
-	const list = buildAuthorScripts(cardRaw([script({ content: "x".repeat(5000) })]), null);
+	const list = buildAuthorScripts(cardRaw([script({ content: "x".repeat(5000) })]));
 	const man = authorScriptManifest(list);
 	assert.deepEqual(man, [{ id: "s1", source: "card", len: 5000 }]);
 	assert.ok(!JSON.stringify(man).includes("xxxx"), "清单里不许出现正文");
 });
 
 test("指纹：清单与全量算出同一个值（两处各算一遍必对不上）", () => {
-	const list = buildAuthorScripts(cardRaw([script()]), presetRaw([script({ id: "p", content: "abc" })]));
+	const list = buildAuthorScripts(cardRaw([script(), script({ id: "p2", content: "abc" })]));
 	assert.equal(authorScriptSig(list), authorScriptSig(authorScriptManifest(list)));
 });
 
 test("指纹随内容长度变化（作者改了脚本 → 宿主该重启）", () => {
-	const a = buildAuthorScripts(cardRaw([script({ content: "aa" })]), null);
-	const b = buildAuthorScripts(cardRaw([script({ content: "aaa" })]), null);
+	const a = buildAuthorScripts(cardRaw([script({ content: "aa" })]));
+	const b = buildAuthorScripts(cardRaw([script({ content: "aaa" })]));
 	assert.notEqual(authorScriptSig(a), authorScriptSig(b));
 });
 

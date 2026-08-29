@@ -162,6 +162,72 @@ test("memory: recallForTurn 受 injectOnTurn 控制", async () => {
 	}
 });
 
+test("memory: 分支隔离——重roll 丢弃的那拍不被下一拍召回（8/29 真 bug）", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "liyuan-mem-branch-"));
+	try {
+		updateMemoryConfig(cwd, { enabled: true, injectOnTurn: true, searchTopK: 5, embedMode: "local" });
+		updateStoreConfig(cwd, "narrative", { enabled: true, everyNTurns: 1 });
+
+		// 一拍落在树节点 nodeX（这拍随后被重roll 丢弃）
+		const t = await onNarrativeTurnEnd(cwd, scopeA, "青梧牵着旅人走下石阶，穿过回廊走向后山的旧亭子。", {
+			nodeId: "nodeX",
+			branchIds: new Set(["userU", "nodeX"]),
+		});
+		assert.equal(t.stored, true);
+
+		// 当前分支还停在 userU（重roll：叶钉回 user，nodeX 已不在分支上）
+		const branchNow = new Set(["userU"]);
+
+		// 被动召回：查得到内容，但 nodeX 不在当前分支 → 应被滤掉
+		const leaked = await memoryRecallForTurn(cwd, scopeA, "青梧 旅人 回廊 亭子", branchNow);
+		assert.equal(leaked.length, 0, "废弃分支的记忆不该召回");
+
+		// 主动检索同样隔离
+		const searched = await memorySearch(cwd, scopeA, "narrative", "青梧 旅人 回廊", 5, branchNow);
+		assert.equal(searched.length, 0, "主动检索也不该捞到废弃分支");
+
+		// 回到那条分支（nodeX 在场）→ 记忆重新可见
+		const onBranch = await memoryRecallForTurn(cwd, scopeA, "青梧 旅人 回廊 亭子", new Set(["userU", "nodeX"]));
+		assert.ok(onBranch.length >= 1, "本分支上记忆应可见");
+
+		// 不给 branchIds（旧行为 / 取树失败）→ 一律放行，不误杀
+		const noFilter = await memoryRecallForTurn(cwd, scopeA, "青梧 旅人 回廊 亭子");
+		assert.ok(noFilter.length >= 1, "不判分支时应放行");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("memory: 合并只并入本分支的条目——不复活废弃分支的正文（8/29）", async () => {
+	const cwd = mkdtempSync(join(tmpdir(), "liyuan-mem-branch2-"));
+	try {
+		updateMemoryConfig(cwd, { enabled: true, embedMode: "local" });
+		updateStoreConfig(cwd, "narrative", { enabled: true, everyNTurns: 1 });
+
+		// 废弃分支入库一条（nodeDead）
+		await onNarrativeTurnEnd(cwd, scopeA, "被丢弃的一拍：旅人留在了前厅偏房，与旧友交谈。", {
+			nodeId: "nodeDead",
+			branchIds: new Set(["userU", "nodeDead"]),
+		});
+
+		// 新分支入库（当前分支不含 nodeDead）：不该并进上一条，而是新开
+		const t2 = await onNarrativeTurnEnd(cwd, scopeA, "新分支：旅人独自走向后山小径，四下无人。", {
+			nodeId: "nodeLive",
+			branchIds: new Set(["userU", "nodeLive"]),
+		});
+		assert.equal(t2.stored, true);
+		assert.equal(t2.merged, false, "不该并进废弃分支那条（否则会连它的正文一起复活）");
+
+		const chunks = loadChunks(cwd, scopeA, "narrative");
+		assert.equal(chunks.length, 2, "两条各自独立");
+		// 活分支那条不含废弃分支的正文
+		const live = chunks.find((c) => c.meta.nodeId === "nodeLive")!;
+		assert.ok(!live.text.includes("偏房"), "活分支条目不该含废弃分支正文");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
 test("memory: 配置云端字段不落明文到 public", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-mem-c-"));
 	try {

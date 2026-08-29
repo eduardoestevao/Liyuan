@@ -47,6 +47,25 @@ function assertExtraStore(storeId: string): void {
 	}
 }
 
+/**
+ * 分支隔离（8/29）：剧情库此前只按 {卡, 会话} 存，没有分支这一维。
+ * 重roll / rewind 丢弃的那一拍照样入库，下一拍又被【剧情记忆】召回，模型于是把废弃分支
+ * 当「上一拍」续写（实测：13 次重roll 中第 5、10 拍入库，第 11 拍起开始写「承接上一拍」）。
+ * 树、账本、面板本来都是 f(分支)，这里把同一坐标补齐。
+ *
+ * 判据是**数据**（chunk 自带 nodeId）不是启发式。三处一律**放行**——
+ * 隔离漏一点，好过让用户的记忆整体消失：
+ *  1. 没给 branchIds 或取树失败（空集）
+ *  2. 非剧情库条目（导入/手动的资料与剧情分支无关）
+ *  3. 老条目没有 nodeId（本次改动之前入的库）
+ */
+function onCurrentBranch(meta: MemoryChunkMeta, branchIds?: ReadonlySet<string>): boolean {
+	if (!branchIds || branchIds.size === 0) return true;
+	if (meta.source !== "narrative") return true;
+	if (!meta.nodeId) return true;
+	return branchIds.has(meta.nodeId);
+}
+
 export function getMemoryStatus(
 	cwd: string,
 	scope?: MemoryScope,
@@ -106,13 +125,16 @@ export async function memorySearch(
 	storeId: string,
 	query: string,
 	topK?: number,
+	/** 当前分支节点 id 集合；给了就滤掉废弃分支的剧情记忆（见 onCurrentBranch） */
+	branchIds?: ReadonlySet<string>,
 ): Promise<MemorySearchHit[]> {
 	const cfg = loadMemoryConfig(cwd);
 	if (!cfg.enabled) return [];
 	const store = cfg.stores.find((s) => s.id === storeId);
 	if (!store?.enabled) return [];
 	const sc = normalizeScope(scope);
-	return searchStore(cwd, sc, storeId, query, topK ?? cfg.searchTopK, embedCtxFrom(cfg));
+	const hits = await searchStore(cwd, sc, storeId, query, topK ?? cfg.searchTopK, embedCtxFrom(cfg));
+	return hits.filter((h) => onCurrentBranch(h.meta, branchIds));
 }
 
 /** 列出条目（无 embedding），供管理 UI */
@@ -229,11 +251,14 @@ export function memoryRemoveStore(
 
 /**
  * 叙事轮结束：按 everyNTurns **合并**写入剧情库（仅 agent 路径）。
+ * `tree` 给出本拍在会话树上的坐标——入库的条目带上 nodeId，此后只在该节点仍属当前分支时
+ * 可见（见 onCurrentBranch）；不给则退回旧的「不分支」行为。
  */
 export async function onNarrativeTurnEnd(
 	cwd: string,
 	scope: MemoryScope,
 	assistantText: string,
+	tree?: { nodeId?: string; branchIds?: ReadonlySet<string> },
 ): Promise<{
 	stored: boolean;
 	merged?: boolean;
@@ -266,9 +291,16 @@ export async function onNarrativeTurnEnd(
 			cwd,
 			sc,
 			summary,
-			{ source: "narrative", sessionId: sc.sessionId, card: sc.card },
+			{
+				source: "narrative",
+				sessionId: sc.sessionId,
+				card: sc.card,
+				...(tree?.nodeId ? { nodeId: tree.nodeId } : {}),
+			},
 			store.maxChunks,
 			embedCtxFrom(cfg),
+			undefined,
+			tree?.branchIds,
 		);
 		if (r.noop) return { stored: false, counter: next, noop: true, merged: r.merged };
 		return {
@@ -325,6 +357,8 @@ export async function memoryRecallForTurn(
 	cwd: string,
 	scope: MemoryScope,
 	query: string,
+	/** 当前分支节点 id 集合；给了就滤掉废弃分支的剧情记忆（见 onCurrentBranch） */
+	branchIds?: ReadonlySet<string>,
 ): Promise<MemorySearchHit[]> {
 	const cfg = loadMemoryConfig(cwd);
 	if (!cfg.enabled || !cfg.injectOnTurn) return [];
@@ -338,6 +372,7 @@ export async function memoryRecallForTurn(
 		try {
 			const hits = await searchStore(cwd, sc, s.id, q, cfg.searchTopK, ctx);
 			for (const h of hits) {
+				if (!onCurrentBranch(h.meta, branchIds)) continue;
 				merged.push({
 					...h,
 					meta: { ...h.meta, title: h.meta.title || s.name },

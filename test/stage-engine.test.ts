@@ -446,3 +446,110 @@ test("ask：注入 askUser 时 ask 上清单", async () => {
 
 
 
+
+
+/**
+ * 旁路条目（RpConfig.sideModel → StageEngineDeps.getSideEntry）：
+ * 场记/压缩不再跟随剧情模型，模型和思考档都取自连接配置里那一条条目。
+ */
+test("引擎：旁路调用走 sideEntry 的模型与它自己的档，并按它重取鉴权", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }, { id: "faux-side" }] });
+	try {
+		reg.setResponses(directBeat("云澜垂眸受了半礼。") as never);
+		const calls: Array<{ id: string; reasoning: unknown }> = [];
+		const authFor: string[] = [];
+		const recording = ((model: { id: string }, ctx: unknown, options: { reasoning?: unknown }) => {
+			calls.push({ id: model.id, reasoning: options?.reasoning });
+			return (streamSimple as unknown as StageStreamFn)(model as never, ctx as never, options as never);
+		}) as unknown as StageStreamFn;
+
+		const engine = new StageEngine({
+			cwd,
+			getSessionManager: () => sm as never,
+			getModel: () => reg.getModel("faux-rp") as never,
+			getSideEntry: () => ({ model: reg.getModel("faux-side") as never, thinking: "off", label: "flash off" }),
+			getAuth: async (m) => {
+				authFor.push(String((m as { id: string }).id));
+				return {};
+			},
+			streamFn: recording,
+			events: {},
+		});
+		await engine.performTurn("我上前行礼。");
+
+		assert.ok(calls.some((c) => c.id === "faux-rp"), "台上仍走剧情模型");
+		const side = calls.filter((c) => c.id === "faux-side");
+		assert.ok(side.length > 0, "场记那一发走旁路条目的模型");
+		assert.equal(side[0]!.reasoning, "off", "档取自那条条目，不是引擎自己定的");
+		assert.ok(authFor.includes("faux-side"), "鉴权按旁路模型重取，不能沿用剧情模型的 key");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+/** 回归：没配旁路条目时逐字旧行为——旁路仍跟随剧情模型，且不多取一次鉴权 */
+test("引擎：未配旁路条目时旁路跟随剧情模型（旧行为不变）", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses(directBeat("云澜垂眸受了半礼。") as never);
+		const ids: string[] = [];
+		let authCalls = 0;
+		const recording = ((model: { id: string }, ctx: unknown, options: unknown) => {
+			ids.push(model.id);
+			return (streamSimple as unknown as StageStreamFn)(model as never, ctx as never, options as never);
+		}) as unknown as StageStreamFn;
+
+		const engine = new StageEngine({
+			cwd,
+			getSessionManager: () => sm as never,
+			getModel: () => reg.getModel("faux-rp") as never,
+			getAuth: async () => {
+				authCalls++;
+				return {};
+			},
+			streamFn: recording,
+			events: {},
+		});
+		await engine.performTurn("我上前行礼。");
+
+		assert.ok(ids.length > 0 && ids.every((i) => i === "faux-rp"), "全部调用都走剧情模型");
+		assert.equal(authCalls, 1, "只按剧情模型取一次鉴权（旁路没换模型就不该重取）");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+/** 第四步：旁路要留下「思考了没有、思考了多久」的痕迹，否则用户无从判断 */
+test("引擎：旁路每一发都出回执——思考字数与耗时", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }, { id: "faux-side" }] });
+	try {
+		reg.setResponses(directBeat("云澜垂眸受了半礼。") as never);
+		const activity: string[] = [];
+		const engine = new StageEngine({
+			cwd,
+			getSessionManager: () => sm as never,
+			getModel: () => reg.getModel("faux-rp") as never,
+			getSideEntry: () => ({ model: reg.getModel("faux-side") as never, thinking: "off", label: "flash off" }),
+			getAuth: async () => ({}),
+			streamFn: streamSimple as unknown as StageStreamFn,
+			events: { onActivity: (d) => activity.push(d) },
+		});
+		await engine.performTurn("我上前行礼。");
+
+		const receipts = activity.filter((a) => a.includes("旁路"));
+		assert.ok(receipts.length > 0, "旁路跑过就得留下回执");
+		const r = receipts[0]!;
+		assert.ok(r.includes("flash off"), "回执要指名是哪条条目");
+		assert.match(r, /思考 \d+ 字/, "思考字数是这行存在的理由");
+		assert.match(r, /\d+\.\ds/, "耗时也要有");
+		assert.ok(r.includes("档 off"), "请求的档要写出来——它和实际思考字数对不上时才看得见问题");
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});

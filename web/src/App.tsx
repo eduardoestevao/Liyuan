@@ -11,6 +11,7 @@ import {
 	apiGet,
 	apiGetCacheClear,
 	apiGetCacheClearForPanel,
+	apiGetCacheClearForToolNames,
 	apiPost,
 	personaAvatarUrl,
 	prefetchPanelApis,
@@ -116,9 +117,9 @@ interface Toast {
 	text: string;
 }
 
-/** 通知气泡自动消散时间；仍可点击立即关闭 */
+/** 通知气泡自动消散时间；仍可点击立即关闭。info 多是「已保存」这类回执，看一眼就够 */
 const TOAST_TTL_MS: Record<Toast["level"], number> = {
-	info: 4000,
+	info: 2000,
 	warning: 6000,
 	error: 8000,
 };
@@ -753,9 +754,15 @@ export default function App() {
 						);
 						// 作者脚本：hello 只带轻清单，正文按指纹变化才拉（见 syncAuthorScripts）
 						void syncAuthorScripts(cf.scriptManifest, cf.enabled);
+					} else {
+						// 旧服务端无 cardfront 字段时才回落 REST。
+						// ⚠ 8/29：这里原先是**无条件**再拉一次（注释写的是「回落」，实现却每次都跑）——
+						// 而 enabled/hasSkin/rules/charName/userName 帧里全都有、还是服务端当场算的，
+						// 比 REST 更权威。那一次 bypass 强拉（/api/cardfront，gzip 27KB）纯冗余，
+						// 且会第二次 setCardSkin 把卡皮肤对象换新 → 卡界面 iframe 白重建一遍，
+						// 就是「新建对话时界面强制刷新一次」里看得见的那一下。
+						void refreshCardFront();
 					}
-					// 旧服务端无 cardfront 字段时回落 REST;有字段时仍 bypass 刷新一次对齐开关态
-					void refreshCardFront();
 					agentPanelsRef.current = frame.panels ?? [];
 					setAgentPanels(agentPanelsRef.current);
 					// 恢复/切换后左栏若停在已不存在的 agent 面板上：收起
@@ -863,8 +870,12 @@ export default function App() {
 						// 本轮 agent 可能写了技能/知识库/世界书等资产：通知 watchAgent 面板重拉
 						// 并清 GET 缓存——服务端的写客户端看不见（invalidateAfterWrite 只认前端自己发的写），
 						// 不清则「打开面板吃缓存」会让 agent 刚改的东西在 TTL 内不露面。
-						// watchAgent 面板照旧立即重拉，其余面板在下次打开时拉一次。
-						apiGetCacheClear();
+						// ⚠ 但只清**本轮真正调过的写工具**碰过的前缀，别整表清：日常一拍只记账（世界状态/名录
+						// 走 WS 帧直推前端，不经 GET 缓存），无关的 preset(119KB)/card 缓存不该跟着作废——
+						// 那正是 VPS 慢链路上「每次开面板都重新加载」的来源（8/29）。本轮没写工具就一格都不清。
+						apiGetCacheClearForToolNames(
+							turnActsRef.current.flatMap((a) => (a.kind === "tool_start" ? [a.name] : [])),
+						);
 						setAgentTick((t) => t + 1);
 						// 中断/异常遗留的半截正文/思维链：并入本轮同一角色泡（不新开泡）
 						const text = streamRef.current;

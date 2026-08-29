@@ -18,11 +18,12 @@ import {
 	EMPTY_AGENT_CONFIG,
 	deleteProfile,
 	enableProfile,
+	findModelEntry,
 	listProfiles,
 	loadAgentConfig,
 	loadProfile,
 	materializeEnvKeysInConfig,
-	mergeModelsById,
+	mergeModelEntries,
 	migrateActiveConfigIntoProfiles,
 	normalizeAgentConfig,
 	normalizeModels,
@@ -427,6 +428,7 @@ const CONFIG_EDITABLE = new Set([
 	"backendControl",
 	"creationMode",
 	"assistantModel",
+	"sideModel",
 ]);
 
 export function applyConfigPatch(config: RpConfig, patch: Record<string, unknown>): RpConfig {
@@ -463,6 +465,23 @@ export function applyConfigPatch(config: RpConfig, patch: Record<string, unknown
 			delete next.assistantModel;
 		} else {
 			next.assistantModel = { provider: am.provider, id: am.id };
+		}
+	}
+	// 旁路模型：只认 { provider, entry } 形——entry 是连接配置里那条模型条目的名字，
+	// 不是模型 id（同一个 id 可以有多条条目）。非法值删除（缺省=跟随剧情模型）
+	if (next.sideModel !== undefined) {
+		const sm = next.sideModel as { provider?: unknown; entry?: unknown } | null;
+		if (
+			!sm ||
+			typeof sm !== "object" ||
+			typeof sm.provider !== "string" ||
+			!sm.provider.trim() ||
+			typeof sm.entry !== "string" ||
+			!sm.entry.trim()
+		) {
+			delete next.sideModel;
+		} else {
+			next.sideModel = { provider: sm.provider.trim(), entry: sm.entry.trim() };
 		}
 	}
 	// 挂载书：lorebooks 数组优先；兼容旧单本 lorebook
@@ -688,7 +707,7 @@ function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): LiyuanAg
 	for (const [name, provider] of Object.entries(normalized.providers)) {
 		const diskProvider = onDisk.providers[name];
 		if (diskProvider && Array.isArray(diskProvider.models) && Array.isArray(provider.models)) {
-			provider.models = mergeModelsById(diskProvider.models, provider.models);
+			provider.models = mergeModelEntries(diskProvider.models, provider.models);
 		}
 	}
 	saveAgentConfig(host.cwd, normalized);
@@ -697,7 +716,26 @@ function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): LiyuanAg
 	return normalized;
 }
 
-/** 从 Agent 配置解析某模型的思考档：模型条目 > defaultThinkingLevel */
+/** 从 Agent 配置解析某**条目**的思考档：条目 > defaultThinkingLevel */
+export function thinkingLevelOfEntry(
+	config: LiyuanAgentConfig,
+	provider: string,
+	entryKey: string,
+): string | undefined {
+	const entry = findModelEntry(config.providers?.[provider]?.models, entryKey);
+	const per = typeof entry?.thinkingLevel === "string" ? entry.thinkingLevel.trim() : "";
+	if (per) return per;
+	const def = typeof config.defaultThinkingLevel === "string" ? config.defaultThinkingLevel.trim() : "";
+	return def || undefined;
+}
+
+/**
+ * 从 Agent 配置按**模型 id** 解析思考档：模型条目 > defaultThinkingLevel。
+ *
+ * 同一个 id 可以有多条条目（各带各的档），这时候光有 id 说不准是哪条——
+ * 返回 undefined，让调用方保持会话现有的档不动，而不是随便挑第一条把用户选的档顶掉。
+ * 知道是哪条条目的调用方请改用 thinkingLevelOfEntry。
+ */
 function thinkingLevelFromConfig(
 	config: LiyuanAgentConfig,
 	provider: string,
@@ -705,8 +743,9 @@ function thinkingLevelFromConfig(
 ): string | undefined {
 	const p = config.providers?.[provider];
 	const list = Array.isArray(p?.models) ? p.models : [];
-	const m = list.find((x) => String(x.id) === modelId);
-	const per = typeof m?.thinkingLevel === "string" ? m.thinkingLevel.trim() : "";
+	const hits = list.filter((x) => String(x.id) === modelId);
+	if (hits.length > 1) return undefined;
+	const per = typeof hits[0]?.thinkingLevel === "string" ? hits[0].thinkingLevel.trim() : "";
 	if (per) return per;
 	const def = typeof config.defaultThinkingLevel === "string" ? config.defaultThinkingLevel.trim() : "";
 	return def || undefined;
@@ -1144,11 +1183,25 @@ export function setLorebookMounted(cwd: string, config: RpConfig, path: string, 
  * （0 条＝同目录混进来的卡/预设，跳过），挂载校验也拒空书。于是空书既列不出、挂不上，
  * 连 `loreWriteTargets` 都寻址不到它，建了等于没建（8/22 探针实测撞上这个死胡同）。
  */
+/**
+ * 建一本新世界书。**唯一实现**，两类入口共用：
+ * agent 的 `lorebook_create` 工具（`main.ts` / `assistant.ts` 两处薄壳）与 `POST /api/lorebooks`（用户新建）。
+ *
+ * **首条必填，不接受空书**——这不是保守，是下游两条硬约束（8/29 实跑坐实，别再试图放宽）：
+ *  1. `setLorebookMounted` 校验「空书要先写入条目」，空书挂不上；
+ *  2. `listLorebookFiles` 用「entries 条数 > 0」当**「这个 json 到底是不是世界书」的判据**
+ *     （同目录常混有卡/预设文件），所以空书压根不出现在书单里。
+ * 于是空书是用户看不见、也用不了的孤儿文件——写首条失败就删盘。
+ *
+ * - `mount` 缺省 `true`（agent 原行为）；用户新建时可选不挂载，与「导入」那套挂载选择一致。
+ * - 任何一步失败都 `unlinkSync` 回滚：否则盘上留个孤儿，下次同名新建被「已存在」挡死。
+ */
 export function createLorebookWithEntry(
 	cwd: string,
 	config: RpConfig,
 	name: string,
 	first: NewLoreEntryInput,
+	opts?: { mount?: boolean },
 ): { path: string; mounted: string[] } | null {
 	const safe = `${name.trim().replace(/[\\/:*?"<>|]/g, "-").replace(/\.json$/i, "")}.json`;
 	if (safe === ".json") throw new Error("书名无效");
@@ -1158,10 +1211,22 @@ export function createLorebookWithEntry(
 	mkdirSync(dirname(abs), { recursive: true });
 	writeFileSync(abs, `${JSON.stringify({ name: name.trim(), entries: {} }, null, "\t")}\n`, "utf8");
 	if (!appendLorebookFileEntry(abs, first)) {
-		unlinkSync(abs); // 首条没写进去 = 建出来的是挂不上的空书，不留盘
+		unlinkSync(abs); // 首条没写进去 = 建出来的是挂不上、列不出的空书，不留盘
 		throw new Error("首条内容为空，未建书");
 	}
-	return { path: rel, mounted: setLorebookMounted(cwd, config, rel, true) };
+	try {
+		return {
+			path: rel,
+			mounted: opts?.mount !== false ? setLorebookMounted(cwd, config, rel, true) : mountedLorebookPaths(config),
+		};
+	} catch (e) {
+		try {
+			unlinkSync(abs); // 挂载失败不留孤儿文件，否则同名再建会被「已存在」挡死
+		} catch {
+			/* best-effort */
+		}
+		throw e;
+	}
 }
 
 /** 合并语料 + 「这条是 agent 自己写下的」标记（列举据此标「补充」） */export function loadMergedLoreMarked(cwd: string, config: RpConfig): Array<LorebookEntry & { agentWritten?: boolean }> {
@@ -1183,6 +1248,63 @@ function projectPersonaToConfig(cwd: string, p: Persona): void {
 /** 卡库列表 + 当前卡（`card_list` 工具与 GET /api/cards 同源） */
 export function cardLibrary(cwd: string, config: RpConfig): { cards: CardLibItem[]; current: string } {
 	return { cards: listCardLibrary(cwd, config), current: config.card };
+}
+
+export interface NewCardInput {
+	name: string;
+	description?: string;
+	personality?: string;
+	scenario?: string;
+	firstMes: string;
+	mesExample?: string;
+	alternateGreetings?: string[];
+}
+
+/**
+ * 建一张新角色卡（CharaCard V3 JSON）。**唯一实现**，两类入口共用（8/29 提取）：
+ * agent 的 `card_create` 工具（原先是 `assistant.ts` 里的内联闭包，只有助手够得着）
+ * 与 `POST /api/cards`（用户自己新建——此前只能导入酒馆卡，不能创作）。
+ *
+ * - 同名拒写，返回 `null`（不覆盖用户已有的卡）。
+ * - 写完立刻 `loadCardFile` 回读验证：解析不出名字就删盘回滚，不留一张打不开的卡。
+ * - **不切换当前卡**：新卡出现在卡库里由用户自己打开（与 `card_create` 原有语义一致）。
+ * - 同时返回相对路径 `path`（卡库/前端的标识口径）与绝对路径 `abs`（agent 薄壳沿用原回执，行为不变）。
+ */
+export function createCardFile(cwd: string, input: NewCardInput): { name: string; path: string; abs: string } | null {
+	const safe = input.name.replace(/[\\/<>:"|?*]/g, "_").slice(0, 120).trim();
+	if (!safe) throw new Error("卡名无效");
+	const rel = `assets/cards/${safe}.json`;
+	const dest = join(cwd, "assets", "cards", `${safe}.json`);
+	if (existsSync(dest)) return null;
+	const card = {
+		spec: "chara_card_v3",
+		spec_version: "3.0",
+		data: {
+			name: safe,
+			description: input.description ?? "",
+			personality: input.personality ?? "",
+			scenario: input.scenario ?? "",
+			first_mes: input.firstMes,
+			mes_example: input.mesExample ?? "",
+			alternate_greetings: input.alternateGreetings ?? [],
+			tags: [],
+			creator: "",
+			character_version: "",
+		},
+	};
+	mkdirSync(dirname(dest), { recursive: true });
+	writeFileSync(dest, `${JSON.stringify(card, null, 2)}\n`, "utf8");
+	try {
+		if (!loadCardFile(dest).name) throw new Error("角色卡解析失败");
+	} catch (e) {
+		try {
+			unlinkSync(dest); // 不留一张打不开的卡
+		} catch {
+			/* best-effort */
+		}
+		throw e instanceof Error ? new Error(`${e.message}，已回滚`) : e;
+	}
+	return { name: safe, path: rel, abs: dest };
 }
 
 /**
@@ -1632,6 +1754,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 						description: s.description,
 						chars: s.body.length,
 						body: s.body,
+						disabled: s.disableModelInvocation === true,
 					})),
 				});
 				return true;
@@ -1642,12 +1765,14 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					name?: string;
 					description?: string;
 					body?: string;
+					disabled?: boolean;
 				};
 				const r = saveStageSkill(host.cwd, {
 					dir: typeof body.dir === "string" && body.dir.trim() ? body.dir : undefined,
 					name: body.name ?? "",
 					description: body.description ?? "",
 					body: body.body ?? "",
+					...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
 				});
 				sendJson(res, 200, { ok: true, dir: r.dir, note: "下一拍装载即生效（引擎每拍现读 skills/）" });
 				return true;
@@ -1989,11 +2114,22 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			case "DELETE /api/sessions": {
 				if (refuseWhileStreaming()) return true;
-				const path = query.get("path") ?? "";
-				if (!path) throw new Error("缺少 path");
-				await host.deleteSession(path);
-				host.notify("info", "会话已删除");
-				sendJson(res, 200, { ok: true });
+				// path 可给多个（面板多选删除）：一次请求、一条回执——逐条删会连甩 N 个气泡。
+				const paths = query.getAll("path").filter((p) => p.trim());
+				if (paths.length === 0) throw new Error("缺少 path");
+				const failed: string[] = [];
+				for (const p of paths) {
+					try {
+						await host.deleteSession(p);
+					} catch (e) {
+						failed.push(`${basename(p)}（${e instanceof Error ? e.message : String(e)}）`);
+					}
+				}
+				const done = paths.length - failed.length;
+				if (done === 0) throw new Error(`删除失败：${failed.join("；")}`);
+				host.notify("info", done === 1 ? "会话已删除" : `已删除 ${done} 个会话`);
+				if (failed.length > 0) host.notify("warning", `${failed.length} 个未能删除：${failed.join("；")}`);
+				sendJson(res, 200, { ok: true, deleted: done, failed });
 				return true;
 			}
 			case "GET /api/sessions/export": {
@@ -2059,6 +2195,34 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					etag: `"${mtime.toString(16)}"`,
 				});
 				res.end(readFileSync(abs));
+				return true;
+			}
+			case "POST /api/cards": {
+				// 用户自己新建一张角色卡（8/29）。与 agent 的 card_create 共用 createCardFile。
+				// 只要卡名 + 开场白：其余字段留空，之后用现成的编辑界面（PUT /api/card、greetings 那套）慢慢写。
+				// 不切当前卡——新卡出现在卡库里由用户自己打开（与 card_create 语义一致）。
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as {
+					name?: string;
+					firstMes?: string;
+					description?: string;
+					personality?: string;
+					scenario?: string;
+				};
+				const cardName = (body.name ?? "").trim();
+				if (!cardName) throw new Error("缺少卡名");
+				const firstMes = (body.firstMes ?? "").trim();
+				if (!firstMes) throw new Error("缺少开场白——新会话的首条消息，卡没有它开不了场");
+				const made = createCardFile(host.cwd, {
+					name: cardName,
+					firstMes,
+					...(body.description?.trim() ? { description: body.description.trim() } : {}),
+					...(body.personality?.trim() ? { personality: body.personality.trim() } : {}),
+					...(body.scenario?.trim() ? { scenario: body.scenario.trim() } : {}),
+				});
+				if (!made) throw new Error(`同名角色卡已存在：${cardName}`);
+				host.notify("info", `角色卡「${made.name}」已新建——在卡库里打开它就能开演`);
+				sendJson(res, 200, { ok: true, name: made.name, path: made.path });
 				return true;
 			}
 			case "POST /api/cards/import": {
@@ -2515,6 +2679,39 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				writeFileSync(dest, `${JSON.stringify(body, null, "\t")}\n`, "utf8");
 				host.notify("info", `世界书「${rawName}」已导入（${entries.length} 条）`);
 				sendJson(res, 200, { ok: true, path: `${LOREBOOKS_DIR}/${safe}`, entryCount: entries.length });
+				return true;
+			}
+			case "POST /api/lorebooks": {
+				// 用户手动新建一本世界书（8/29）。与 agent 的 lorebook_create 共用 createLorebookWithEntry。
+				// 首条必填：空书挂不上、也不会出现在书单里（见该函数注释），造出来就是孤儿文件。
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as {
+					name?: string;
+					mount?: boolean;
+					first?: { title?: string; keys?: string[]; content?: string; constant?: boolean };
+				};
+				const name = (body.name ?? "").trim();
+				if (!name) throw new Error("缺少书名");
+				const f = body.first;
+				const content = (f?.content ?? "").trim();
+				if (!content) throw new Error("请写第一条条目的正文——空书挂不上，也不会出现在书单里");
+				const created = createLorebookWithEntry(
+					host.cwd,
+					loadConfig(host.cwd),
+					name,
+					{
+						comment: (f?.title ?? "").trim() || name,
+						keys: Array.isArray(f?.keys) ? f.keys.filter((k) => typeof k === "string" && k.trim()) : [],
+						content,
+						...(typeof f?.constant === "boolean" ? { constant: f.constant } : {}),
+					},
+					{ mount: body.mount !== false },
+				);
+				if (!created) throw new Error(`同名世界书已存在：${name}`);
+				await host.softRefreshConfig(); // 挂载变化影响注入，须重装
+				const didMount = created.mounted.includes(created.path);
+				host.notify("info", `世界书「${name}」已新建${didMount ? "并挂载" : "（未挂载）"}`);
+				sendJson(res, 200, { ok: true, path: created.path, mounted: created.mounted, didMount });
 				return true;
 			}
 			case "DELETE /api/lorebooks": {
@@ -2978,7 +3175,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (typeof body.apiKey === "string" && body.apiKey.trim()) ch.apiKey = body.apiKey.trim();
 				if (body.models !== undefined) {
 					const incoming = normalizeModels(body.models);
-					ch.models = body.mergeModels ? mergeModelsById(normalizeModels(ch.models), incoming) : incoming;
+					ch.models = body.mergeModels ? mergeModelEntries(normalizeModels(ch.models), incoming) : incoming;
 				}
 				config.providers[name] = ch;
 				if (body.setDefault) {
@@ -3050,7 +3247,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (result.ids.length === 0) throw new Error("渠道返回了空模型清单");
 				const models = result.ids.map((id) => ({ id })) as AgentModelEntry[];
 				if (body.apply && name && loaded && ch) {
-					ch.models = mergeModelsById(normalizeModels(ch.models), models);
+					ch.models = mergeModelEntries(normalizeModels(ch.models), models);
 					loaded.config.providers[name] = ch;
 					persistAgentConfig(host, loaded.config);
 					host.notify("info", `「${name}」已合并 ${result.ids.length} 个模型`);
@@ -3295,7 +3492,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			/**
 			 * 新增条目：写进指定世界书文件（body.path=书路径，或 "agent"=本卡补充设定）。
-			 * 面板只必填标题 + 正文；关键词留空则从标题派生——蓝灯条目没有 key 永远不会触发。
+			 * 面板只必填标题 + 正文；关键词留空则从标题派生——绿灯条目没有 key 永远不会触发。
 			 */
 			case "POST /api/lorebook/entry": {
 				if (refuseWhileStreaming()) return true;
