@@ -78,8 +78,8 @@ export function buildCardFrontSnapshot(
 		charName,
 		userName: config.userName,
 		// **只跑卡自带的脚本，不跑预设自带的**（8/29 用户定案）。
-		// 预设侧那条通道实测两条声明都是负担而非功能：TGbreak 的「悬浮球V2」占着屏幕但在梨园里
-		// 用不了，「防奶人」每次切预设就弹「您的正则未正确更新…」——都是为酒馆助手宿主写的，
+		// 预设侧那条通道实测两条声明都是负担而非功能：其一悬浮球占着屏幕但在梨园里
+		// 用不了，其二每次切预设就弹「您的正则未正确更新…」——都是为酒馆助手宿主写的，
 		// 换到梨园的宿主帧里既无处可依附又误报。预设的 regex_scripts（上面 presetRules）照旧生效，
 		// 那条是真在工作的；被切掉的只有运行时 JS 这一路。
 		scripts: buildAuthorScripts(raw),
