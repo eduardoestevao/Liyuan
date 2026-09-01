@@ -10,7 +10,7 @@ import { useEffect, useMemo, useState } from "react";
 import { attachmentUrl, splitAttachments } from "../attachments.ts";
 import { applySkinKeepingBody } from "../cardSkin.ts";
 import { isFullInterface } from "../htmlEmbed.ts";
-import { splitRichContentParts, type SkinMacros } from "../richContentParts.ts";
+import { splitRichContentParts, alreadyDisplayHtml, type SkinMacros } from "../richContentParts.ts";
 import { splitMarkdownParts, splitRpInline } from "../markdown.ts";
 import type { WireActivity, WireChoice, WireMsg } from "../wire.ts";
 import { estimateTokens, formatTokenCount, type TurnSegment } from "../timeline.ts";
@@ -743,7 +743,12 @@ export function Bubble({
 	 */
 	const timeline = !isUser && !editing && msg.segments && msg.segments.length > 1 ? msg.segments : null;
 	// 整楼界面：皮肤应用后整条消息即界面（spec §4 落位 1）
-	const skinnedBody = !isUser && skin && skin.rules.length > 0 ? applySkinKeepingBody(body, skin.rules, skin) : body;
+	// 与 splitRichContentParts 同一条 needSkin：wire 侧 prepareDisplayText 已上过皮肤的正文不再重跑
+	// （二次皮肤既改语义又极贵——617KB 的界面正文上实测 12.6s／次，且此处只为求一个布尔值）。
+	const skinnedBody =
+		!isUser && skin && skin.rules.length > 0 && !alreadyDisplayHtml(body)
+			? applySkinKeepingBody(body, skin.rules, skin)
+			: body;
 	const stage = !isUser && !editing && isFullInterface(skinnedBody);
 	return (
 		<div

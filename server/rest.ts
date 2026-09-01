@@ -2182,17 +2182,35 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const p = query.get("path") ?? "";
 				const abs = assertLibraryCard(host.cwd, loadConfig(host.cwd), p);
 				if (!/\.png$/i.test(abs)) throw new Error("该卡没有内嵌立绘（JSON 卡）");
-				// 路径稳定即可长缓存；避免卡库↔详情来回时封面反复重下
+				/**
+				 * 卡图＝整份卡文件（JSON 内嵌在 PNG 里），单张动辄几 MB，必须真缓存住。
+				 *
+				 * 缓存键归服务端一处：ETag 取 mtime，浏览器带 If-None-Match 回来就发 304。
+				 * 调用方因此**不需要**在 URL 上拼任何缓存参数——先前 App 拼 `&t=Date.now()`、
+				 * CardPanel 不拼，同一张图成了两个 URL，一次加载把 4.8MB 下了两遍且永不命中缓存。
+				 * 两处各造一份 URL 就会各错各的；判据只留一份，调用方拼不错。
+				 *
+				 * 不再发 immutable：那会让换过卡图的封面最多 7 天不更新（既有缺陷）。
+				 * 改为每次条件请求——命中就是一个 304 空响应，比重下几 MB 便宜几个数量级。
+				 */
 				let mtime = 0;
 				try {
 					mtime = statSync(abs).mtimeMs;
 				} catch {
 					/* ignore */
 				}
+				const etag = `"${mtime.toString(16)}"`;
+				// 反代（nginx 等）可能把 ETag 弱化成 W/"…"，剥掉再比，否则条件请求永远不命中
+				const inm = (req.headers["if-none-match"] ?? "").replace(/^W\//, "").trim();
+				if (inm === etag) {
+					res.writeHead(304, { etag, "cache-control": "no-cache" });
+					res.end();
+					return true;
+				}
 				res.writeHead(200, {
 					"content-type": "image/png",
-					"cache-control": "public, max-age=604800, immutable",
-					etag: `"${mtime.toString(16)}"`,
+					"cache-control": "no-cache",
+					etag,
 				});
 				res.end(readFileSync(abs));
 				return true;
@@ -2480,10 +2498,27 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				}
 				const buf = readFileSync(abs);
 				const isPng = buf[0] === 0x89 && buf[1] === 0x50;
+				// 新鲜度归服务端：头像文件名按 id 固定（每次上传覆盖同名文件），
+				// URL 拼不上内容键——ETag 取 mtime，条件请求回 304，换头像立即可见。
+				// 此前 max-age=3600 会被调用方的 bust 参数整个废掉（两个假设相反）。
+				let mtime = 0;
+				try {
+					mtime = statSync(abs).mtimeMs;
+				} catch {
+					/* ignore */
+				}
+				const etag = `"${mtime.toString(16)}"`;
+				// 反代可能把 ETag 弱化成 W/"…"，剥掉再比
+				const inm = (req.headers["if-none-match"] ?? "").replace(/^W\//, "").trim();
+				if (inm === etag) {
+					res.writeHead(304, { etag, "cache-control": "no-cache" });
+					res.end();
+					return true;
+				}
 				res.writeHead(200, {
 					"content-type": isPng ? "image/png" : "image/jpeg",
-					// 头像 URL 常带 bust 参数；允许短缓存减少切换闪烁
-					"cache-control": "public, max-age=3600",
+					"cache-control": "no-cache",
+					etag,
 					"content-length": buf.length,
 				});
 				res.end(buf);

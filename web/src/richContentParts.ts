@@ -26,8 +26,13 @@ export type RichPart =
 
 export type SkinMacros = { rules: DisplayRule[]; charName: string; userName: string };
 
-/** 正文是否已是皮肤/围栏产物（再套规则会二次替换） */
-function alreadyDisplayHtml(text: string): boolean {
+/**
+ * 正文是否已是皮肤/围栏产物（再套规则会二次替换）。
+ *
+ * 导出给 Messages.Bubble 的整楼判定复用——同一个「要不要上皮肤」的问题只许有一份判据，
+ * 两处各写一份就会互相追赶（8/25 那次四处平行判据的教训）。
+ */
+export function alreadyDisplayHtml(text: string): boolean {
 	if (!text) return false;
 	if (isHtmlDisplayPayload(text)) return true;
 	if (looksLikeHtmlDocument(text.trim())) return true;

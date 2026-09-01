@@ -707,7 +707,10 @@ export default function App() {
 			try {
 				const card = await apiGet<CardResponse>("/api/card");
 				if (card.path && /\.png$/i.test(card.path)) {
-					setCharAvatarUrl(`/api/cards/image?path=${encodeURIComponent(card.path)}&t=${Date.now()}`);
+					// 不拼缓存参数：新鲜度由服务端 ETag 保证（换过卡图 mtime 就变）。
+					// 拼 `&t=Date.now()` 会让这张几 MB 的卡图永不命中缓存，且与 CardPanel 的
+					// 同一张图分成两个 URL 各下一遍。
+					setCharAvatarUrl(`/api/cards/image?path=${encodeURIComponent(card.path)}`);
 				} else {
 					setCharAvatarUrl(null);
 				}
@@ -718,7 +721,9 @@ export default function App() {
 				const pr = await apiGet<PersonasResponse>("/api/personas");
 				const active = pr.personas.find((p) => p.id === pr.activeId);
 				if (active?.avatar) {
-					setUserAvatarUrl(personaAvatarUrl(active.id, Date.now()));
+					// 不拼 bust：新鲜度由服务端 ETag 保证（换头像 mtime 就变）。
+					// Date.now() 会让 URL 每次都变，缓存永不命中（与卡图 &t= 同病）
+					setUserAvatarUrl(personaAvatarUrl(active.id));
 				} else {
 					setUserAvatarUrl(null);
 				}
@@ -778,8 +783,10 @@ export default function App() {
 						setWarnings([]);
 						setActiveChoice(null);
 						turnActsRef.current = [];
-						// 列表「当前」标记已变：清空后立刻重拉（+短延迟再拉一次，等 rp-card 落盘）
-						setSessions(null);
+						// 列表「当前」标记已变：重拉（+短延迟再拉一次，等 rp-card 落盘）。
+						// 不清空旧列表——清空只会让面板空白 672ms（实测）再长回来，
+						// 那就是「新建对话时会话记录强制刷新一次」的观感来源。
+						// 旧列表在新列表到达前仍是当时最好的答案，就地替换即可。
 						if (welcomeRef.current || leftPanelRef.current === "sessions") {
 							sendRef.current({ type: "sessions" });
 							window.setTimeout(() => sendRef.current({ type: "sessions" }), 350);
@@ -1085,7 +1092,7 @@ export default function App() {
 						(frame.text.includes("新建会话") || frame.text.includes("切换会话")) &&
 						(welcomeRef.current || leftPanelRef.current === "sessions")
 					) {
-						setSessions(null);
+						// 同上：不清空，就地替换（清空 = 面板空白一下）
 						sendRef.current({ type: "sessions" });
 						window.setTimeout(() => sendRef.current({ type: "sessions" }), 350);
 					}

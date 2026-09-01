@@ -53,9 +53,13 @@ export function HtmlFrame({
 	);
 	const [showSource, setShowSource] = useState(false);
 	// 未进视口不建 srcdoc：整页卡的 srcdoc 可达数十 KB，没必要为屏外的帧逐次拼串
-	const srcDoc = inView
-		? buildSrcDoc(html, scripts, seamless, typeof window !== "undefined" ? window.innerHeight : undefined)
-		: "";
+	// memo：html 来自 splitRichContentParts 的 useMemo，输入不变就不重拼——此前每次重渲染
+	// 都重拼整份串再扔掉（533KB 帧实测 ~18ms/次）。视口高度进依赖：折 vh 用它，变了才该重拼
+	const viewportPx = inView && typeof window !== "undefined" ? window.innerHeight : undefined;
+	const srcDoc = useMemo(
+		() => (inView ? buildSrcDoc(html, scripts, seamless, viewportPx) : ""),
+		[html, scripts, seamless, inView, viewportPx],
+	);
 
 	useEffect(() => {
 		if (inView) return;

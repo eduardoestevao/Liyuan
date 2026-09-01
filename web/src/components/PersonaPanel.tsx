@@ -30,7 +30,7 @@ function PersonaAvatar({
 	if (p.avatar) {
 		return (
 			<span className={`${cls} has-img`} aria-hidden="true">
-				<img src={personaAvatarUrl(p.id, bust ?? p.avatar)} alt="" />
+				<img src={personaAvatarUrl(p.id, bust)} alt="" />
 			</span>
 		);
 	}
