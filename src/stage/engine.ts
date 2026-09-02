@@ -722,7 +722,7 @@ export class StageEngine {
 			constantLore: constantLoreOf(materials),
 			// 预设装配段：原文原序，marker 已按预设作者的位置填入梨园材料
 			presetBefore: materials.presetBefore.map((p) => p.text),
-			declaredMarkers: materials.declaredMarkers,
+			filledMarkers: materials.filledMarkers,
 			tools: tools.length > 0,
 			// MCP 外设索引进 system（不进每拍注入）：会话内字节稳定，不破前缀缓存。
 			// 与旧 director.ts 同一位置——工具清单里有 mcp__ 工具，这里说明它们是什么。
@@ -1549,7 +1549,7 @@ export class StageEngine {
 					after: chars(phAfter),
 					depth: chars(materials.presetDepth),
 				},
-				declaredMarkers: [...materials.declaredMarkers],
+				filledMarkers: [...materials.filledMarkers],
 				// M-C2：世界书/卡内嵌通道被判死的外部插件协议条目（判据可回溯）
 				protocolDrops: materials.protocolDrops,
 				blocks: materials.presetAssembly,

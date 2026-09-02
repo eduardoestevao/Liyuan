@@ -182,22 +182,42 @@ const card = {
 };
 const config: RpConfig = { ...DEFAULT_CONFIG, userName: "沈舟" };
 
-test("system prompt：marker 归位——预设声明过的槽位，梨园不再按自己版式重出一遍", () => {
+test("system prompt：marker 归位——材料真进了预设槽位，梨园不再按自己版式重出一遍", () => {
 	const rich = { ...card, description: "云澜是师姐。", personality: "冷。", scenario: "山门外。" };
-	const declared = buildStageSystemPrompt({
+	const filledCase = buildStageSystemPrompt({
 		card: rich,
 		config,
 		constantLore: [],
 		presetBefore: ["【预设槽位里的卡描述】云澜是师姐。"],
-		declaredMarkers: new Set(["charDescription", "charPersonality", "personaDescription"]),
+		filledMarkers: new Set(["charDescription", "charPersonality", "personaDescription"]),
 	});
-	assert.ok(!declared.includes("# 用户扮演："), "personaDescription 已归位，兜底不再出");
-	assert.ok(!declared.includes("## 性格"), "charPersonality 已归位");
-	assert.ok(declared.includes("## 当前场景"), "scenario 没被声明 → 梨园兜底补上，卡内容不丢");
+	assert.ok(filledCase.includes("# 用户扮演：沈舟"), "用户是谁无条件出——名字只有这一条通道（消息流是裸 role:user）");
+	assert.ok(!filledCase.includes("（沈舟 的具体形象由用户在剧情中自行呈现）"), "人设正文已被槽位收走，此处不重复");
+	assert.ok(!filledCase.includes("## 性格"), "charPersonality 已归位");
+	assert.ok(filledCase.includes("## 当前场景"), "scenario 没归位 → 梨园兜底补上，卡内容不丢");
 
 	const none = buildStageSystemPrompt({ card: rich, config, constantLore: [], presetBefore: ["旧格式预设无 marker。"] });
-	assert.ok(none.includes("# 你扮演的角色：云澜") && none.includes("云澜是师姐。"), "一个槽位都没声明时全走兜底版式");
+	assert.ok(none.includes("# 你扮演的角色：云澜") && none.includes("云澜是师姐。"), "一个槽位都没归位时全走兜底版式");
 	assert.ok(none.includes("# 用户扮演："), "人设兜底在场");
+});
+
+/**
+ * 「用户身份整段消失」的回归（2026-09-02）：预设**声明**了 personaDescription 槽位、
+ * 但人设正文为空 ⇒ 槽位无料什么都没送。此时兜底必须照常补，否则模型永远不知道用户是谁。
+ * 判据一旦退回「声明过就算数」，这条立刻红。
+ */
+test("system prompt：预设声明了人设槽位却没料时，用户身份仍无条件到位", () => {
+	const emptyPersona: RpConfig = { ...DEFAULT_CONFIG, userName: "沈舟", userPersona: "" };
+	// filledMarkers 只收真交了料的 ⇒ 空人设的 personaDescription 不在其中
+	const sys = buildStageSystemPrompt({
+		card,
+		config: emptyPersona,
+		constantLore: [],
+		presetBefore: ["【预设正文】"],
+		filledMarkers: new Set(["charDescription"]),
+	});
+	assert.ok(sys.includes("# 用户扮演：沈舟"), "名字到位");
+	assert.ok(sys.includes("（沈舟 的具体形象由用户在剧情中自行呈现）"), "人设为空时占位到位");
 });
 
 test("末端注入：事实块——数据带标注送达，语义归 system；导演备注容器解散（D5/D6/D7）", () => {
@@ -319,7 +339,7 @@ test("loadStageMaterials：启用块全量进提示词——拆层退场后不�
 			config: m.config,
 			constantLore: [],
 			presetBefore: m.presetBefore.map((p) => p.text),
-			declaredMarkers: m.declaredMarkers,
+			filledMarkers: m.filledMarkers,
 		});
 		assert.ok(sp.includes("文风：冷而克制"), "文风块在场");
 		assert.ok(sp.includes("词汇黑名单"), "纪律块也在场——判死改判归用户，梨园不代劳");

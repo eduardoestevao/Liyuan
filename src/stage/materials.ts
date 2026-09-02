@@ -60,8 +60,14 @@ export interface StageMaterials {
 	presetBefore: AssembledPiece[];
 	/** injection_position=1 的深度注入片段（数据层保真；消费待后续里程碑接入） */
 	presetDepth: DepthPiece[];
-	/** 预设声明过的 marker 槽位 id——没声明的槽位由梨园按兜底版式补，避免卡内容丢失 */
-	declaredMarkers: Set<string>;
+	/**
+	 * **真交了料**的 marker 槽位 id——梨园的材料确实进了预设作者指定的位置。
+	 * 没进的槽位由梨园按兜底版式补，避免卡/人设内容丢失。
+	 *
+	 * 判据是「填了」不是「声明了」：预设声明槽位、梨园却没料可交（如人设正文为空）时，
+	 * 那个位置是空的，兜底必须照常补。一名两义正是「用户身份整段消失」那个 bug 的成因。
+	 */
+	filledMarkers: Set<string>;
 	/** skill 一等素材位（M-R2）：工作目录 skills/<name>/SKILL.md 扫描产物 */
 	skillFiles: SkillFile[];
 	/** 装配报告：每块去向（engine 落盘 .liyuan/preset-assembly.json） */
@@ -320,7 +326,9 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		: null;
 	const presetBefore = assembled?.before ?? [];
 	const presetDepth = assembled?.depth ?? [];
-	const declaredMarkers = new Set((assembled?.markers ?? []).map((mk) => mk.id));
+	// 只收 filled：声明了却没料的槽位（`marker 无料`）在装配里什么都没 push，
+	// 那个位置是空的——把它当「已归位」会让梨园的兜底也跟着让位，内容两头落空。
+	const filledMarkers = new Set((assembled?.markers ?? []).filter((mk) => mk.filled).map((mk) => mk.id));
 	const presetAssembly = assembled?.report ?? [];
 	const presetRuleTexts = presetBefore.filter((p) => p.source === "block").map((p) => p.text);
 	const presetActive = !!assembled && assembled.before.length + assembled.after.length + assembled.depth.length > 0;
@@ -353,7 +361,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetDoc,
 		presetBefore,
 		presetDepth,
-		declaredMarkers,
+		filledMarkers,
 		skillFiles: modelVisibleSkillFiles(cwd),
 		presetAssembly,
 		presetRuleTexts,

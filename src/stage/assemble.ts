@@ -249,10 +249,11 @@ export interface StageSystemOptions {
 	 */
 	presetBefore?: string[];
 	/**
-	 * 预设声明过的 marker 槽位 id。没声明的槽位，梨园按兜底版式补上——
-	 * 否则旧格式预设（无 marker）会让角色卡整个丢失。
+	 * **真交了料**的 marker 槽位 id：梨园的材料确实进了预设作者指定的位置。
+	 * 没进的槽位（旧格式预设无 marker、或声明了却没料）由梨园按兜底版式补上——
+	 * 否则角色卡会整个丢失。判据是「填了」不是「声明了」，见 materials.ts 同名字段。
 	 */
-	declaredMarkers?: Set<string>;
+	filledMarkers?: Set<string>;
 	/** false = 不声明工具协议（M1 前过渡形态；M3 起默认开） */
 	tools?: boolean;
 	/**
@@ -267,38 +268,46 @@ export function buildStageSystemPrompt({
 	config,
 	constantLore,
 	presetBefore,
-	declaredMarkers,
+	filledMarkers,
 	tools,
 	mcpTools,
 }: StageSystemOptions): string {
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const m = (s: string) => applyMacros(s, macro);
 	const sections: string[] = [];
-	const declared = declaredMarkers ?? new Set<string>();
+	const filled = filledMarkers ?? new Set<string>();
 
 	// 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
 	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
 
-	// 2) 兜底：预设没声明的 marker 槽位，梨园按自己的版式补——补的是位置，不是措辞之外的话。
+	// 2) 兜底：材料没进预设槽位的，梨园按自己的版式补——补的是位置，不是措辞之外的话。
 	const charParts: string[] = [];
-	if (!declared.has("charDescription") && card.description) charParts.push(m(card.description));
-	if (!declared.has("charPersonality") && card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
-	if (!declared.has("scenario") && card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
-	if (!declared.has("dialogueExamples") && card.mesExample) {
+	if (!filled.has("charDescription") && card.description) charParts.push(m(card.description));
+	if (!filled.has("charPersonality") && card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
+	if (!filled.has("scenario") && card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
+	if (!filled.has("dialogueExamples") && card.mesExample) {
 		charParts.push(`## 对白示例（仅供文风与语气参考，不是已发生的剧情）\n${m(card.mesExample)}`);
 	}
 	if (charParts.length > 0) sections.push([`# 你扮演的角色：${card.name}`, ...charParts].join("\n\n"));
 
-	if (!declared.has("personaDescription")) {
-		sections.push(
-			[
-				`# 用户扮演：${config.userName}`,
-				config.userPersona ? m(config.userPersona) : `（${config.userName} 的具体形象由用户在剧情中自行呈现）`,
-			].join("\n"),
-		);
+	/**
+	 * 用户是谁：**无条件出**（2026-09-02 用户定案「user 是谁、他的设定，必须无条件全量注入」）。
+	 *
+	 * 名字尤其省不得——梨园的消息流是裸 `role:"user"`（不像酒馆把发言人名字写进聊天记录），
+	 * system 这一行是「用户扮演谁」到达模型的唯一通道；而 `personaDescription` 槽位只交人设正文，
+	 * 名字（`config.userName`）和正文（`config.userPersona`）是两个字段，槽位只带得走后者。
+	 * 此前这段挂在「预设没声明槽位」的条件上，实测三个真预设都声明了它、而人设正文常为空
+	 * ⇒ 槽位无料、兜底又让位，整段消失，模型只能从预设作者的规则句里侧面拼出这个名字。
+	 *
+	 * 正文若已被槽位收走（filled ⇒ 已在预设作者指定的位置），此处不再重复同一份正文。
+	 */
+	const personaLines = [`# 用户扮演：${config.userName}`];
+	if (!filled.has("personaDescription")) {
+		personaLines.push(config.userPersona ? m(config.userPersona) : `（${config.userName} 的具体形象由用户在剧情中自行呈现）`);
 	}
+	sections.push(personaLines.join("\n"));
 
-	if (!declared.has("worldInfoBefore") && !declared.has("worldInfoAfter") && constantLore.length > 0) {
+	if (!filled.has("worldInfoBefore") && !filled.has("worldInfoAfter") && constantLore.length > 0) {
 		const loreText = constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${m(e.content)}`).join("\n");
 		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
 	}
