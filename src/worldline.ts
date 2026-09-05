@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { randomBytes } from "node:crypto";
 import { readJsonFile } from "./jsonio.ts";
+import { dir } from "./paths.ts";
 
 export const RP_SAVE_TYPE = "rp-save";
 
@@ -87,7 +88,7 @@ export function emptyMeta(): WorldlineMeta {
 }
 
 export function metaPath(cwd: string, sessionId: string): string {
-	return join(cwd, ".liyuan-worldline", `${sessionId}.json`);
+	return join(dir(cwd, "worldline"), `${sessionId}.json`);
 }
 
 export function loadWorldlineMeta(file: string): WorldlineMeta {

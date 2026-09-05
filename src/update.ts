@@ -14,12 +14,13 @@ import { join } from "node:path";
 import { Readable, Transform } from "node:stream";
 import { pipeline } from "node:stream/promises";
 
+import { DIRS } from "./paths.ts";
 import { extractZipFile } from "./ziplite.ts";
 
 /** 项目仓库（与主页 GitHub 徽标同源） */
 export const UPDATE_REPO = "weidu12123/Liyuan";
 /** 暂存根：下载/解压/标记都在这里，失败清目录即回到干净态 */
-export const UPDATE_DIR = ".liyuan-cache/update";
+export const UPDATE_DIR = `${DIRS.cache}/update`;
 /** 待应用标记文件名（启动脚本据此触发覆盖） */
 export const PENDING_FILE = "pending.json";
 

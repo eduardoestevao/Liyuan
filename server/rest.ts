@@ -70,7 +70,16 @@ import {
 	updateMemoryConfig,
 	updateStoreConfig,
 } from "../src/memory/index.ts";
-import { resolveConfigPath } from "../src/paths.ts";
+import {
+	DIRS,
+	MEDIA_PREFIX,
+	MEDIA_PREFIX_LEGACY,
+	SKILLS_PREFIX,
+	UPLOAD_PREFIX,
+	UPLOAD_PREFIX_LEGACY,
+	normalizeDataPath,
+	resolveConfigPath,
+} from "../src/paths.ts";
 import { scanSkillFiles } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import type { WorldlineView } from "../src/worldline.ts";
@@ -126,7 +135,7 @@ import {
 	type McpServerConfig,
 } from "../src/mcp.ts";
 import { listSkills, saveSkill } from "../src/skills.ts";
-import { buildBackupZip, stageRestore } from "../src/backup.ts";
+import { BACKUP_ROOT, buildBackupZip, stageRestore } from "../src/backup.ts";
 import { DEFAULT_CONFIG, type LorebookEntry, type RpConfig } from "../src/types.ts";
 import { readJsonFile } from "../src/jsonio.ts";
 import { formatBytes, listMedia, listUploads, saveUpload } from "../src/uploads.ts";
@@ -610,7 +619,7 @@ function assertLibraryCard(cwd: string, config: RpConfig, relPath: string): stri
 }
 
 // 卡收藏（借鉴 ST favorites）：独立小文件，不动 rp.config（免会话重载）
-const favsPath = (cwd: string) => join(cwd, ".liyuan-cache", "card-favs.json");
+const favsPath = (cwd: string) => join(cwd, DIRS.cache, "card-favs.json");
 
 function loadFavs(cwd: string): string[] {
 	try {
@@ -622,7 +631,7 @@ function loadFavs(cwd: string): string[] {
 }
 
 function saveFavs(cwd: string, favs: string[]): void {
-	mkdirSync(join(cwd, ".liyuan-cache"), { recursive: true });
+	mkdirSync(join(cwd, DIRS.cache), { recursive: true });
 	writeFileSync(favsPath(cwd), `${JSON.stringify(favs, null, "\t")}\n`, "utf8");
 }
 
@@ -1486,12 +1495,12 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				// 只许删 .liyuan-uploads/ 或 .liyuan-media/ 顶层文件
 				let base = "";
 				let dir = "";
-				if (file.startsWith(".liyuan-uploads/") || file.startsWith(".rp-uploads/")) {
-					base = file.replace(/^\.(liyuan|rp)-uploads\//, "");
-					dir = ".liyuan-uploads";
-				} else if (file.startsWith(".liyuan-media/") || file.startsWith(".rp-media/")) {
-					base = file.replace(/^\.(liyuan|rp)-media\//, "");
-					dir = ".liyuan-media";
+				if (file.startsWith(UPLOAD_PREFIX) || file.startsWith(UPLOAD_PREFIX_LEGACY)) {
+					base = normalizeDataPath(file).slice(UPLOAD_PREFIX.length);
+					dir = DIRS.uploads;
+				} else if (file.startsWith(MEDIA_PREFIX) || file.startsWith(MEDIA_PREFIX_LEGACY)) {
+					base = normalizeDataPath(file).slice(MEDIA_PREFIX.length);
+					dir = DIRS.media;
 				}
 				if (!dir || !base || base.includes("/") || base.includes("\\") || base.includes("..")) {
 					throw new Error("非法路径");
@@ -1701,11 +1710,11 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			case "GET /api/skills/content": {
 				const file = query.get("file") ?? "";
-				const base = file.startsWith(".liyuan-skills/") ? file.slice(".liyuan-skills/".length) : "";
+				const base = file.startsWith(SKILLS_PREFIX) ? file.slice(SKILLS_PREFIX.length) : "";
 				if (!base || base.includes("/") || base.includes("\\") || base.includes("..") || !base.endsWith(".md")) {
 					throw new Error("非法路径");
 				}
-				const abs = join(host.cwd, ".liyuan-skills", base);
+				const abs = join(host.cwd, DIRS.skills, base);
 				if (!existsSync(abs)) throw new Error("技能文件不存在");
 				sendJson(res, 200, { content: readFileSync(abs, "utf8") });
 				return true;
@@ -1733,11 +1742,11 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			case "DELETE /api/skills": {
 				const file = query.get("file") ?? "";
-				const base = file.startsWith(".liyuan-skills/") ? file.slice(".liyuan-skills/".length) : "";
+				const base = file.startsWith(SKILLS_PREFIX) ? file.slice(SKILLS_PREFIX.length) : "";
 				if (!base || base.includes("/") || base.includes("\\") || base.includes("..") || !base.endsWith(".md")) {
 					throw new Error("非法路径");
 				}
-				const abs = join(host.cwd, ".liyuan-skills", base);
+				const abs = join(host.cwd, DIRS.skills, base);
 				if (!existsSync(abs)) throw new Error("技能文件不存在");
 				unlinkSync(abs);
 				sendJson(res, 200, { ok: true });
@@ -3861,7 +3870,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			// ---- 项目完整备份 / 恢复 ----
 			case "POST /api/backup/create": {
 				if (refuseWhileStreaming()) return true;
-				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				const dir = join(host.cwd, BACKUP_ROOT);
 				mkdirSync(dir, { recursive: true });
 				const name = `liyuan-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`;
 				const outPath = join(dir, name);
@@ -3872,7 +3881,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			case "GET /api/backup/download": {
 				if (refuseWhileStreaming()) return true;
-				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				const dir = join(host.cwd, BACKUP_ROOT);
 				mkdirSync(dir, { recursive: true });
 				const name = `liyuan-backup-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`;
 				const outPath = join(dir, name);
@@ -3896,7 +3905,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const data = await readBodyRaw(req, MAX_BACKUP_UPLOAD);
 				if (data.length === 0) throw new Error("备份文件为空");
 				// 暂存 zip 放在 restore/ 的兄弟目录——stageRestore 会先清空 restore/，写进去会被自己删掉
-				const dir = join(host.cwd, ".liyuan-cache", "backup");
+				const dir = join(host.cwd, BACKUP_ROOT);
 				mkdirSync(dir, { recursive: true });
 				const zipPath = join(dir, "incoming.zip");
 				writeFileSync(zipPath, data);
@@ -3916,9 +3925,9 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (refuseWhileStreaming()) return true;
 				const body = JSON.parse(await readBody(req)) as { content?: string; tag?: string };
 				if (!body.content?.trim()) throw new Error("聊天记录内容为空");
-				const dir = join(host.cwd, ".liyuan-cache", "imports");
+				const dir = join(host.cwd, DIRS.cache, "imports");
 				mkdirSync(dir, { recursive: true });
-				const rel = join(".liyuan-cache", "imports", `import-${Date.now()}.jsonl`);
+				const rel = join(DIRS.cache, "imports", `import-${Date.now()}.jsonl`);
 				writeFileSync(join(host.cwd, rel), body.content, "utf8");
 				const tag = (body.tag ?? "").trim();
 				// /import 全流程（解析→清洗→摘要→建账→注入）由扩展命令完成，进度经 notify 推送

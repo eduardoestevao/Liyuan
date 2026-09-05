@@ -22,7 +22,8 @@ import { Type, type TSchema } from "typebox";
 
 // ---------- 类型 ----------
 
-export const MCP_CONFIG_FILE = ".liyuan-mcp.json";
+export { MCP_CONFIG_FILE } from "./paths.ts";
+import { MCP_CONFIG_FILE } from "./paths.ts";
 export const MCP_USER_CONFIG_FILE = "mcp.json"; // ~/.liyuan/mcp.json
 export const RP_MCP_TYPE = "rp-mcp"; // 会话树：本对话启用的服务器 id 列表
 

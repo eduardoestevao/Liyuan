@@ -78,6 +78,8 @@ const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 };
 
 export const PERSONAS_FILE = ".liyuan-personas.json";
+/** MCP 外设配置（项目根单文件；`src/mcp.ts` 同名再导出给既有调用方） */
+export const MCP_CONFIG_FILE = ".liyuan-mcp.json";
 export const PERSONAS_FILE_LEGACY = ".rp-personas.json";
 
 export function dir(cwd: string, key: keyof typeof DIRS): string {
@@ -89,6 +91,7 @@ export const UPLOAD_PREFIX = `${DIRS.uploads}/`;
 export const UPLOAD_PREFIX_LEGACY = ".rp-uploads/";
 export const MEDIA_PREFIX = `${DIRS.media}/`;
 export const MEDIA_PREFIX_LEGACY = ".rp-media/";
+export const SKILLS_PREFIX = `${DIRS.skills}/`;
 
 /** 把历史消息里的旧前缀归一到新前缀（读路径用） */
 export function normalizeDataPath(p: string): string {

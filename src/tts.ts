@@ -11,6 +11,8 @@ import { createHash, randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
+import { dir } from "./paths.ts";
+
 export interface TtsConfig {
 	baseUrl: string;
 	apiKey: string;
@@ -69,7 +71,7 @@ export async function synthesizeSpeech(
 }
 
 export function audioDir(cwd: string): string {
-	return join(cwd, ".liyuan-audio");
+	return dir(cwd, "audio");
 }
 
 /** 内容寻址写入 .liyuan-audio/，返回可供前端使用的 /audio/ 路径 */

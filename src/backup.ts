@@ -35,27 +35,26 @@ import {
 } from "node:fs";
 import { dirname, join, relative, resolve } from "node:path";
 
+import { DIRS, MCP_CONFIG_FILE, PERSONAS_FILE } from "./paths.ts";
 import { extractZipFile } from "./ziplite.ts";
 
 const BACKUP_FORMAT = "liyuan-backup";
 const BACKUP_VERSION = 1;
 /** 备份/恢复入口统一落 .liyuan-cache/backup（自身不在备份范围内，避免递归） */
-export const BACKUP_ROOT = ".liyuan-cache/backup";
+export const BACKUP_ROOT = `${DIRS.cache}/backup`;
 const RESTORE_SUBDIR = "restore";
 const PENDING_FILE = "pending.json";
 
-/** 项目根数据目录（整体拷贝，不含任何程序代码） */
+/** 备份**不**收的数据目录：cache 里住着 BACKUP_ROOT 自己，收进来会递归 */
+const EXCLUDED_DIR_KEYS: ReadonlySet<keyof typeof DIRS> = new Set(["cache"]);
+
+/**
+ * 项目根数据目录（整体拷贝，不含任何程序代码）。
+ * ⚠ 目录名的唯一主人是 `src/paths.ts` 的 `DIRS`——这里只声明「哪些 key 不收」，
+ * 不再手抄名字（原先是 10 个字面量的平行清单，`DIRS` 加了目录它不会跟着长）。
+ */
 const PROJECT_DIR_SCOPES = [
-	".liyuan-state",
-	".liyuan-artifacts",
-	".liyuan-assistant",
-	".liyuan-lore",
-	".liyuan-memory",
-	".liyuan-media",
-	".liyuan-skills",
-	".liyuan-uploads",
-	".liyuan-audio",
-	".liyuan-worldline",
+	...(Object.keys(DIRS) as Array<keyof typeof DIRS>).filter((k) => !EXCLUDED_DIR_KEYS.has(k)).map((k) => DIRS[k]),
 	"assets/cards",
 	"assets/lorebooks",
 	"assets/presets",
@@ -70,8 +69,8 @@ const PROJECT_FILE_SCOPES = [
 	"liyuan.agent.json",
 	"liyuan.agent.meta.json",
 	"liyuan-preset.json",
-	".liyuan-personas.json",
-	".liyuan-mcp.json",
+	PERSONAS_FILE,
+	MCP_CONFIG_FILE,
 ];
 
 /** .liyuan/ 下随用户走的数据文件（白名单；extensions 是源码，永不进备份） */
