@@ -73,14 +73,27 @@
 ⇒ 全部卡共用同一个状态池 / 世界书池 / 技能池 / 预设 / 记忆库；「属于哪张卡」是**事后筛出来的**，
 不是**结构上分开的**。
 
-### 2.3 白送的一半：会话隔离不用自己做
+### 2.3 白送的只有「分家」，**「随卡拷走」不白送**（2026-09-05 更正）
 
 **pi 的会话存储本来就按 cwd 编码**（`packages/coding-agent/src/core/session-manager.ts:439`
-`getDefaultSessionDirPath`：`~/.liyuan/agent/sessions/--<cwd 转义>--/`）。本机实测目录名形如
+`getDefaultSessionDirPath(cwd, agentDir)`：`<agentDir>/sessions/--<cwd 转义>--/`）。本机实测目录名形如
 `--C--Users-jsw_0-AppData-Local-Temp-lynew-Liyuan--`。
 
-⇒ **卡一旦成为独立 cwd，会话按卡分家是白送的**，`sameCardPath` 那套事后过滤**整体消失**，
-不是"重写"。这是这一步最大的一块省力，也是"pi 早就替我们想好了"的直接证据。
+⇒ **卡一旦成为独立 cwd，会话按卡分家是白送的**，`sameCardPath` 那套事后过滤**整体消失**，不是"重写"。
+
+⚠ **但本节原先写的「这是这一步最大的一块省力」说过头了，此处更正**：`agentDir` 缺省是
+`~/.liyuan/agent`（`src/paths.ts:175`）⇒ **默认落点永远在 home，卡目录里没有会话**；换 cwd 只换目录名。
+要做到「一张卡＝一个能整体拷走的文件夹」，必须**显式**把 sessionDir 指进卡目录：
+
+- `create(cwd, sessionDir?)`（`:1411`）、`open(path, sessionDir?, cwdOverride?)`（`:1422`）、
+  `continueRecent(cwd, sessionDir?)`（`:1438`）、`list(cwd, sessionDir?)`（`:1519`）、
+  `forkFrom(sourcePath, targetCwd, sessionDir?)`（`:1460`）**全部接受显式 sessionDir**——
+  **能力 pi 早就给了，梨园只在助手会话上用了**（`server/assistant.ts:945`、`:1230-1233` 是现成写法）。
+- 给了自定义 sessionDir 时，`:1440`/`:1521` 的 `filterCwd` 会按 `header.cwd` 过滤（`sessionCwdMatches` `:534`）。
+- **唯一的迁移障碍**：`SessionHeader`（`:32-39`）里 `cwd` 与 `parentSession` 是**绝对路径**，换机后
+  匹配不上会被 `filterCwd` 滤掉。`open()` 已有 `cwdOverride`（`:1427`
+  `cwdOverride ?? header?.cwd ?? process.cwd()`）⇒ 要么按新 cwd 重写 header，要么打开时一律传 cwdOverride。
+  **这是一处明确、可测的工程点，不是未知。**
 
 ### 2.4 要决定的核心问题：`RpConfig` 哪些字段跟卡走、哪些留全局
 
@@ -122,6 +135,20 @@ assistant 1 / audio 1 / skills 1）。但 **lore / worldline / memory / audio �
 ⇒ **第一件事是把目录访问收成一个口子**（全部走 `dir()`），否则后面每一处硬编码都是一个漏点。
 这一件本身就是纯机械替换、可独立验证、不改任何行为。
 
+> **✅ 刀1「收口子」已落地（2026-09-05 深夜）。** 8 个文件、30 处字面量收完，代码里已无
+> `.liyuan-*` 目录名字面量（只剩注释）。落点：
+> `src/lorebook.ts` overlay 走 `dir(cwd,"lore")`、`src/worldline.ts` 走 `dir(cwd,"worldline")`、
+> `src/tts.ts` 走 `dir(cwd,"audio")`、`src/update.ts` `UPDATE_DIR` 由 `DIRS.cache` 派生、
+> `src/paths.ts` 新收 `MCP_CONFIG_FILE` 与 `SKILLS_PREFIX`（`src/mcp.ts` 同名再导出，调用方不动）、
+> `src/backup.ts` 的 10 条平行清单改为**从 `DIRS` 派生 + 只声明排除 key**（`cache` 排除，理由写在注释里）、
+> `server/rest.ts` 13 处改走 `DIRS`/`BACKUP_ROOT`/`SKILLS_PREFIX`/`normalizeDataPath`。
+> **核实**：13 条路径逐字等价 + 备份清单集合相等（`_baseline0/verify-dao1.mjs`）；
+> 测试 645 项 **643 通过 / 2 失败，与改动前逐项相同**（那 2 个是本地卡库形状引起的既有红，
+> 把新卡移走照旧红）；实起 `node server/main.ts` 探活 12 个受影响端点，含真跑一次
+> `POST /api/backup/create`（524 文件 / 112MB，zip 内无 `.liyuan-cache` ⇒ 排除生效，事后已删）
+> 与 `DELETE /api/uploads` 四例（合法删除 / `..` 越权拦下 / 错前缀拦下 / 旧前缀仍认）。
+> `src/memory/config.ts` 那处**本来就已经走 `DIRS.memory`**，本节原文所列该项已过期。
+
 #### B. `cwd` 是模块级单例，不是参数
 
 `server/main.ts:166` `const cwd = process.cwd()`，`:244` 用它 `SessionManager.create(cwd)`，
@@ -141,11 +168,12 @@ assistant 1 / audio 1 / skills 1）。但 **lore / worldline / memory / audio �
 
 ⇒ 卡＝目录之后，**这三套全部退役**（铁律三：名单只许删）。
 
-#### D. 会话隔离白送，但助手会话是例外
+#### D. 分家白送，但「随卡拷走」要显式 sessionDir（助手会话已经这么做了）
 
 剧情会话在 `~/.liyuan/agent/sessions/--<cwd 编码>--/`（`session-manager.ts:850`），**跟卡没有
-目录关系**，靠内存里 `sameCardPath` 筛。cwd 一换即天然分家。
-**但助手会话在项目里**：`server/assistant.ts:945` 用 `dir(cwd, "assistant")` 当 sessionDir。
+目录关系**，靠内存里 `sameCardPath` 筛。cwd 一换即天然分家——**但仍在 home 下，卡目录里没有会话；
+要真进卡目录必须显式传 sessionDir，见 §2.3 的更正。**
+**助手会话已经是那个做法**：`server/assistant.ts:945` 用 `dir(cwd, "assistant")` 当 sessionDir。
 另有三类按 sessionId 落盘的：`.liyuan-state/<sid>.json`、`.liyuan-artifacts/<sid>.json`、
 `.liyuan-worldline/<sid>.json` —— 这些跟着卡目录走即可。
 
@@ -245,7 +273,7 @@ assistant 1 / audio 1 / skills 1）。但 **lore / worldline / memory / audio �
 
 **vendored pi 的扩展机制完好无损**（本窗口核实）：
 - `packages/coding-agent/src/core/extensions/` 四个文件全在（loader 21.9KB / types 58KB / runner 36KB / wrapper）。
-- `ExtensionAPI` 提供 **28 个钩子**：`project_trust`、`resources_discover`、`session_*`（start / before_fork /
+- `ExtensionAPI` 提供 **40 个 `on()` 重载**（2026-09-05 逐条数过，原写 28 偏少；`types.ts:1141-1180`）：`project_trust`、`resources_discover`、`session_*`（start / before_fork /
   before_tree / tree / compact / info_changed / shutdown）、`before_agent_start`、`agent_start`、
   `turn_start`、`context`、`before_provider_request`、`after_provider_response`、
   `tool_call`、`tool_execution_start/update/end`、`tool_result`、`message_start/update/end`、
@@ -286,7 +314,7 @@ assistant 1 / audio 1 / skills 1）。但 **lore / worldline / memory / audio �
 
 ### 3.5 第二步的两件事
 
-**件一：把 45 个手搓点位搬回 28 个钩子。**
+**件一：把 45 个手搓点位搬回钩子（vendored 0.80.3 上 40 个 `on()` 重载）。**
 不是重写引擎，是**把固定时机交还给 pi**。收益是铁律二三从自觉变成架构强制：通道集由 pi 定义，
 每个通道有唯一主人、语义写死，**想堆也堆不了**。优先级按「碎得最厉害的先收」：
 
@@ -331,7 +359,7 @@ assistant 1 / audio 1 / skills 1）。但 **lore / worldline / memory / audio �
 
 - **铁律一**：pi 的第 5 格 `promptGuidelines` **唯一来源是工具定义自己声明的**，按活跃工具收集、
   工具下场自动消失——**这是「先问删掉哪句能解决」的架构答案，句子不再靠人删**。
-- **铁律二**：回到 pi 的钩子图上，通道集由 pi 定义（28 个，闭合），**想堆也堆不了**。
+- **铁律二**：回到 pi 的钩子图上，通道集由 pi 定义（40 个 `on()` 重载，闭合），**想堆也堆不了**。
 - **铁律三**：不新增任何识别别人措辞的名单；工具与钩子都是自己发行的协议。
 - **铁律四三问**：全集＝所有卡所有预设；负责人＝pi 的钩子图；没见过的卡＝走同一套钩子，
   行为由数据决定不由分支决定。
