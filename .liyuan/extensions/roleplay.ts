@@ -86,6 +86,7 @@ import {
 	type McpToolDescriptor,
 } from "../../src/mcp.ts";
 import { dir, resolveConfigPath, DIRS } from "../../src/paths.ts";
+import { chatDataPath } from "../../src/cardspace.ts";
 import { DEFAULT_CONFIG, type CharacterCard, type LorebookEntry, type RpConfig, type WorldState } from "../../src/types.ts";
 import {
 	buildAncestryIndex,
@@ -96,7 +97,6 @@ import {
 	formatWorldlineText,
 	latestSaveOnBranch,
 	loadWorldlineMeta,
-	metaPath,
 	planNewSave,
 	RP_SAVE_TYPE,
 	type TreeEntryLite,
@@ -1111,14 +1111,14 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				}
 			}
 
-			stateFile = join(dir(ctx.cwd, "state"), `${ctx.sessionManager.getSessionId()}.json`);
+			stateFile = chatDataPath(ctx.cwd, ctx.sessionManager.getSessionDir(), ctx.sessionManager.getSessionId(), "state");
 			state = loadState(stateFile);
 			// fork 出的新会话文件没有状态缓存：从复制过来的剧情分支快照恢复
 			if (JSON.stringify(state) === JSON.stringify(defaultState()) && restoreStateFromBranch(ctx.sessionManager)) {
 				saveState(stateFile, state);
 			}
 			// 面板同款装载：缓存缺失（fork/新拉起）时从剧情分支快照恢复
-			panelsFile = join(dir(ctx.cwd, "artifacts"), `${ctx.sessionManager.getSessionId()}.json`);
+			panelsFile = chatDataPath(ctx.cwd, ctx.sessionManager.getSessionDir(), ctx.sessionManager.getSessionId(), "panels");
 			panels = loadPanels(panelsFile);
 			if (Object.keys(panels).length === 0 && restorePanelsFromBranch(ctx.sessionManager)) {
 				savePanels(panelsFile, panels);
@@ -1571,9 +1571,10 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		getBranch: () => Array<{ id: string }>;
 		getLeafId: () => string | null;
 		getSessionId: () => string;
+		getSessionDir?: () => string;
 	}) => {
 		const sid = sm.getSessionId();
-		const meta = loadWorldlineMeta(metaPath(appCwd, sid));
+		const meta = loadWorldlineMeta(chatDataPath(appCwd, sm.getSessionDir?.(), sid, "worldline"));
 		const entries = treeEntriesLite(sm);
 		const saves = extractSaves(entries, meta);
 		const leafId = sm.getLeafId();

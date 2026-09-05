@@ -16,6 +16,12 @@ export type MemoryStoreKind = "narrative" | "external" | "custom";
 export interface MemoryScope {
 	sessionId: string;
 	card?: string;
+	/**
+	 * 子项目目录（`cards/<卡>/对话/<id>/`）。给了就把向量库落在子项目里
+	 * （`<子项目>/向量记忆/stores/…`），一个子项目一份；没给＝老布局，
+	 * 仍按 `<cardHash10>__<sessionId>` 落在全局 `.liyuan-memory/scopes/` 下。
+	 */
+	chatDir?: string;
 }
 
 /** 嵌入模式：local=本机规则；cloud=OpenAI 兼容 embeddings 接口 */

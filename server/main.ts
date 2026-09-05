@@ -15,7 +15,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { dirname, extname, isAbsolute, join, normalize } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
 	createAgentSessionFromServices,
@@ -77,7 +77,6 @@ import {
 	flattenWorldlineSaves,
 	latestSaveOnBranch,
 	loadWorldlineMeta,
-	metaPath,
 	planNewSave,
 	renameWorldline as renameWorldlineMeta,
 	RP_SAVE_TYPE,
@@ -139,6 +138,7 @@ import { createAssistantHost, type AssistantHost, type StoryBridge } from "./ass
 import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { readSessionCardInfo } from "../src/session-scan.ts";
+import { chatDataPath, chatDirOfSessionDir } from "../src/cardspace.ts";
 import {
 	appendLorebookFileEntry,
 	appendOverlayEntry,
@@ -385,8 +385,71 @@ const safeStats = (): WireStats | null => {
 	}
 };
 
-const stateDir = dir(cwd, "state");
-mkdirSync(stateDir, { recursive: true });
+/**
+ * 子项目级数据的落点：**一个子项目一份**（同一子项目里的多个会话看同一份账本／面板／世界线
+ * ——那正是「在第二个会话窗口继续聊」的意思）。老布局（尚未迁移／内存会话）自动回落到
+ * 今天按 sessionId 分文件的旧路径，分叉只在 src/cardspace.ts 的 chatDataPath 里那一处。
+ */
+const stateFileOf = (sessionId: string = session.sessionId) =>
+	chatDataPath(cwd, session.sessionManager.getSessionDir(), sessionId, "state");
+const panelsFileOf = (sessionId: string = session.sessionId) =>
+	chatDataPath(cwd, session.sessionManager.getSessionDir(), sessionId, "panels");
+const worldlineFileOf = (sessionId: string = session.sessionId) =>
+	chatDataPath(cwd, session.sessionManager.getSessionDir(), sessionId, "worldline");
+
+/**
+ * 向量记忆的作用域：新布局落在子项目里（`<子项目>/向量记忆/`），一个子项目一份；
+ * 老布局没有 chatDir ⇒ 仍按 `<卡hash>__<sessionId>` 落全局，行为不变。
+ */
+const memoryScopeFor = (sessionId: string = session.sessionId) => ({
+	sessionId,
+	card: cardPath || undefined,
+	chatDir: chatDirOfSessionDir(session.sessionManager.getSessionDir()) ?? undefined,
+});
+
+/**
+ * 落盘即推送的目录监听：落点随会话走，故换会话/换子项目时要重挂（rearm 由 bindSession 调）。
+ * Windows 下同一次写可能触发多次事件，200ms 去抖。
+ */
+const makeDataWatcher = (kind: "state" | "panels", onHit: () => void) => {
+	let watcher: ReturnType<typeof watch> | undefined;
+	let armedDir = "";
+	let armedFile = "";
+	let timer: ReturnType<typeof setTimeout> | undefined;
+	return {
+		rearm() {
+			const target = stateOrPanels(kind);
+			const d = dirname(target);
+			const f = basename(target);
+			if (d === armedDir && f === armedFile && watcher) return;
+			try {
+				watcher?.close();
+			} catch {
+				/* 已失效的监听关不掉不影响重挂 */
+			}
+			watcher = undefined;
+			armedDir = d;
+			armedFile = f;
+			try {
+				mkdirSync(d, { recursive: true });
+				watcher = watch(d, (_evt, filename) => {
+					if (filename !== armedFile) return;
+					clearTimeout(timer);
+					timer = setTimeout(() => {
+						try {
+							onHit();
+						} catch {
+							// 读取竞态（写入未完成）：下次事件再推
+						}
+					}, 200);
+				});
+			} catch {
+				watcher = undefined; // 目录还不存在等：下次 rearm 再试
+			}
+		},
+	};
+};
+const stateOrPanels = (kind: "state" | "panels") => (kind === "state" ? stateFileOf() : panelsFileOf());
 /**
  * 展示用账本。权威是会话树（R4：世界 = f(分支)）——swipe/rewind/切世界线后
  * 磁盘缓存仍是旧分支的账本，只有树快照能给出当前分支的正确值。
@@ -433,7 +496,7 @@ const currentState = (): WorldState => {
 		} catch {
 			// 树不可读（极早期生命周期）→ 磁盘缓存
 		}
-		return loadState(join(stateDir, `${session.sessionId}.json`));
+		return loadState(stateFileOf());
 	})();
 	return seedMvuIfNeeded(raw, cardBookForMvu(), names.userName, names.charName, cardScriptsForMvu()) as WorldState;
 };
@@ -454,39 +517,13 @@ const hasMvuTree = (): boolean => {
 	return owned;
 };
 
-// 场记记账落盘即推送（PLAN-PHASE3 §4：fs.watch 目录级监听，零扩展改动；
-// Windows 下同一次写可能触发多次事件，200ms 去抖）
-let stateDebounce: ReturnType<typeof setTimeout> | undefined;
-watch(stateDir, (_evt, filename) => {
-	if (filename !== `${session.sessionId}.json`) return;
-	clearTimeout(stateDebounce);
-	stateDebounce = setTimeout(() => {
-		try {
-			broadcast({ type: "state", state: currentState() });
-		} catch {
-			// 读取竞态（写入未完成）：下次事件再推
-		}
-	}, 200);
-});
+// 场记记账落盘即推送（PLAN-PHASE3 §4：fs.watch 目录级监听，零扩展改动）
+const stateWatcher = makeDataWatcher("state", () => broadcast({ type: "state", state: currentState() }));
 
-// agent 自建面板（柱 2）：与 state 同款——扩展落盘 .rp-artifacts/<sessionId>.json，
-// 这里 fs.watch 监听并推送活跃面板全量（panel_write/close 与 rewind 回退同一条路径）
-const artifactsDir = dir(cwd, "artifacts");
-mkdirSync(artifactsDir, { recursive: true });
-const currentPanels = () => activePanels(loadPanels(join(artifactsDir, `${session.sessionId}.json`)));
-
-let panelsDebounce: ReturnType<typeof setTimeout> | undefined;
-watch(artifactsDir, (_evt, filename) => {
-	if (filename !== `${session.sessionId}.json`) return;
-	clearTimeout(panelsDebounce);
-	panelsDebounce = setTimeout(() => {
-		try {
-			broadcast({ type: "panels", panels: currentPanels() });
-		} catch {
-			// 读取竞态（写入未完成）：下次事件再推
-		}
-	}, 200);
-});
+// agent 自建面板（柱 2）：与 state 同款——扩展落盘后 fs.watch 监听并推送活跃面板全量
+// （panel_write/close 与 rewind 回退同一条路径）
+const currentPanels = () => activePanels(loadPanels(panelsFileOf()));
+const panelsWatcher = makeDataWatcher("panels", () => broadcast({ type: "panels", panels: currentPanels() }));
 
 /** 会话树条目 → swipe 纯函数输入 */
 const swipeEntriesFromSession = (): SwipeEntry[] => {
@@ -983,6 +1020,9 @@ const uiContext = {
 
 const bindSession = async () => {
 	session = runtime.session;
+	// 账本/面板的落点跟着会话走（子项目一份）：换会话/换子项目后要重挂目录监听
+	stateWatcher.rearm();
+	panelsWatcher.rearm();
 	// eslint-disable-next-line @typescript-eslint/no-explicit-any -- headless stub 集合，形状对齐 rpc-mode 的实现
 	await session.bindExtensions({
 		uiContext: uiContext as any,
@@ -1046,7 +1086,7 @@ const bindSession = async () => {
 							}
 							const mem = await onNarrativeTurnEnd(
 								cwd,
-								{ sessionId: session.sessionId, card: cardPath || undefined },
+								memoryScopeFor(),
 								lastText,
 								{ nodeId: memNodeId, branchIds: memBranchIds },
 							);
@@ -1314,7 +1354,7 @@ const restHost: RestHost = {
 	},
 	// 面板导入：写盘 + 进程内直达收编（不经 /panelsync prompt，避免 assistant_run 内死锁）
 	async importPanels(list) {
-		const file = join(artifactsDir, `${session.sessionId}.json`);
+		const file = panelsFileOf();
 		let panels = loadPanels(file);
 		let imported = 0;
 		const names: string[] = [];
@@ -1342,7 +1382,7 @@ const restHost: RestHost = {
 	},
 	// 用户删除面板：写盘 + 进程内收编
 	async closePanel(name) {
-		const file = join(artifactsDir, `${session.sessionId}.json`);
+		const file = panelsFileOf();
 		const panels = loadPanels(file);
 		const r = closePanelInMap(panels, name);
 		if (!r.ok) throw new Error(r.error);
@@ -1353,7 +1393,7 @@ const restHost: RestHost = {
 	async savePanel(input) {
 		const name = String(input?.name ?? "").trim();
 		if (!name) throw new Error("面板名不能为空");
-		const file = join(artifactsDir, `${session.sessionId}.json`);
+		const file = panelsFileOf();
 		const panels = loadPanels(file);
 		const prev = panels[name];
 		if (!prev) throw new Error(`没有名为「${name}」的面板`);
@@ -1368,7 +1408,7 @@ const restHost: RestHost = {
 	},
 	// ---- 世界状态编辑（PLAN-PANELS §2.11）：用户主权 applyPatch，落盘即广播，命令桥收编进树 ----
 	async applyStatePatch(patch) {
-		const file = join(stateDir, `${session.sessionId}.json`);
+		const file = stateFileOf();
 		const r = applyPatch(loadState(file), patch);
 		saveState(file, r.state); // fs.watch 自动广播 state 帧
 		syncStoryStateFromDisk();
@@ -1378,7 +1418,7 @@ const restHost: RestHost = {
 	worldlineView() {
 		const sm = session.sessionManager;
 		const sid = session.sessionId;
-		const meta = loadWorldlineMeta(metaPath(cwd, sid));
+		const meta = loadWorldlineMeta(worldlineFileOf(sid));
 		const entries: TreeEntryLite[] = sm.getEntries().map((e) => ({
 			id: e.id,
 			parentId: e.parentId,
@@ -1395,13 +1435,13 @@ const restHost: RestHost = {
 		return buildWorldlineView(saves, meta, branchIdsFromLeaf(leafId), leafId);
 	},
 	deleteWorldlineSave(saveId) {
-		const file = metaPath(cwd, session.sessionId);
+		const file = worldlineFileOf();
 		const meta = softDeleteSave(loadWorldlineMeta(file), saveId);
 		saveWorldlineMeta(file, meta);
 		broadcast({ type: "notify", level: "info", text: "已删除存档节点（软删除，会话树原文保留）" });
 	},
 	renameWorldline(worldlineId, name) {
-		const file = metaPath(cwd, session.sessionId);
+		const file = worldlineFileOf();
 		const meta = renameWorldlineMeta(loadWorldlineMeta(file), worldlineId, name);
 		saveWorldlineMeta(file, meta);
 		broadcast({ type: "notify", level: "info", text: `世界线已改名「${name.trim()}」` });
@@ -1562,10 +1602,7 @@ const restHost: RestHost = {
 		setTimeout(() => process.exit(87), 300);
 	},
 	/** 向量记忆：绑定当前角色卡 + 当前对话会话 */
-	memoryScope: () => ({
-		sessionId: session.sessionId,
-		card: cardPath || undefined,
-	}),
+	memoryScope: () => memoryScopeFor(),
 	// 预设 AI 分拣等旁路声明：调当前会话模型做一次性判断（复用 streamSimple，同 StageEngine.#sideText）
 	runSideText: async (systemPrompt, userText, opts) => {
 		const model = session.model;
@@ -1684,26 +1721,26 @@ const storyBridge: StoryBridge = {
 	cardName: () => names.charName,
 	// 向量记忆作用域（M-D3 助手侧工具用）：与 restHost.memoryScope / 台上注入同一口径——
 	// 当前剧情会话 + 当前卡**路径**（scopeId 按路径 hash，只给卡名会落到另一个空作用域）。
-	memoryScope: () => ({ sessionId: session.sessionId, card: cardPath || undefined }),
+	memoryScope: () => memoryScopeFor(),
 	// 世界线视图（M-D5 助手侧 worldline_list 工具用）：从剧情会话树拉存档点
 	worldlineSaves: () => flattenWorldlineSaves(restHost.worldlineView()),
 	// 面板（M-D5 助手侧 panel_* 工具用）：当前剧情会话的面板读写
 	storyPanels: () => ({
 		load() {
-			const p = loadPanels(join(artifactsDir, `${session.sessionId}.json`));
+			const p = loadPanels(panelsFileOf());
 			const out: Record<string, { name: string; kind: "markdown" | "svg" | "html"; content: string; archived?: boolean }> = {};
 			for (const [k, v] of Object.entries(p)) out[k] = { name: v.name, kind: v.kind, content: v.content, archived: v.archived };
 			return out;
 		},
 		write(input) {
-			const file = join(artifactsDir, `${session.sessionId}.json`);
+			const file = panelsFileOf();
 			const panels = loadPanels(file);
 			const r = writePanel(panels, input);
 			if (r.ok) { savePanels(file, r.panels); syncStoryPanelsFromDisk(); }
 			return r;
 		},
 		close(name) {
-			const file = join(artifactsDir, `${session.sessionId}.json`);
+			const file = panelsFileOf();
 			const panels = loadPanels(file);
 			const r = closePanelInMap(panels, name);
 			if (r.ok) { savePanels(file, r.panels); syncStoryPanelsFromDisk(); }
@@ -2234,11 +2271,11 @@ const stage = new StageEngine({
 	},
 	getThinking: () => session.thinkingLevel,
 	// 场记落盘 → fs.watch 自动广播 state 帧（与扩展/REST 写路径同一条）
-	getStateFile: (sessionId) => join(stateDir, `${sessionId}.json`),
+	getStateFile: (sessionId) => stateFileOf(sessionId),
 	// memory_search 工具：剧情库 + 外部资料库合并取前 6（与扩展侧同一套语义）
 	// 分支隔离与被动召回同源——模型主动检索也不该捞到重roll 掉的那些拍。
 	searchMemory: async (sessionId, query) => {
-		const scope = { sessionId, card: cardPath || undefined };
+		const scope = memoryScopeFor(sessionId);
 		const ids = branchNodeIds();
 		const [narrative, external] = await Promise.all([
 			memorySearch(cwd, scope, "narrative", query, undefined, ids).catch(() => []),
@@ -2249,33 +2286,33 @@ const stage = new StageEngine({
 	// 【剧情记忆】每拍被动召回：与 memory_search 同一套 scope 绑定，但走 memoryRecallForTurn——
 	// 那里管着设置面板的「每轮自动检索并注入模型」开关（关 = 返回空 = 不出块）。
 	recallMemory: (sessionId, query) =>
-		memoryRecallForTurn(cwd, { sessionId, card: cardPath || undefined }, query, branchNodeIds()).catch(() => []),
+		memoryRecallForTurn(cwd, memoryScopeFor(sessionId), query, branchNodeIds()).catch(() => []),
 	// 向量库写侧三件（M-D3）：MemoryScope 一律在此绑定（当前对话 + 当前卡），**不经模型**。
 	// 写侧恒落 external——服务层 assertExtraStore 禁止手写剧情库，故工具不给 store 参数。
 	addMemory: (sessionId, input) =>
-		memoryManualAdd(cwd, { sessionId, card: cardPath || undefined }, input.text, {
+		memoryManualAdd(cwd, memoryScopeFor(sessionId), input.text, {
 			...(input.title ? { title: input.title } : {}),
 		}),
 	listMemory: (sessionId, storeId) =>
-		memoryListChunks(cwd, { sessionId, card: cardPath || undefined }, storeId),
+		memoryListChunks(cwd, memoryScopeFor(sessionId), storeId),
 	deleteMemory: (sessionId, storeId, id) =>
-		memoryDeleteChunk(cwd, { sessionId, card: cardPath || undefined }, storeId, id),
+		memoryDeleteChunk(cwd, memoryScopeFor(sessionId), storeId, id),
 	// 面板读写（M-D5）：按 session 绑定 artifacts 文件，注入后台上可通过 panel_write/read/close 操控面板
 	loadPanels: (sessionId) => {
-		const panels = loadPanels(join(artifactsDir, `${sessionId}.json`));
+		const panels = loadPanels(panelsFileOf(sessionId));
 		const result: Record<string, { name: string; kind: "markdown" | "svg" | "html"; content: string; archived?: boolean }> = {};
 		for (const [k, v] of Object.entries(panels)) result[k] = { name: v.name, kind: v.kind, content: v.content, archived: v.archived };
 		return result;
 	},
 	writePanel: (sessionId, input) => {
-		const file = join(artifactsDir, `${sessionId}.json`);
+		const file = panelsFileOf(sessionId);
 		const panels = loadPanels(file);
 		const r = writePanel(panels, input);
 		if (r.ok) { savePanels(file, r.panels); syncStoryPanelsFromDisk(); }
 		return r;
 	},
 	closePanel: (sessionId, name) => {
-		const file = join(artifactsDir, `${sessionId}.json`);
+		const file = panelsFileOf(sessionId);
 		const panels = loadPanels(file);
 		const r = closePanelInMap(panels, name);
 		if (r.ok) { savePanels(file, r.panels); syncStoryPanelsFromDisk(); }
@@ -2289,7 +2326,7 @@ const stage = new StageEngine({
 	// 这里不用）。分线与否交给 planNewSave 按当下树形算，模型说了不算。
 	storeSave: (_sessionId, name) => {
 		const sm = session.sessionManager;
-		const meta = loadWorldlineMeta(metaPath(cwd, session.sessionId));
+		const meta = loadWorldlineMeta(worldlineFileOf());
 		const entries: TreeEntryLite[] = sm.getEntries().map((e) => ({
 			id: e.id,
 			parentId: e.parentId,
@@ -2350,7 +2387,7 @@ const stage = new StageEngine({
 	ttsAvailable: () => loadTtsConfig() !== null,
 	// M4 压缩归档：被摘要覆盖的早期正文完整入剧情库——摘要管连续性，归档管细节召回
 	archiveCompacted: async (sessionId, text) => {
-		const r = await memoryArchiveCompacted(cwd, { sessionId, card: cardPath || undefined }, text);
+		const r = await memoryArchiveCompacted(cwd, memoryScopeFor(sessionId), text);
 		if (r.archived) {
 			broadcast({ type: "notify", level: "info", text: `向量记忆：早期剧情已归档（${r.chunks} 段，可 memory_search 召回）` });
 		}
@@ -2494,7 +2531,7 @@ const stage = new StageEngine({
 					}
 					const mem = await onNarrativeTurnEnd(
 						cwd,
-						{ sessionId: session.sessionId, card: cardPath || undefined },
+						memoryScopeFor(),
 						lastText,
 					);
 					if (mem.error) {

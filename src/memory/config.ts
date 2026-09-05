@@ -6,7 +6,7 @@
 import { createHash } from "node:crypto";
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
-import { DIRS } from "../paths.ts";
+import { CHAT_MEMORY_DIR, DIRS } from "../paths.ts";
 import {
 	DEFAULT_CLOUD_EMBED,
 	DEFAULT_MEMORY_CONFIG,
@@ -44,6 +44,8 @@ export function memoryScopeId(scope: MemoryScope): string {
 
 /** 某作用域下全部 store 的根目录 */
 export function memoryScopeRoot(cwd: string, scope: MemoryScope): string {
+	// 新布局：向量库住在子项目里，随卡目录一起拷走；scopeId 那套 hash 命名随之退役
+	if (scope.chatDir) return join(scope.chatDir, CHAT_MEMORY_DIR);
 	return join(memoryRoot(cwd), "scopes", memoryScopeId(scope));
 }
 

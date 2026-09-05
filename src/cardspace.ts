@@ -18,18 +18,24 @@
 
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
-import { basename, join } from "node:path";
+import { basename, dirname, join } from "node:path";
 
 import { readJsonFile } from "./jsonio.ts";
 import {
 	CARD_CONFIG_FILE,
 	CARDS_ROOT,
+	CHAT_ASSISTANT_DIR,
 	CHAT_META_FILE,
+	CHAT_PANELS_FILE,
+	CHAT_SESSIONS_DIR,
+	CHAT_STATE_FILE,
+	CHAT_WORLDLINE_FILE,
 	cardDirOf,
 	cardsRoot,
 	chatDirOf,
 	chatSessionsDirOf,
 	chatsRoot,
+	dir,
 	folderSafe,
 } from "./paths.ts";
 import type { RpConfig } from "./types.ts";
@@ -238,6 +244,64 @@ export function createChat(cardDir: string, opts?: { id?: string; name?: string;
 /** 最近活动的子项目（没有则 null——调用方决定是建一个还是报错） */
 export function latestChat(cardDir: string): ChatInfo | null {
 	return listChats(cardDir)[0] ?? null;
+}
+
+// ---------- 「当前是哪个子项目」——从会话目录反推，不另存状态 ----------
+
+/**
+ * 会话目录（`<子项目>/会话`）→ 子项目目录。
+ *
+ * **会话就住在子项目里，所以目录本身就是答案**：不需要在进程里另存一份「当前哪个子项目」，
+ * 也不需要把它传遍所有函数——凡是拿得到 `sessionManager.getSessionDir()` 的地方都能自己算出来。
+ * 不是这个形状（老布局的 `~/.liyuan/agent/sessions/--<cwd>--/`、内存会话）返回 null。
+ */
+export function chatDirOfSessionDir(sessionDir: string | undefined): string | null {
+	if (!sessionDir) return null;
+	const norm = sessionDir.replace(/[\\/]+$/, "");
+	if (basename(norm) !== CHAT_SESSIONS_DIR) return null;
+	const parent = dirname(norm);
+	return parent && parent !== norm ? parent : null;
+}
+
+/** 会话文件 → 子项目目录（`<子项目>/会话/x.jsonl`） */
+export function chatDirOfSessionFile(sessionFile: string | undefined): string | null {
+	if (!sessionFile) return null;
+	return chatDirOfSessionDir(dirname(sessionFile));
+}
+
+/** 子项目级数据的种类 → 文件名（老布局回落时按 sessionId 分文件，见 chatDataPath） */
+const CHAT_DATA_FILES = {
+	state: CHAT_STATE_FILE,
+	worldline: CHAT_WORLDLINE_FILE,
+	panels: CHAT_PANELS_FILE,
+} as const;
+
+const LEGACY_DIR_KEYS = { state: "state", worldline: "worldline", panels: "artifacts" } as const;
+
+export type ChatDataKind = keyof typeof CHAT_DATA_FILES;
+
+/**
+ * 子项目级数据的落点：**全仓唯一一处**「新布局还是老布局」的分叉。
+ *
+ * 新布局（会话在 `<子项目>/会话/` 里）→ `<子项目>/世界状态.json` 之类，一个子项目一份，
+ * 同一子项目里的多个会话看的是同一份账本——这正是「在第二个窗口继续聊」的意思。
+ * 老布局（没迁移过 / 内存会话 / 从别处打开的会话）→ 回落今天的 `.liyuan-state/<sessionId>.json`。
+ */
+export function chatDataPath(
+	cwd: string,
+	sessionDir: string | undefined,
+	sessionId: string,
+	kind: ChatDataKind,
+): string {
+	const chatDir = chatDirOfSessionDir(sessionDir);
+	if (chatDir) return join(chatDir, CHAT_DATA_FILES[kind]);
+	return join(dir(cwd, LEGACY_DIR_KEYS[kind]), `${sessionId}.json`);
+}
+
+/** 右栏助手的会话目录：跟着子项目走（老布局回落全局 `.liyuan-assistant/`） */
+export function chatAssistantDir(cwd: string, sessionDir: string | undefined): string {
+	const chatDir = chatDirOfSessionDir(sessionDir);
+	return chatDir ? join(chatDir, CHAT_ASSISTANT_DIR) : dir(cwd, "assistant");
 }
 
 // ---------- 卡级配置 ----------

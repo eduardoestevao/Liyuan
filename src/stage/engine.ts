@@ -24,7 +24,7 @@ import {
 	searchEntries,
 } from "../lorebook.ts";
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
-import { dir } from "../paths.ts";
+import { chatDataPath } from "../cardspace.ts";
 import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
 import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
@@ -103,6 +103,8 @@ export interface StageSessionManager {
 	/** CustomEntry（不进 LLM 上下文）：账本快照用 */
 	appendCustomEntry(customType: string, data?: unknown): string;
 	getSessionId(): string;
+	/** 会话所在目录：子项目级数据（面板/账本/世界线）的落点由它派生，见 src/cardspace.ts */
+	getSessionDir?(): string;
 	flush(): void;
 }
 
@@ -653,7 +655,7 @@ export class StageEngine {
 		// 每拍原样喂给模型纯属白烧，它要的只是里面那几十个字的事实。
 		let panelIndex: string | undefined;
 		try {
-			const panels = loadPanels(join(dir(cwd, "artifacts"), `${sm.getSessionId()}.json`));
+			const panels = loadPanels(chatDataPath(cwd, sm.getSessionDir?.(), sm.getSessionId(), "panels"));
 			panelIndex =
 				formatPanelSnapshot(panels, { data: state.panelData }) ?? formatPanelIndex(panels) ?? undefined;
 		} catch {
