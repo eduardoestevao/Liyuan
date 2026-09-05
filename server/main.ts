@@ -138,7 +138,9 @@ import { createAssistantHost, type AssistantHost, type StoryBridge } from "./ass
 import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { readSessionCardInfo } from "../src/session-scan.ts";
-import { chatDataPath, chatDirOfSessionDir } from "../src/cardspace.ts";
+import { chatDataPath, chatDirOfSessionDir, createChat } from "../src/cardspace.ts";
+import { chatSessionsOf, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
+import { resolveCardSpace } from "../src/cardspace.ts";
 import {
 	appendLorebookFileEntry,
 	appendOverlayEntry,
@@ -238,10 +240,16 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 	};
 };
 
-const runtime = await createAgentSessionRuntime(createRuntime, {
+// 刀4 引导：当前卡是 cards/ 卡文件夹 ⇒ 按两层布局定 sessionDir（最新子项目的会话目录）；
+// 否则 undefined ⇒ pi 默认目录（老布局，行为与今天一致）。--new 仍表示「开局就要干净的」。
+const bootGuide = storySessionTarget(cwd, cardPath);
+let runtime = await createAgentSessionRuntime(createRuntime, {
 	cwd,
 	agentDir: getAgentDir(),
-	sessionManager: newSessionFlag ? SessionManager.create(cwd) : SessionManager.continueRecent(cwd),
+	sessionManager:
+		newSessionFlag || (bootGuide.sessionDir === undefined && !bootGuide.space)
+			? SessionManager.create(cwd, bootGuide.sessionDir ?? undefined)
+			: SessionManager.continueRecent(cwd, bootGuide.sessionDir ?? undefined),
 });
 
 let session: AgentSession = runtime.session;
@@ -1162,10 +1170,14 @@ const bindSession = async () => {
 	});
 };
 
-runtime.setRebindSession(async () => {
-	await bindSession();
-	resyncAll(); // /branch 等替换会话后，所有端对齐新会话
-});
+/** 给 runtime 挂会话替换钩子（新建 runtime 时也要挂：new 帧「新开子项目」会换 runtime） */
+const wireRuntimeHooks = () => {
+	runtime.setRebindSession(async () => {
+		await bindSession();
+		resyncAll(); // /branch 等替换会话后，所有端对齐新会话
+	});
+};
+wireRuntimeHooks();
 await bindSession();
 
 // ---------- REST 宿主接口（rest.ts 经此触碰 pi；pi 类型不出本文件） ----------
@@ -1490,7 +1502,11 @@ const restHost: RestHost = {
 	},
 	// 删卡「相关数据」用：删除绑定某张卡的全部会话文件（rp-card 标记匹配）。
 	// 调用方须保证当前打开的会话已不属于该卡（删当前卡先切走再调本方法）。
+	// 两层布局：卡是 cards/ 卡文件夹 ⇒ 全部子项目都在该卡目录里，整卡删除由
+	// DELETE /api/cards 直接删卡文件夹完成，这里无事可做（返回 0 不撒谎——
+	// 老语义数的是会话文件数，此处由删除端点自己报子项目数）。
 	async deleteCardSessions(cardRel) {
+		if (resolveCardSpace(cwd, cardRel)) return 0;
 		const all = await SessionManager.list(cwd);
 		let n = 0;
 		for (const s of all) {
@@ -2724,7 +2740,12 @@ const isSameSessionPath = (a: string | undefined, b: string | undefined): boolea
 const sessionInfos = async () => {
 	// 每次列表前刷新卡路径，避免换卡后仍用旧 cardPath 滤错
 	refreshNamesFromConfig();
-	const all = await SessionManager.list(cwd);
+	// 两层布局：当前卡是 cards/ 卡文件夹 ⇒ 会话散在各子项目里，聚合起来
+	// （rp-card 过滤退役——子项目目录本身就是归属）；否则走老路径（pi 默认目录 + 卡过滤）。
+	const chatEntries = chatSessionsOf(cwd, cardPath);
+	const all = chatEntries
+		? (await Promise.all([...new Set(chatEntries.map((e) => e.path))].map((p) => SessionManager.listAll(p)))).flat()
+		: await SessionManager.list(cwd);
 	const curFile = session.sessionFile;
 	const curId = session.sessionId;
 	const list: Array<{
@@ -3015,7 +3036,28 @@ wss.on("connection", (ws, req) => {
 							ws.send(JSON.stringify({ type: "notify", level: "info", text: "当前已是新会话" } satisfies ServerFrame));
 							return;
 						}
-						await runtime.newSession();
+						// 两层布局：完全新开对话＝新建一个子项目——给 runtime 换一个
+						// 新 sessionDir 上的干净会话（换 runtime 是 pi 提供的唯一切 sessionDir 通道，
+						// switchSession 只能在既有文件间切）。同一子项目里再开会话＝
+						// 「第二个窗口继续聊」，由 switchSession/open 承担。老布局走 runtime.newSession()。
+						const freshDir = newChatSessionDir(cwd, cardPath);
+						if (freshDir) {
+							const previousSessionFile = session.sessionFile;
+							// 按 pi 的 teardownCurrent 同款收尾旧会话（session_shutdown → 扩展收尾 → dispose），
+							// 不能只丢引用：roleplay.ts 在 shutdown 事件里落盘收尾。
+							await session.dispose();
+							runtime = await createAgentSessionRuntime(createRuntime, {
+								cwd,
+								agentDir: getAgentDir(),
+								sessionManager: SessionManager.create(cwd, freshDir),
+								sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+							});
+							wireRuntimeHooks();
+							await bindSession();
+							resyncAll();
+						} else {
+							await runtime.newSession();
+						}
 						if (assistantHost) {
 							try {
 								await assistantHost.switchToStory(session.sessionId);
