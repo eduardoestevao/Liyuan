@@ -51,7 +51,7 @@ import { assistantToolDefs } from "./tool-adapter.ts";
 import { loadCardFile, addCardGreeting, deleteCardGreeting, updateCardFields, updateCardGreeting } from "../src/card.ts";
 import { appendLorebookFileEntry, appendOverlayEntry, loreFingerprint, overlayPathFor, searchEntries, toggleDisabledLore } from "../src/lorebook.ts";
 import { PANEL_KINDS } from "../src/panels.ts";
-import { dir, sameCardPath } from "../src/paths.ts";
+import { CHAT_ASSISTANT_DIR, dir, sameCardPath } from "../src/paths.ts";
 import { listSkills, saveSkill } from "../src/skills.ts";
 import {
 	buildStagehandInjection,
@@ -128,7 +128,7 @@ export interface StoryBridge {
 	 * 助手的记忆工具查的是**剧情那边**的库——用户问「你记得什么」问的不是助手自己的会话。
 	 * 必须给路径而非卡名：scopeId 按路径 hash（src/memory/config.ts:36）。
 	 */
-	memoryScope(): { sessionId: string; card?: string };
+	memoryScope(): { sessionId: string; card?: string; chatDir?: string };
 		/**
 		 * 世界线存档表（M-D5）：从当前剧情会话树抽存档点、组装视图、**摊平成表**。
 		 * 摊平归 src/worldline.ts 一份（`flattenWorldlineSaves`）——此前这里手抄的那份
@@ -942,8 +942,15 @@ function stagehandExtension(
 
 export async function createAssistantHost(opts: CreateAssistantHostOptions): Promise<AssistantHost> {
 	const { cwd, bridge, onEvent, onError, uiContext } = opts;
-	const sessionDir = dir(cwd, "assistant");
-	mkdirSync(sessionDir, { recursive: true });
+	// 助手会话目录跟子项目走（<子项目>/助手会话/，一个子项目一份——「第二个窗口继续聊」
+	// 时两边对的是同一段剧情）；剧情会话不在子项目里时回落全局 .liyuan-assistant/。
+	// bridge 每次问（不是启动时取一次）：剧情换会话/换子项目时目录跟着换。
+	const sessionDir = () => {
+		const chat = bridge.memoryScope().chatDir;
+		const d = chat ? join(chat, CHAT_ASSISTANT_DIR) : dir(cwd, "assistant");
+		mkdirSync(d, { recursive: true });
+		return d;
+	};
 
 	let session: AgentSession;
 	let unsubscribe: (() => void) | undefined;
@@ -1197,7 +1204,7 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 
 	const assertInSessionDir = (filePath: string) => {
 		const abs = resolve(filePath);
-		const root = resolve(sessionDir);
+		const root = resolve(sessionDir());
 		const n = (p: string) => normalize(p).replace(/\\/g, "/").toLowerCase().replace(/\/$/, "");
 		const na = n(abs);
 		const nr = n(root);
@@ -1227,10 +1234,10 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 		const config = loadConfig(cwd);
 		const sm =
 			mode.kind === "new"
-				? SessionManager.create(cwd, sessionDir)
+				? SessionManager.create(cwd, sessionDir())
 				: mode.kind === "open"
-					? SessionManager.open(mode.path, sessionDir, cwd)
-					: SessionManager.continueRecent(cwd, sessionDir);
+					? SessionManager.open(mode.path, sessionDir(), cwd)
+					: SessionManager.continueRecent(cwd, sessionDir());
 
 		const { session: s } = await createAgentSession({
 			cwd,
@@ -1420,7 +1427,7 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 		},
 		async listSessions() {
 			const { path: cardPath, name: cardName } = currentCard();
-			const all = await SessionManager.list(cwd, sessionDir);
+			const all = await SessionManager.list(cwd, sessionDir());
 			const curFile = session.sessionFile;
 			const curId = session.sessionId;
 			const isSame = (a?: string, b?: string) => {
@@ -1537,7 +1544,7 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 			}
 			// 在同卡助手历史里找绑定该 storyId 的会话
 			const { path: cardPath } = currentCard();
-			const all = await SessionManager.list(cwd, sessionDir);
+			const all = await SessionManager.list(cwd, sessionDir());
 			for (const s of all) {
 				const info = readAsstCard(s.path);
 				if (!info) continue;
