@@ -102,8 +102,10 @@ export function resolveCardSpace(cwd: string, ref: string): CardSpace | null {
 	const rel = ref.replace(/\\/g, "/").replace(/^\.\//, "").replace(/\/+$/, "");
 	const prefix = `${CARDS_ROOT}/`;
 	if (!rel.startsWith(prefix)) return null;
-	const folder = rel.slice(prefix.length);
-	if (!folder || folder.includes("/")) return null; // 只认一级目录
+	const rest = rel.slice(prefix.length);
+	// ref 可能指到卡本体文件（cards/<文件夹>/<文件>.png）——认第一个路径段当文件夹
+	const folder = rest.split("/")[0] ?? "";
+	if (!folder) return null; // 裸 cards/：不认
 	const dirAbs = cardDirOf(cwd, folder);
 	if (!existsSync(dirAbs)) return null;
 	const cardFile = cardFileIn(dirAbs);

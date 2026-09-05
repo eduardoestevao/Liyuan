@@ -68,10 +68,12 @@ test("卡文件夹：resolveCardSpace 只认 cards/ 下的一级目录", () => {
 		// 反斜杠 / ./ 前缀 / 结尾斜杠都认
 		assert.ok(resolveCardSpace(cwd, "cards\\某卡"));
 		assert.ok(resolveCardSpace(cwd, "./cards/某卡/"));
-		// 旧的「卡是文件」写法、二级目录、目录不存在：一律不认（调用方按老路径处理）
+		// 指到卡本体文件也认（config.card 的实际写法）：取第一个路径段当文件夹
+		assert.ok(resolveCardSpace(cwd, "cards/某卡/卡本体.png"), "config.card 指着卡本体时也应解析");
+		// 旧的「卡是文件」写法、目录不存在：一律不认（调用方按老路径处理）
 		assert.equal(resolveCardSpace(cwd, "assets/cards/a.png"), null);
-		assert.equal(resolveCardSpace(cwd, "cards/某卡/对话"), null);
 		assert.equal(resolveCardSpace(cwd, "cards/没有这张"), null);
+		assert.equal(resolveCardSpace(cwd, "cards"), null);
 		assert.equal(resolveCardSpace(cwd, ""), null);
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });

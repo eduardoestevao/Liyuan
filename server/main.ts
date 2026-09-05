@@ -3032,7 +3032,9 @@ wss.on("connection", (ws, req) => {
 						// 再建一个**语义等价**——同一张卡、同样的开局——却要付一次 hello 帧的全量界面
 						// 重建（messages 整体替换 + 卡皮肤重挂 + 会话列表清空重拉），还在会话列表里
 						// 堆一个空会话。这正是「哪怕单纯重复点击也刷新一次」的来源。
-						if (!lastStoryUserId()) {
+						// 幂等短路只对老布局成立（同 sessionDir 下再建一个语义等价的空会话是浪费）；
+						// cards/ 卡上「新开对话」永远是新子项目，没有等价一说，不短路。
+						if (!lastStoryUserId() && !resolveCardSpace(cwd, cardPath)) {
 							ws.send(JSON.stringify({ type: "notify", level: "info", text: "当前已是新会话" } satisfies ServerFrame));
 							return;
 						}
