@@ -79,15 +79,18 @@ cards/                       ← 卡库（新顶层，整棵用户私有数据�
 | 刀2 | 布局词汇（paths.ts）+ `src/cardspace.ts`（发现/建立/元数据/卡级配置）+ 四处红线同步 | `cf6d972` |
 | 刀3a | 迁移器 `src/migrate-cards.ts`（plan/apply 分离、幂等）+ 会话扫描收口 `src/session-scan.ts` | `d4ed0cb` |
 | 刀3b | 子项目级数据落点接线：state/panels/worldline/memory 四族全走 `chatDataPath`，老布局自动回落 | `bf7fbc4` |
+| 刀4 | 启动引导/新开对话/会话列表按两层布局接线（`src/story-guide.ts`：不换 cwd，全用 pi 显式 sessionDir；助手会话目录跟子项目走；new 帧＝新子项目/换 runtime）；端到端 6/6 | `3a7c342`→`c7b3e2a` |
 
 每刀验证口径：全量测试逐项对照（既有 2 个红是本地卡库形状问题，与本工作无关）+ 实起
 `node server/main.ts` 探活 +（触到引擎的刀）无预设实弹一拍，拍后核对数据落点与还原现场。
 
-## 八 剩余（刀4/刀5，未动）
+## 八 剩余
 
-- **刀4 换源头**：`server/main.ts:166` cwd 常量 → 当前卡目录；启动时跑迁移；`sessionInfos`/
-  换卡/删卡改读 `cards/`；会话列表从 `SessionManager.list(cwd)` 改为按子项目列；`/api/card/switch`
-  语义改为「换卡＝换卡文件夹」；新旧引用并存期（`assets/cards` 里还有文件时）的兼容读。
+- ~~刀4~~（已完成，见 §七）：**没有换 cwd**——设计定为「卡目录经 resolveCardSpace 进入、
+  会话引导用 pi 显式 sessionDir」，`main.ts:166` 的 cwd 保持项目根不动（换 cwd 会把
+  `.liyuan/`、assets、node_modules 的解析全部扯进来，收益为零——sessionDir 参数已覆盖）。
+- **刀4 尾巴**：启动跑迁移（`planCardMigration`→`applyCardMigration` + 改写 `config.card`
+  与 rp-card 标记）——真跑前做一次全量备份，跑法照 `_baseline0/dao4-e2e.mjs` 的沙箱先演练。
 - **刀5 退名单**：三套卡归属口径（`sameCardPath` 7 处 / `rp-card` 自描述 / 卡hash＋卡名两套）
   收敛退役；`backup.ts` 按卡目录枚举；前端会话列表改两层展示。
 - 铁律核查（每刀动手前）：全集＝所有卡与未迁移的老用户；负责人＝`cards/` 目录本身；
