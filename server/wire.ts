@@ -814,34 +814,11 @@ export function assistantMediaOfToolResult(msg: MsgLike): AssistantMsg | null {
  * 从会话 JSONL 文本解析 rp-card 自描述条目（PLAN-PHASE3 §2.1）。
  * 取**最后一条**（换卡后会补写新标记；旧标记可能仍留在文件前部）。
  * 读前若干 KB 通常够；大会话若标记在尾部由调用方扩大窗口。
+ *
+ * 实现已收到 `src/session-scan.ts`（迁移器也要按同一判据给会话分卡，不再各写一份）；
+ * 这里同名再导出，既有调用方不改。
  */
-export function parseCardFromSessionHead(
-	headText: string,
-): { card: string; name: string; storyId?: string } | null {
-	let found: { card: string; name: string; storyId?: string } | null = null;
-	for (const line of headText.split(/\r?\n/)) {
-		if (!line.includes('"rp-card"')) continue; // 快速跳过
-		try {
-			const e = JSON.parse(line) as {
-				type?: unknown;
-				customType?: unknown;
-				data?: { card?: unknown; name?: unknown; storyId?: unknown };
-			};
-			if (e.type === "custom" && e.customType === "rp-card" && e.data && typeof e.data.card === "string") {
-				found = {
-					card: e.data.card,
-					name: typeof e.data.name === "string" ? e.data.name : "",
-					...(typeof e.data.storyId === "string" && e.data.storyId.trim()
-						? { storyId: e.data.storyId.trim() }
-						: {}),
-				};
-			}
-		} catch {
-			// 半行/损坏行跳过
-		}
-	}
-	return found;
-}
+export { parseCardFromSessionHead } from "../src/session-scan.ts";
 
 /** 工具结果 → 过程条摘要文本（取首个 text 块，截断） */
 export function summarizeToolResult(result: unknown, maxChars = 200): string {

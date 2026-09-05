@@ -125,7 +125,6 @@ const agentHome = preferLiyuanAgentHome();
 import {
 	assistantMediaOfToolResult,
 	isBackstageText,
-	parseCardFromSessionHead,
 	skinAtDepth,
 	summarizeToolResult,
 	toAssistantHistory,
@@ -139,6 +138,7 @@ import {
 import { createAssistantHost, type AssistantHost, type StoryBridge } from "./assistant.ts";
 import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
+import { readSessionCardInfo } from "../src/session-scan.ts";
 import {
 	appendLorebookFileEntry,
 	appendOverlayEntry,
@@ -2663,29 +2663,8 @@ const cardCache = new Map<string, { mtimeMs: number; info: { card: string; name:
 const readSessionCard = (path: string, mtimeMs: number): { card: string; name: string } | null => {
 	const cached = cardCache.get(path);
 	if (cached && cached.mtimeMs === mtimeMs) return cached.info;
-	let info: { card: string; name: string } | null = null;
-	try {
-		// 取最后一条 rp-card：头 64KB + 尾 64KB（换卡后新标记 append 在文件末尾）
-		const size = statSync(path).size;
-		const fd = openSync(path, "r");
-		try {
-			const headLen = Math.min(size, 65536);
-			const headBuf = Buffer.alloc(headLen);
-			readSync(fd, headBuf, 0, headLen, 0);
-			let text = headBuf.toString("utf8");
-			if (size > 65536) {
-				const tailLen = Math.min(size - headLen, 65536);
-				const tailBuf = Buffer.alloc(tailLen);
-				readSync(fd, tailBuf, 0, tailLen, size - tailLen);
-				text += "\n" + tailBuf.toString("utf8");
-			}
-			info = parseCardFromSessionHead(text);
-		} finally {
-			closeSync(fd);
-		}
-	} catch {
-		info = null;
-	}
+	// 扫描实现在 src/session-scan.ts（迁移器按同一判据给会话分卡）；这里只管 mtime 缓存
+	const info = readSessionCardInfo(path);
 	cardCache.set(path, { mtimeMs, info });
 	return info;
 };
