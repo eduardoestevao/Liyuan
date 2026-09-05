@@ -4,7 +4,8 @@
  * 契约：
  * - 只认 .liyuan-cache/update/pending.json（由 src/update.ts downloadAndStage 写入）
  * - **白名单覆盖**：只替换下方 CODE_PATHS 里的代码路径；用户数据（liyuan.config.json、
- *   liyuan.agent.json、assets/cards、assets/lorebooks、全部 .liyuan-* 数据目录、
+ *   liyuan.agent.json、assets/cards、assets/lorebooks、cards/（卡＝工作空间，含每张卡的
+ *   卡级配置与全部子项目的会话/账本）、全部 .liyuan-* 数据目录、
  *   node_modules）绝不触碰
  * - 覆盖前把旧代码备份到 .liyuan-cache/backup-<旧版本>/（同白名单），失败按备份回滚
  * - package.json 依赖有变时删 node_modules/.liyuan-deps-ok 标记，启动脚本据此重跑 npm install

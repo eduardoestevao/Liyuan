@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { readJsonFile } from "./jsonio.ts";
-import { dir } from "./paths.ts";
+import { dir, nameSafe } from "./paths.ts";
 import type { LorebookEntry } from "./types.ts";
 
 /**
@@ -413,7 +413,7 @@ const OVERLAY_UID_BASE = 9000;
 
 /** 补充设定集文件路径（按卡分文件；扩展与 server 面板共用此推导） */
 export function overlayPathFor(cwd: string, cardName: string): string {
-	return join(dir(cwd, "lore"), `${cardName.replace(/[\\/:*?"<>|]/g, "_")}.json`);
+	return join(dir(cwd, "lore"), `${nameSafe(cardName)}.json`);
 }
 
 export interface OverlayEntryInput {

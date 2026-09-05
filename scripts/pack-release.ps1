@@ -184,6 +184,9 @@ function Stage-Clean {
     "scratch", "summaries", "output", "persist",
     "ab-test", "import-test", "liyuan-profiles",
     "data",
+    # 卡＝工作空间：cards/<卡文件夹>/ 整棵是用户私有数据（卡本体 + 卡级配置 +
+    # 每个子项目的会话/账本/世界线）。漏掉这一行 = 把用户的卡打进公开发布包。
+    "cards",
     "assets/gen", "assets/presets"
   )
   $xf = @(
@@ -324,7 +327,8 @@ skip_dirs = {
   '.liyuan-artifacts', '.liyuan-assistant', '.liyuan-codex', '.liyuan-lore',
   '.liyuan-media', '.liyuan-memory', '.liyuan-skills', '.liyuan-state',
   '.liyuan-uploads', '.liyuan-audio', '.liyuan-worldline',
-  '.rp-media', '.rp-uploads'
+  '.rp-media', '.rp-uploads',
+  'cards'
 }
 exec_names = {'start.sh', 'start.command', 'install.sh', 'docker-entrypoint.sh'}
 with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:

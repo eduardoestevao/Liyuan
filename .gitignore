@@ -66,6 +66,11 @@ assets/ab-test/
 assets/import-test/
 assets/personas/
 
+# 卡＝工作空间（cards/<卡文件夹>/）：卡本体、卡级配置、每个子项目的会话与账本全在里面，
+# 整棵都是用户私有数据。与上面同一条红线：卡不进公开产物。
+# 同口径的另两处：pack-release.ps1 的 $xd（发布包排除）、.dockerignore。
+cards/
+
 # local debug screenshots (not for testers)
 web/shot-*.png
 web/bug-*.png

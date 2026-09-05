@@ -77,6 +77,82 @@ const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 	memory: ".rp-memory", // 未使用过；占位
 };
 
+// ---------- 卡＝工作空间：两层布局（2026-09-06 用户定案 B）----------
+//
+// 用户定的形状（原话大意）：**最外面一层是卡**；卡下面是**子项目——每一个独立的对话
+// 就是一个子项目**；一个子项目里**能包含很多会话**（一种是能在第二个会话窗口继续聊
+// 的同一段剧情，另一种是完全新开的对话＝新的子项目）。
+//
+//   cards/<卡文件夹>/                 ← 一张卡＝一个工作空间
+//     <卡本体>.png|json
+//     卡.json                         ← 卡级配置（跟卡走的字段，见 src/cardspace.ts）
+//     补充设定集.json                  ← agent 写的世界书（旧 .liyuan-lore/<卡名>.json）
+//     技能/  记忆/
+//     对话/<对话id>/                   ← 子项目：一个独立的对话
+//       对话.json                     ← 子项目元数据（名字/建于何时）
+//       会话/*.jsonl                   ← pi 的 sessionDir：本子项目的多个会话
+//       世界状态.json  世界线.json  面板.json  向量记忆/  助手会话/
+//
+// `assets/cards/` 退成**导入暂存区**；世界书库（assets/lorebooks）与预设库仍全局共享，
+// 卡级只存「挂哪几本 / 用哪份预设」的指针。
+/** 卡库根（相对产品根） */
+export const CARDS_ROOT = "cards";
+/** 卡文件夹内：卡级配置 */
+export const CARD_CONFIG_FILE = "卡.json";
+/** 卡文件夹内：agent 写的补充设定集（旧 .liyuan-lore/<卡名>.json） */
+export const CARD_OVERLAY_FILE = "补充设定集.json";
+/** 卡文件夹内：本卡的技能 */
+export const CARD_SKILLS_DIR = "技能";
+/** 卡文件夹内：跨对话记忆（第二步用） */
+export const CARD_MEMORY_DIR = "记忆";
+/** 卡文件夹内：子项目层 */
+export const CHATS_DIR = "对话";
+/** 子项目内：元数据 */
+export const CHAT_META_FILE = "对话.json";
+/** 子项目内：会话目录（＝ pi 的 sessionDir） */
+export const CHAT_SESSIONS_DIR = "会话";
+/** 子项目内：世界状态账本（旧 .liyuan-state/<sessionId>.json） */
+export const CHAT_STATE_FILE = "世界状态.json";
+/** 子项目内：世界线元数据（旧 .liyuan-worldline/<sessionId>.json） */
+export const CHAT_WORLDLINE_FILE = "世界线.json";
+/** 子项目内：面板（旧 .liyuan-artifacts/<sessionId>.json） */
+export const CHAT_PANELS_FILE = "面板.json";
+/** 子项目内：向量记忆（旧 .liyuan-memory/scopes/<cardHash>__<sessionId>/） */
+export const CHAT_MEMORY_DIR = "向量记忆";
+/** 子项目内：右栏助手的会话（旧全局 .liyuan-assistant/ + sameCardPath 事后过滤） */
+export const CHAT_ASSISTANT_DIR = "助手会话";
+
+/** 文件名安全化：卡名可能含 `\/:*?"<>|`，落盘前统一换 `_`（唯一实现，别再各写一份） */
+export function nameSafe(name: string): string {
+	return name.replace(/[\\/:*?"<>|]/g, "_");
+}
+
+/**
+ * 文件**夹**名：在 `nameSafe` 之上再去掉结尾的空白与点——Windows 建不出这种目录名。
+ * （`nameSafe` 不做这一步：既有落点如补充设定集文件名必须逐字不变。）
+ */
+export function folderSafe(name: string): string {
+	return nameSafe(name).replace(/[\s.]+$/, "").trim();
+}
+
+export function cardsRoot(cwd: string): string {
+	return join(cwd, CARDS_ROOT);
+}
+/** 卡文件夹绝对路径（folder ＝ cards/ 下的一级目录名） */
+export function cardDirOf(cwd: string, folder: string): string {
+	return join(cardsRoot(cwd), folder);
+}
+export function chatsRoot(cardDir: string): string {
+	return join(cardDir, CHATS_DIR);
+}
+export function chatDirOf(cardDir: string, chatId: string): string {
+	return join(chatsRoot(cardDir), chatId);
+}
+/** 子项目的会话目录：显式传给 SessionManager 的 sessionDir（pi 的 create/open/list 都收） */
+export function chatSessionsDirOf(cardDir: string, chatId: string): string {
+	return join(chatDirOf(cardDir, chatId), CHAT_SESSIONS_DIR);
+}
+
 export const PERSONAS_FILE = ".liyuan-personas.json";
 /** MCP 外设配置（项目根单文件；`src/mcp.ts` 同名再导出给既有调用方） */
 export const MCP_CONFIG_FILE = ".liyuan-mcp.json";
