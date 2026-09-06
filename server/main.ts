@@ -1163,6 +1163,13 @@ const syncCardMemoryOnce = async (cardDir: string) => {
 			console.error(`[card-memory] 同步未完成：复盘失败 ${r.failed.length} 局、合并 ${r.merged}`);
 		} else if (r.recapped.length + r.forgotten.length > 0) {
 			console.log(`[card-memory] 同步完成：复盘 ${r.recapped.length} 局、遗忘 ${r.forgotten.length} 局`);
+			// 活动条只在拍内可见（拍外来的会被下一拍的 resetActs 清掉），完成时另给一条
+			// notify（与「已钉档」同一通道）——只在真动了记忆时出声，无变化保持安静。
+			broadcast({
+				type: "notify",
+				level: "info",
+				text: `记忆已更新：复盘 ${r.recapped.length} 局${r.forgotten.length ? `、遗忘 ${r.forgotten.length} 局` : ""}`,
+			});
 		}
 	} catch (err) {
 		console.error(`[card-memory] 同步异常：${err instanceof Error ? err.message : String(err)}`);
