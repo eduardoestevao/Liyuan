@@ -138,9 +138,9 @@ import { createAssistantHost, type AssistantHost, type StoryBridge } from "./ass
 import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { readSessionCardInfo } from "../src/session-scan.ts";
-import { chatDataPath, chatDirOfSessionDir, createChat } from "../src/cardspace.ts";
+import { cardDirOfChatDir, cardFileIn, chatDataPath, chatDirOfSessionDir, createChat, loadCardConfig, mergeCardConfig, resolveCardSpace } from "../src/cardspace.ts";
 import { chatSessionsOf, chatsOfCard, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
-import { resolveCardSpace } from "../src/cardspace.ts";
+import { syncCardMemory } from "../src/card-memory.ts";
 import { alreadyMigrated, applyCardMigration, planCardMigration } from "../src/migrate-cards.ts";
 import {
 	appendLorebookFileEntry,
@@ -1046,6 +1046,153 @@ const uiContext = {
 	setToolsExpanded: noop,
 };
 
+// 旁路条目解析的告警去重：每拍都会问一次，配错了不能每拍刷一条
+let warnedSideEntry = "";
+
+/**
+ * 旁路条目：`config.sideModel` 指向连接配置里的一条模型条目（provider + 条目名）。
+ * 没配 = 返回 undefined = 调用方跟随剧情模型（旧行为逐字不变）。
+ * 条目找不到 / 模型不可用 / 没 key 时告警一次并回落——绝不因为一条配错的旁路把正事丢掉。
+ * 场记/压缩（引擎）与跨会话记忆同步（本文件）共用这一个主人。
+ */
+const sideEntryOf = (): { model: StageModelLike; thinking?: string; label?: string } | undefined => {
+	const sel = loadConfig(cwd).sideModel;
+	if (!sel) return undefined;
+	const tag = `${sel.provider}/${sel.entry}`;
+	const warn = (why: string): undefined => {
+		if (warnedSideEntry !== tag + why) {
+			warnedSideEntry = tag + why;
+			console.error(`[stage-side] 旁路条目 ${tag} ${why}，本次回落跟随剧情模型`);
+		}
+		return undefined;
+	};
+	try {
+		const agent = loadAgentConfig(cwd).config;
+		const entry = findModelEntry(agent.providers?.[sel.provider]?.models, sel.entry);
+		if (!entry) return warn("不在连接配置里");
+		const m = session.modelRegistry.find(sel.provider, entry.id);
+		if (!m) return warn(`模型 ${entry.id} 不在可用清单`);
+		if (!session.modelRegistry.hasConfiguredAuth(m)) return warn("缺少 API key");
+		if (warnedSideEntry) warnedSideEntry = "";
+		const thinking = thinkingLevelOfEntry(agent, sel.provider, sel.entry);
+		return { model: m as never, ...(thinking ? { thinking } : {}), label: sel.entry };
+	} catch (err) {
+		return warn(`解析失败（${err instanceof Error ? err.message : String(err)}）`);
+	}
+};
+
+/**
+ * 一次性旁路文本调用（单发）。restHost.runSideText（预设分拣等旁路声明）与
+ * 跨会话记忆同步共用这一条——同 StageEngine.#sideText 的调用形状。
+ * 走哪条模型由调用方给（剧情模型，或 sideEntryOf 解出的旁路条目）。
+ */
+const sideTextOnce = async (
+	model: StageModelLike | undefined,
+	systemPrompt: string,
+	userText: string,
+	opts?: { maxTokens?: number; reasoning?: string; signal?: AbortSignal },
+): Promise<string | { error: string }> => {
+	if (!model) return { error: "无可用模型" };
+	let auth: { apiKey?: string; headers?: Record<string, string> } = {};
+	try {
+		auth = (await session.modelRegistry.getApiKeyAndHeaders(model as never)) as typeof auth;
+	} catch (e) {
+		return { error: e instanceof Error ? e.message : String(e) };
+	}
+	try {
+		const s = (streamSimple as unknown as StageStreamFn)(
+			model as unknown as StageModelLike,
+			{ systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }] },
+			{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: opts?.maxTokens ?? 4096, reasoning: opts?.reasoning ?? "off", signal: opts?.signal },
+		);
+		let final: AssistantMsgLike | null = null;
+		for await (const e of s) {
+			if (e.type === "done") final = e.message ?? null;
+			else if (e.type === "error") return { error: e.error?.errorMessage || `stopReason=${e.error?.stopReason ?? "?"}` };
+		}
+		if (!final) return { error: "流未产出最终消息" };
+		const text = final.content
+			.filter((c) => c.type === "text")
+			.map((c) => c.text ?? "")
+			.join("")
+			.trim();
+		return text || { error: "最终消息无文本" };
+	} catch (err) {
+		return { error: err instanceof Error ? err.message : String(err) };
+	}
+};
+
+/**
+ * 跨会话记忆同步（第二步）：当前会话落在 cards/ 的某个子项目里才发生——内容变了的
+ * 子项目逐个复盘，复盘文件有增/改/删就合并＋遗忘。进度走活动条（name=memory）；
+ * 全程后台，失败只进日志——记忆滞后不影响演出。
+ */
+const memorySyncBusy = new Set<string>();
+const memorySyncQueued = new Set<string>();
+
+/** 给一张卡做一次记忆同步（模型/素材现读；任何失败只进日志、绝不抛出） */
+const syncCardMemoryOnce = async (cardDir: string) => {
+	try {
+		// 素材取自这张卡自己：卡本体在卡文件夹里，配置＝全局与卡级合并（与台上同语义）
+		const cardFile = cardFileIn(cardDir);
+		if (!cardFile) return;
+		const card = loadCardFile(cardFile);
+		const config = mergeCardConfig(loadConfig(cwd), loadCardConfig(cardDir));
+		// 旁路条目与场记/压缩同一条规则（sideEntryOf 是唯一主人）：配了走它，没配跟随剧情模型
+		const side = sideEntryOf();
+		const chosen = (side?.model ?? session.model) as StageModelLike | undefined;
+		if (!chosen) return; // 还没配模型：下次落会话再同步
+		const r = await syncCardMemory(
+			{
+				sideText: (sp, ut, maxTokens) =>
+					sideTextOnce(chosen, sp, ut, {
+						maxTokens,
+						reasoning: side?.thinking ?? "off",
+						signal: AbortSignal.timeout(300_000),
+					}),
+				onActivity: (detail) => broadcast({ type: "activity", activity: { kind: "note", name: "memory", detail } }),
+			},
+			{
+				cardDir,
+				language: config.language,
+				userName: config.userName,
+				charName: card.name,
+			},
+		);
+		if (r.failed.length > 0 || r.merged === "failed") {
+			console.error(`[card-memory] 同步未完成：复盘失败 ${r.failed.length} 局、合并 ${r.merged}`);
+		} else if (r.recapped.length + r.forgotten.length > 0) {
+			console.log(`[card-memory] 同步完成：复盘 ${r.recapped.length} 局、遗忘 ${r.forgotten.length} 局`);
+		}
+	} catch (err) {
+		console.error(`[card-memory] 同步异常：${err instanceof Error ? err.message : String(err)}`);
+	}
+};
+
+const runCardMemorySync = (cardDir: string) => {
+	memorySyncBusy.add(cardDir);
+	void syncCardMemoryOnce(cardDir).finally(() => {
+		memorySyncBusy.delete(cardDir);
+		if (memorySyncQueued.delete(cardDir)) runCardMemorySync(cardDir); // 忙时来的触发：收尾后带上最新内容补跑
+	});
+};
+
+const syncMemoryForSession = () => {
+	try {
+		const chatDir = chatDirOfSessionDir(session.sessionManager.getSessionDir());
+		if (!chatDir) return; // 老布局/内存会话：行为与今天一致
+		const cardDir = cardDirOfChatDir(chatDir);
+		if (!cardDir) return;
+		if (memorySyncBusy.has(cardDir)) {
+			memorySyncQueued.add(cardDir);
+			return;
+		}
+		runCardMemorySync(cardDir);
+	} catch (err) {
+		console.error(`[card-memory] 触发同步异常：${err instanceof Error ? err.message : String(err)}`);
+	}
+};
+
 const bindSession = async () => {
 	session = runtime.session;
 	// 账本/面板的落点跟着会话走（子项目一份）：换会话/换子项目后要重挂目录监听
@@ -1188,6 +1335,10 @@ const bindSession = async () => {
 				break;
 		}
 	});
+
+	// 第二步·跨会话记忆：落进某个会话（启动/切会话/换子项目）就给这张卡同步一次。
+	// 后台进行不等它；老布局（会话不在 cards/ 里）内部自行短路。
+	syncMemoryForSession();
 };
 
 /** 给 runtime 挂会话替换钩子（新建 runtime 时也要挂：new 帧「新开子项目」会换 runtime） */
@@ -1644,39 +1795,13 @@ const restHost: RestHost = {
 	},
 	/** 向量记忆：绑定当前角色卡 + 当前对话会话 */
 	memoryScope: () => memoryScopeFor(),
-	// 预设 AI 分拣等旁路声明：调当前会话模型做一次性判断（复用 streamSimple，同 StageEngine.#sideText）
-	runSideText: async (systemPrompt, userText, opts) => {
-		const model = session.model;
-		if (!model) return { error: "无可用模型" };
-		let auth: { apiKey?: string; headers?: Record<string, string> } = {};
-		try {
-			auth = (await session.modelRegistry.getApiKeyAndHeaders(model as never)) as typeof auth;
-		} catch (e) {
-			return { error: e instanceof Error ? e.message : String(e) };
-		}
-		const streamFn = streamSimple as unknown as StageStreamFn;
-		try {
-			const s = streamFn(
-				model as unknown as StageModelLike,
-				{ systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }] },
-				{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: opts?.maxTokens ?? 4096, reasoning: opts?.reasoning ?? "off", signal: opts?.signal },
-			);
-			let final: AssistantMsgLike | null = null;
-			for await (const e of s) {
-				if (e.type === "done") final = e.message ?? null;
-				else if (e.type === "error") return { error: e.error?.errorMessage || `stopReason=${e.error?.stopReason ?? "?"}` };
-			}
-			if (!final) return { error: "流未产出最终消息" };
-			const text = final.content
-				.filter((c) => c.type === "text")
-				.map((c) => c.text ?? "")
-				.join("")
-				.trim();
-			return text || { error: "最终消息无文本" };
-		} catch (err) {
-			return { error: err instanceof Error ? err.message : String(err) };
-		}
-	},
+	// 预设 AI 分拣等旁路声明：调当前会话模型做一次性判断（sideTextOnce，与跨会话记忆同步同一条）
+	runSideText: (systemPrompt, userText, opts) =>
+		sideTextOnce(session.model as StageModelLike | undefined, systemPrompt, userText, {
+			maxTokens: opts?.maxTokens ?? 4096,
+			reasoning: opts?.reasoning ?? "off",
+			signal: opts?.signal,
+		}),
 };
 
 // 启动时：liyuan.agent.json → models.json，重绑模型 + 应用思考档（配置 → 当前生效）
@@ -2272,44 +2397,13 @@ const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
 // ---------- 台上引擎（PLAN-RP-HARNESS R1：叙事回合走自建循环，pi 只留幕后） ----------
 
-// 旁路条目解析的告警去重：每拍都会问一次，配错了不能每拍刷一条
-let warnedSideEntry = "";
-
 const stage = new StageEngine({
 	cwd,
 	getSessionManager: () => session.sessionManager as never,
 	getModel: () => session.model as never,
 	getAuth: async (m) => session.modelRegistry.getApiKeyAndHeaders(m as never),
-	/**
-	 * 旁路条目：`config.sideModel` 指向连接配置里的一条模型条目（provider + 条目名）。
-	 * 没配 = 返回 undefined = 引擎跟随剧情模型（旧行为逐字不变）。
-	 * 条目找不到 / 模型不可用 / 没 key 时告警一次并回落——绝不因为一条配错的旁路把整拍记账丢掉。
-	 */
-	getSideEntry: () => {
-		const sel = loadConfig(cwd).sideModel;
-		if (!sel) return undefined;
-		const tag = `${sel.provider}/${sel.entry}`;
-		const warn = (why: string): undefined => {
-			if (warnedSideEntry !== tag + why) {
-				warnedSideEntry = tag + why;
-				console.error(`[stage-side] 旁路条目 ${tag} ${why}，本次回落跟随剧情模型`);
-			}
-			return undefined;
-		};
-		try {
-			const agent = loadAgentConfig(cwd).config;
-			const entry = findModelEntry(agent.providers?.[sel.provider]?.models, sel.entry);
-			if (!entry) return warn("不在连接配置里");
-			const m = session.modelRegistry.find(sel.provider, entry.id);
-			if (!m) return warn(`模型 ${entry.id} 不在可用清单`);
-			if (!session.modelRegistry.hasConfiguredAuth(m)) return warn("缺少 API key");
-			if (warnedSideEntry) warnedSideEntry = "";
-			const thinking = thinkingLevelOfEntry(agent, sel.provider, sel.entry);
-			return { model: m as never, ...(thinking ? { thinking } : {}), label: sel.entry };
-		} catch (err) {
-			return warn(`解析失败（${err instanceof Error ? err.message : String(err)}）`);
-		}
-	},
+	// 旁路条目（场记/压缩用）：sideEntryOf 是唯一主人，定义与语义见 bindSession 前
+	getSideEntry: sideEntryOf,
 	getThinking: () => session.thinkingLevel,
 	// 场记落盘 → fs.watch 自动广播 state 帧（与扩展/REST 写路径同一条）
 	getStateFile: (sessionId) => stateFileOf(sessionId),

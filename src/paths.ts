@@ -103,8 +103,16 @@ export const CARD_CONFIG_FILE = "卡.json";
 export const CARD_OVERLAY_FILE = "补充设定集.json";
 /** 卡文件夹内：本卡的技能 */
 export const CARD_SKILLS_DIR = "技能";
-/** 卡文件夹内：跨对话记忆（第二步用） */
+/** 卡文件夹内：跨对话记忆（第二步，见 src/card-memory.ts） */
 export const CARD_MEMORY_DIR = "记忆";
+/** 记忆/ 内：常驻摘要（每拍进上下文的那一层，有字数上限） */
+export const CARD_MEMORY_RESIDENT_FILE = "常驻摘要.md";
+/** 记忆/ 内：合并后的手册（按局分块，供检索层；人可读可改） */
+export const CARD_MEMORY_HANDBOOK_FILE = "记忆.md";
+/** 记忆/ 内：一局一份复盘（一局＝一个子项目）；删掉一份＝遗忘只由它支撑的记忆 */
+export const CARD_MEMORY_RECAPS_DIR = "局";
+/** 记忆/ 内：harness 的记账（哪局复盘到哪、上次合并见过哪些文件）；不是记忆内容 */
+export const CARD_MEMORY_MANIFEST_FILE = ".清单.json";
 /** 卡文件夹内：子项目层 */
 export const CHATS_DIR = "对话";
 /** 子项目内：元数据 */
@@ -151,6 +159,10 @@ export function chatDirOf(cardDir: string, chatId: string): string {
 /** 子项目的会话目录：显式传给 SessionManager 的 sessionDir（pi 的 create/open/list 都收） */
 export function chatSessionsDirOf(cardDir: string, chatId: string): string {
 	return join(chatDirOf(cardDir, chatId), CHAT_SESSIONS_DIR);
+}
+/** 卡的跨对话记忆目录 */
+export function cardMemoryDirOf(cardDir: string): string {
+	return join(cardDir, CARD_MEMORY_DIR);
 }
 
 export const PERSONAS_FILE = ".liyuan-personas.json";

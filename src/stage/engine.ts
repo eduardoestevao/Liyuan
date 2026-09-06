@@ -24,11 +24,12 @@ import {
 	searchEntries,
 } from "../lorebook.ts";
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
-import { chatDataPath } from "../cardspace.ts";
+import { cardDirOfChatDir, chatDataPath, chatDirOfSessionDir } from "../cardspace.ts";
+import { fitResidentSummary, loadResidentSummary } from "../card-memory.ts";
 import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
 import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
-import type { LorebookEntry } from "../types.ts";
+import type { LorebookEntry, WorldState } from "../types.ts";
 import {
 	buildStageInjection,
 	buildStageSystemPrompt,
@@ -730,6 +731,7 @@ export class StageEngine {
 			// 与旧 director.ts 同一位置——工具清单里有 mcp__ 工具，这里说明它们是什么。
 			mcpTools: mcpTools.map((t) => ({ name: t.name, description: t.description })),
 		});
+		const rosterIndex = formatRosterIndex(state);
 		const injection = buildStageInjection({
 			state,
 			activatedLore: activated,
@@ -739,11 +741,16 @@ export class StageEngine {
 			panelIndex,
 			...(wsDeps.rules.wordRange ? { wordRange: wsDeps.rules.wordRange } : {}),
 			loreIndex: formatLoreIndex(materials.entries),
-			rosterIndex: formatRosterIndex(state),
+			rosterIndex,
 			...(memoryRecall ? { memoryRecall } : {}),
 			// off 挡（无原生思考通道、不主动检索）：绿灯命中给正文兜底；其余档位给标题让模型自取。
 			passiveLore: (this.#deps.getThinking?.() ?? "off") === "off",
 		});
+
+		// 第二步·跨会话记忆（读侧）：卡的常驻摘要与这局的前情共用【前情提要】槽位——
+		// 两者语义同为「更早剧情的既定事实」，本局摘要在前、往局记忆在后。摘要是数据块，
+		// 走既有通道与既有语义句（铁律一/二：零新增文案、零新增注入点）；预算在 card-memory。
+		const residentSummary = this.#residentSummary(sm, summary, state, rosterIndex);
 
 		// 末端消息 = 梨园数据块 + 本拍用户原话 + 预设 after 段（各按自己的 role）。
 		// 顺序要紧：用户当拍的话必须落在**梨园数据块之后**。数据块压在提问之后时，模型会把提问
@@ -798,11 +805,19 @@ export class StageEngine {
 		const messages: unknown[] = [
 			// M4 前情提要：被 rp-summary 覆盖的早期剧情在此回读（历史里那段已整体不存在）。
 			// 以 user 角色打头，措辞与 system「消息流约定」里的【前情提要】对上。
-			...(summary
+			// 跨会话常驻摘要（如有）接在本局摘要之后：同一语义、同一句开场。
+			...(summary || residentSummary
 				? [
 						{
 							role: "user",
-							content: [{ type: "text", text: `【前情提要】以下是更早剧情的接力摘要，是既定事实：\n\n${summary}` }],
+							content: [
+								{
+									type: "text",
+									text: `【前情提要】以下是更早剧情的接力摘要，是既定事实：\n\n${[summary, residentSummary]
+										.filter(Boolean)
+										.join("\n\n")}`,
+								},
+							],
 							timestamp: 0,
 						},
 					]
@@ -1112,6 +1127,27 @@ export class StageEngine {
 			console.error(`[stage-compact] 压缩异常：${msg}`);
 			return { kind: "failed", error: msg };
 		}
+	}
+
+	/**
+	 * 卡的跨会话常驻摘要（第二步读侧）。当前会话住在 cards/ 的子项目里、卡里有
+	 * 记忆/常驻摘要.md 才有值；老布局/没建过记忆的卡返回 undefined（行为与今天一致）。
+	 * 预算封套＝常驻摘要＋本局前情＋【世界状态】＋【登场名录】：本局的账本优先，摘要让位。
+	 */
+	#residentSummary(
+		sm: StageSessionManager,
+		branchSummary: string | undefined,
+		state: WorldState,
+		rosterIndex: string | undefined,
+	): string | undefined {
+		const chatDir = chatDirOfSessionDir(sm.getSessionDir?.());
+		if (!chatDir) return undefined;
+		const cardDir = cardDirOfChatDir(chatDir);
+		if (!cardDir) return undefined;
+		const text = loadResidentSummary(cardDir);
+		if (!text) return undefined;
+		const otherChars = (branchSummary?.length ?? 0) + formatState(state).length + (rosterIndex?.length ?? 0);
+		return fitResidentSummary(text, otherChars);
 	}
 
 	/**

@@ -31,6 +31,7 @@ import {
 	CHAT_SESSIONS_DIR,
 	CHAT_STATE_FILE,
 	CHAT_WORLDLINE_FILE,
+	CHATS_DIR,
 	cardDirOf,
 	cardsRoot,
 	chatDirOf,
@@ -424,6 +425,14 @@ export function chatDirOfSessionDir(sessionDir: string | undefined): string | nu
 export function chatDirOfSessionFile(sessionFile: string | undefined): string | null {
 	if (!sessionFile) return null;
 	return chatDirOfSessionDir(dirname(sessionFile));
+}
+
+/** 子项目目录 → 卡文件夹目录（`cards/<卡>/<对话>/<id>` 的上两级）；不是这个形状返回 null */
+export function cardDirOfChatDir(chatDir: string): string | null {
+	const up = dirname(chatDir);
+	if (basename(up) !== CHATS_DIR) return null;
+	const cardDir = dirname(up);
+	return cardDir && cardDir !== up ? cardDir : null;
 }
 
 /** 子项目级数据的种类 → 文件名（老布局回落时按 sessionId 分文件，见 chatDataPath） */
