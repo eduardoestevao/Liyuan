@@ -1089,7 +1089,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				if (existsSync(abs)) fileGroups.push(loadLorebookFile(abs));
 			}
 			const fileEntries = mergeEntries(...fileGroups);
-			overlayFile = overlayPathFor(ctx.cwd, card.name);
+			overlayFile = overlayPathFor(ctx.cwd, card.name, config.card);
 			const overlayEntries = existsSync(overlayFile) ? loadLorebookFile(overlayFile) : [];
 			entries = applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore);
 
@@ -1755,7 +1755,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			if (existsSync(abs)) fileGroups.push(loadLorebookFile(abs));
 		}
 		const fileEntries = mergeEntries(...fileGroups);
-		overlayFile = overlayPathFor(cwd, card.name);
+		overlayFile = overlayPathFor(cwd, card.name, config.card);
 		const overlayEntries = existsSync(overlayFile) ? loadLorebookFile(overlayFile) : [];
 		entries = applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore);
 		preset = null;

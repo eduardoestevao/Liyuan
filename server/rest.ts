@@ -71,6 +71,7 @@ import {
 	updateStoreConfig,
 } from "../src/memory/index.ts";
 import {
+	CARDS_ROOT,
 	DIRS,
 	MEDIA_PREFIX,
 	MEDIA_PREFIX_LEGACY,
@@ -80,6 +81,7 @@ import {
 	normalizeDataPath,
 	resolveConfigPath,
 } from "../src/paths.ts";
+import { listCardSpaces } from "../src/cardspace.ts";
 import { scanSkillFiles } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import type { WorldlineView } from "../src/worldline.ts";
@@ -532,7 +534,7 @@ function loadMergedLoreWithSource(
 		if (existsSync(abs)) fileGroups.push(loadLorebookFile(abs));
 	}
 	const fileEntries = mergeEntries(...fileGroups);
-	const overlayPath = overlayPathFor(cwd, card.name);
+	const overlayPath = overlayPathFor(cwd, card.name, config.card);
 	const overlayEntries = existsSync(overlayPath) ? loadLorebookFile(overlayPath) : [];
 	const fileSet = new Set(fileEntries.map((e) => e.content.trim()));
 	const entries = applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore);
@@ -560,9 +562,15 @@ const previewText = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}�
 
 const cardMetaCache = new Map<string, { mtimeMs: number; meta: { name: string; tags: string[] } | null }>();
 
-/** 卡库扫描目录：assets/cards + 当前卡所在目录（用户素材常在项目外） */
+/**
+ * 卡库扫描目录：cards/<文件夹>/（两层布局，每夹一张卡本体）+ assets/cards（导入暂存，
+ * 迁移后仍在的老卡）+ 当前卡所在目录（用户素材常在项目外）。
+ */
 function cardDirSpecs(cwd: string, config: RpConfig): Array<{ abs: string; relBase: string }> {
-	const specs = [{ abs: join(cwd, "assets", "cards"), relBase: "assets/cards" }];
+	const specs: Array<{ abs: string; relBase: string }> = [{ abs: join(cwd, "assets", "cards"), relBase: "assets/cards" }];
+	for (const space of listCardSpaces(cwd)) {
+		if (!specs.some((s) => s.abs === space.dir)) specs.push({ abs: space.dir, relBase: `${CARDS_ROOT}/${space.folder}` });
+	}
 	const cardRel = config.card.replace(/\\/g, "/");
 	const base = cardRel.includes("/") ? cardRel.slice(0, cardRel.lastIndexOf("/")) : ".";
 	const abs = resolvePath(cwd, base);
@@ -1098,7 +1106,7 @@ function relToCwd(cwd: string, abs: string): string {
  */
 export function loreWriteTargets(cwd: string, config: RpConfig, scope?: string): string[] {
 	const card = loadCardFile(resolvePath(cwd, config.card));
-	const overlay = overlayPathFor(cwd, card.name);
+	const overlay = overlayPathFor(cwd, card.name, config.card);
 	const p = (scope ?? "").replace(/\\/g, "/").trim();
 	if (p === "agent") return [overlay];
 	const known = listLorebookFiles(cwd, config).map((b) => b.path);
@@ -2358,7 +2366,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				let deletedSessions = 0;
 				if (wantData) {
 					deletedSessions = await host.deleteCardSessions(p);
-					const overlay = overlayPathFor(host.cwd, cardName);
+					const overlay = overlayPathFor(host.cwd, cardName, config.card);
 					if (existsSync(overlay)) {
 						try {
 							unlinkSync(overlay);
@@ -3442,7 +3450,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
 				if (sourceQ === "agent") {
 					const card = loadCardFile(resolvePath(host.cwd, config.card));
-					const overlayPath = overlayPathFor(host.cwd, card.name);
+					const overlayPath = overlayPathFor(host.cwd, card.name, config.card);
 					const raw = existsSync(overlayPath) ? loadLorebookFile(overlayPath) : [];
 					const entries = applyDisabledLore(raw, config.disabledLore);
 					sendJson(res, 200, {
@@ -3505,7 +3513,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				for (const b of listLorebookFiles(host.cwd, config)) {
 					candidates.push({ abs: resolvePath(host.cwd, b.path), source: "file" });
 				}
-				candidates.push({ abs: overlayPathFor(host.cwd, card.name), source: "agent" });
+				candidates.push({ abs: overlayPathFor(host.cwd, card.name, config.card), source: "agent" });
 				let found: LorebookEntry | null = null;
 				let source: LoreSource = "file";
 				for (const c of candidates) {
@@ -3562,7 +3570,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				let abs: string;
 				let targetLabel: string;
 				if (!target || target === "agent") {
-					abs = overlayPathFor(host.cwd, card.name);
+					abs = overlayPathFor(host.cwd, card.name, config.card);
 					targetLabel = "补充设定";
 				} else {
 					// 与 DELETE 同源：只认书单里的路径
@@ -3705,7 +3713,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					? (() => {
 							const card = loadCardFile(resolvePath(host.cwd, config.card));
 							const paths = listLorebookFiles(host.cwd, config).map((b) => resolvePath(host.cwd, b.path));
-							paths.push(overlayPathFor(host.cwd, card.name));
+							paths.push(overlayPathFor(host.cwd, card.name, config.card));
 							return paths;
 						})()
 					: null;

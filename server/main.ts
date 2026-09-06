@@ -141,6 +141,7 @@ import { readSessionCardInfo } from "../src/session-scan.ts";
 import { chatDataPath, chatDirOfSessionDir, createChat } from "../src/cardspace.ts";
 import { chatSessionsOf, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
 import { resolveCardSpace } from "../src/cardspace.ts";
+import { alreadyMigrated, applyCardMigration, planCardMigration } from "../src/migrate-cards.ts";
 import {
 	appendLorebookFileEntry,
 	appendOverlayEntry,
@@ -148,7 +149,7 @@ import {
 	toggleDisabledLore,
 } from "../src/lorebook.ts";
 import { syncStoryPanelsFromDisk, syncStoryStateFromDisk } from "../src/story-sync.ts";
-import { applyPendingBackupRestore } from "../src/backup.ts";
+import { applyPendingBackupRestore, BACKUP_ROOT, buildBackupZip, projectSessionDir } from "../src/backup.ts";
 import { toolStartDetail } from "../src/activity-format.ts";
 import {
 	checkLatestRelease,
@@ -178,6 +179,25 @@ for (const line of migrateLegacyLayout(cwd)) {
 // 待恢复备份（导入备份后重启触发）：在装载任何会话/素材之前精确铺回数据
 for (const line of applyPendingBackupRestore(cwd, agentHome)) {
 	console.log(`[liyuan] 恢复 ${line}`);
+}
+
+// 卡＝工作空间一次性迁移（刀4 尾巴）：旧扁平布局 → cards/ 两层布局。
+// plan 只读 → apply 动盘；幂等（cards/ 已在/搬过的不再搬），认不出卡的会话原地不动。
+// 先备份再跑：备份与恢复机制就是这份迁移的兜底（backup.ts 闭包含全部用户数据）。
+if (!alreadyMigrated(cwd)) {
+	const plan = planCardMigration(cwd, projectSessionDir(cwd, agentHome));
+	if (plan.cards.length > 0 || plan.sessions.length > 0) {
+		try {
+			const snap = join(cwd, BACKUP_ROOT, `pre-cards-migration-${new Date().toISOString().replace(/[:.]/g, "-")}.zip`);
+			const { count } = buildBackupZip(cwd, agentHome, snap);
+			console.log(`[liyuan] 迁移前快照：${count} 项 → ${basename(snap)}`);
+		} catch (err) {
+			console.error(`[liyuan] 迁移前快照失败，跳过迁移：${err instanceof Error ? err.message : String(err)}`);
+		}
+		if (!alreadyMigrated(cwd)) {
+			for (const line of applyCardMigration(cwd, plan)) console.log(`[liyuan] 卡迁移 ${line}`);
+		}
+	}
 }
 
 // 自操作接口（LIYUAN_HTTP → 剧情 system prompt）已退役（2026-07-14）：
@@ -2447,7 +2467,7 @@ const stage = new StageEngine({
 				return entry;
 			}
 			const card = loadCardFile(isAbsolute(config.card) ? config.card : join(cwd, config.card));
-			return appendOverlayEntry(overlayPathFor(cwd, card.name), input);
+			return appendOverlayEntry(overlayPathFor(cwd, card.name, config.card), input);
 		},
 		update: (fingerprint, patch) => {
 			const r = patchLoreEntryAnywhere(cwd, loadConfig(cwd), fingerprint, {
@@ -2743,8 +2763,10 @@ const sessionInfos = async () => {
 	// 两层布局：当前卡是 cards/ 卡文件夹 ⇒ 会话散在各子项目里，聚合起来
 	// （rp-card 过滤退役——子项目目录本身就是归属）；否则走老路径（pi 默认目录 + 卡过滤）。
 	const chatEntries = chatSessionsOf(cwd, cardPath);
+	// pi 的 listAll/list 只收**目录**（listSessionsFromDir 会 readdir）——传会话文件会
+	// ENOTDIR 被吞、返回空。按子项目去重目录再列。
 	const all = chatEntries
-		? (await Promise.all([...new Set(chatEntries.map((e) => e.path))].map((p) => SessionManager.listAll(p)))).flat()
+		? (await Promise.all([...new Set(chatEntries.map((e) => dirname(e.path)))].map((p) => SessionManager.listAll(p)))).flat()
 		: await SessionManager.list(cwd);
 	const curFile = session.sessionFile;
 	const curId = session.sessionId;

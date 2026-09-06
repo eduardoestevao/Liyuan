@@ -8,7 +8,8 @@ import { existsSync, mkdirSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 import { readJsonFile } from "./jsonio.ts";
-import { dir, nameSafe } from "./paths.ts";
+import { resolveCardSpace } from "./cardspace.ts";
+import { CARD_OVERLAY_FILE, dir, nameSafe } from "./paths.ts";
 import type { LorebookEntry } from "./types.ts";
 
 /**
@@ -411,9 +412,17 @@ export const exportLorebook = exportStLorebook;
 /** 补充设定集条目的 uid 起点（避开常见世界书的 uid 空间，别名缓存按 uid 键控） */
 const OVERLAY_UID_BASE = 9000;
 
-/** 补充设定集文件路径（按卡分文件；扩展与 server 面板共用此推导） */
-export function overlayPathFor(cwd: string, cardName: string): string {
-	return join(dir(cwd, "lore"), `${nameSafe(cardName)}.json`);
+/**
+ * 补充设定集文件路径（按卡分文件；扩展与 server 面板共用此推导）。
+ * 两层布局：先认卡文件夹里的 `补充设定集.json`（迁移落点）；没有再回落
+ * `.liyuan-lore/<卡名>.json`（迁移前/还没迁移的项目，行为不变）。
+ */
+export function overlayPathFor(cwd: string, cardName: string, configCard?: string): string {
+	const legacy = join(dir(cwd, "lore"), `${nameSafe(cardName)}.json`);
+	if (!configCard) return legacy;
+	const space = resolveCardSpace(cwd, configCard);
+	if (space && !existsSync(join(space.dir, CARD_OVERLAY_FILE))) return legacy;
+	return space ? join(space.dir, CARD_OVERLAY_FILE) : legacy;
 }
 
 export interface OverlayEntryInput {

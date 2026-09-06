@@ -1399,7 +1399,7 @@ export class StageEngine {
 		const overlayOf = (): string => {
 			try {
 				const m = loadStageMaterials(cwd);
-				return overlayPathFor(cwd, m.card.name);
+				return overlayPathFor(cwd, m.card.name, m.config.card);
 			} catch {
 				return "";
 			}

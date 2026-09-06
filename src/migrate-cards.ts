@@ -20,24 +20,31 @@
  * - 目录名的唯一主人仍是 `src/paths.ts`。
  */
 
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 
 import { loadCardFile } from "./card.ts";
+import { loadPersonas, savePersonas } from "./personas.ts";
 import { createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
+import { stripBom } from "./jsonio.ts";
+import { readSessionHeadTail } from "./session-scan.ts";
 import {
 	CARD_OVERLAY_FILE,
+	CHAT_ASSISTANT_DIR,
 	CHAT_PANELS_FILE,
 	CHAT_STATE_FILE,
 	CHAT_WORLDLINE_FILE,
 	CHAT_MEMORY_DIR,
 	CARDS_ROOT,
+	DIRS,
 	cardDirOf,
 	cardsRoot,
 	chatDirOf,
 	chatSessionsDirOf,
 	dir,
 	nameSafe,
+	resolveConfigPath,
 	sameCardPath,
 } from "./paths.ts";
 import { readSessionCardInfo } from "./session-scan.ts";
@@ -66,6 +73,8 @@ export interface SessionMove {
 	sessionId: string;
 	/** 会话最后修改时间（子项目元数据的 createdAt 用） */
 	modified: number;
+	/** 迁移后这张卡的新引用（`cards/<folder>/<file>`）：追加 rp-card 重绑定行用 */
+	newRef: string;
 }
 
 export interface CardMigrationPlan {
@@ -93,6 +102,11 @@ export function sessionIdFromFile(fileName: string): string {
 /** 迁移是否已经做过（cards/ 已存在＝做过或用户自己建了） */
 export function alreadyMigrated(cwd: string): boolean {
 	return existsSync(cardsRoot(cwd));
+}
+
+/** 迁移后这张卡的新引用（`cards/<folder>/<file>`）——迁移器唯一改写口径 */
+function newRefOf(card: CardMove): string {
+	return `${CARDS_ROOT}/${card.folder}/${basename(card.from)}`;
 }
 
 /**
@@ -159,7 +173,7 @@ export function planCardMigration(cwd: string, sessionDir: string): CardMigratio
 		} catch {
 			modified = Date.now();
 		}
-		sessions.push({ file: abs, folder: hit.folder, chatId, sessionId: sessionIdFromFile(f), modified });
+		sessions.push({ file: abs, folder: hit.folder, chatId, sessionId: sessionIdFromFile(f), modified, newRef: newRefOf(hit) });
 	}
 
 	return { cards, sessions, skipped };
@@ -174,7 +188,16 @@ function move(from: string, to: string, label: string, log: string[]): boolean {
 	}
 	try {
 		mkdirSync(join(to, ".."), { recursive: true });
-		renameSync(from, to);
+		try {
+			renameSync(from, to);
+		} catch (err) {
+			// 跨盘（会话在 C:、卡库在 E:）renameSync 撞 EXDEV：整份拷过去再删源，
+			// 语义仍是「搬」（失败时源还在，重跑幂等）。
+			const code = (err as { code?: string }).code;
+			if (code !== "EXDEV" && code !== "EPERM") throw err;
+			cpSync(from, to, { recursive: true, force: false, errorOnExist: true });
+			rmSync(from, { recursive: true, force: true });
+		}
 		return true;
 	} catch (err) {
 		log.push(`搬不动 ${label}：${err instanceof Error ? err.message : String(err)}`);
@@ -244,8 +267,187 @@ export function applyCardMigration(cwd: string, plan: CardMigrationPlan): string
 				}
 			}
 		}
+		// 会话搬完就重绑定：追加一条 rp-card 行（pi 的 appendCustomEntry 落行格式），
+		// 指向新卡引用。旧卡引用的行留在前面（parse 取最后一条），但列表过滤从此认新引用。
+		rebindSessionCard(join(sessionsAbs, basename(s.file)), s.newRef, log);
 	}
 	if (moved > 0) log.push(`${moved} 个旧会话各成一个子项目`);
 	for (const k of plan.skipped) log.push(`原地保留 ${basename(k.file)}：${k.why}`);
+
+	// 4) 助手会话按 storyId 跟子项目走（旧全局 .liyuan-assistant/ + sameCardPath 过滤退役）：
+	//    助手会话文件里的 rp-card 记着它对齐的剧情 sessionId，按它归位；认不出的原地不动。
+	migrateAssistantSessions(cwd, plan, log);
+
+	// 5) 改写 config.card / personas byCard / 卡收藏：旧引用 → 新引用
+	rewriteCardRefs(cwd, plan, log);
 	return log;
+}
+
+/**
+ * 给搬完的会话文件追加一条 rp-card 重绑定行。
+ * 行格式与 pi 的 `appendCustomEntry` 逐字一致（session-manager.ts:1029）——
+ * parentId 链在追加场景用「文件里最后一条有 id 的条目」接上；接不上（空文件）就 null。
+ */
+function rebindSessionCard(file: string, newRef: string, log: string[]): void {
+	try {
+		const lines = readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+		if (!lines.length) return;
+		let parentId: string | null = null;
+		for (let i = lines.length - 1; i >= 0; i--) {
+			try {
+				const e = JSON.parse(lines[i]) as { id?: unknown };
+				if (typeof e.id === "string" && e.id) {
+					parentId = e.id;
+					break;
+				}
+			} catch {
+				/* 半行跳过 */
+			}
+		}
+		const name = rebindCardName(lines);
+		const entry = {
+			type: "custom",
+			customType: "rp-card",
+			data: { card: newRef, ...(name ? { name } : {}) },
+			id: randomBytes(4).toString("hex"),
+			parentId,
+			timestamp: new Date().toISOString(),
+		};
+		appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+	} catch (err) {
+		log.push(`重绑定 ${basename(file)} 失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/** 重绑定行带上原卡名（显示用）；从既有 rp-card 行里取最后一条的 name */
+function rebindCardName(lines: string[]): string {
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (!lines[i].includes('"rp-card"')) continue;
+		try {
+			const e = JSON.parse(lines[i]) as { customType?: string; data?: { name?: unknown } };
+			if (e.customType === "rp-card" && typeof e.data?.name === "string" && e.data.name) return e.data.name;
+		} catch {
+			/* 半行跳过 */
+		}
+	}
+	return "";
+}
+
+/**
+ * 助手会话归位：扫旧 `.liyuan-assistant/`，每份的 rp-card 记着 storyId（它对齐的
+ * 剧情会话）；storyId 落在某个已迁移的子项目里 ⇒ 整份搬进该子项目的 `助手会话/`。
+ * storyId 对不上任何子项目（剧情会话没迁移/已删）⇒ 原地不动，绝不猜。
+ */
+function migrateAssistantSessions(cwd: string, plan: CardMigrationPlan, log: string[]): void {
+	const root = dir(cwd, "assistant");
+	if (!existsSync(root)) return;
+	// storyId → 子项目目录（对得上多份就都归位：一份助手会话只对一个 storyId）
+	const byStory = new Map<string, string>();
+	for (const s of plan.sessions) {
+		if (s.sessionId) byStory.set(s.sessionId, chatDirOf(cardDirOf(cwd, s.folder), s.chatId));
+	}
+	let moved = 0;
+	for (const f of readdirSync(root)) {
+		if (!f.endsWith(".jsonl")) continue;
+		const abs = join(root, f);
+		const story = lastStoryIdOfAssistant(abs);
+		const chatAbs = story ? byStory.get(story) : undefined;
+		if (!chatAbs) continue;
+		if (move(abs, join(chatAbs, CHAT_ASSISTANT_DIR, f), `助手会话 ${f}`, log)) moved += 1;
+	}
+	if (moved > 0) log.push(`${moved} 份助手会话按对齐的剧情会话归入子项目`);
+}
+
+/** 助手会话文件里最后一条 rp-card 的 storyId（没有则 null） */
+function lastStoryIdOfAssistant(file: string): string | null {
+	try {
+		// 头尾窗口读，不整份 load（session-scan 同款纪律）；助手会话通常远小于 64K
+		const text = readSessionHeadTail(file);
+		for (const line of text.split(/\r?\n/).reverse()) {
+			if (!line.includes('"rp-card"')) continue;
+			try {
+				const e = JSON.parse(line) as { customType?: string; data?: { storyId?: unknown } };
+				if (e.customType === "rp-card" && typeof e.data?.storyId === "string" && e.data.storyId) return e.data.storyId;
+			} catch {
+				/* 半行跳过 */
+			}
+		}
+	} catch {
+		/* 读不了就不搬 */
+	}
+	return null;
+}
+
+/**
+ * 改写「按卡路径键控」的引用：liyuan.config.json 的 card、personas 的 byCard、
+ * 卡收藏 card-favs.json。逐条换成新引用；旧引用不再出现在任何键上。
+ */
+function rewriteCardRefs(cwd: string, plan: CardMigrationPlan, log: string[]): void {
+	if (plan.cards.length === 0) return;
+	const refOf = new Map<string, string>(); // 旧引用（归一）→ 新引用
+	for (const c of plan.cards) {
+		refOf.set(normalizeRef(c.ref), newRefOf(c));
+	}
+	const rewrite = (old: string | undefined): string | undefined => {
+		if (!old) return undefined;
+		return refOf.get(normalizeRef(old));
+	};
+	// config.card
+	try {
+		const path = resolveConfigPath(cwd);
+		if (existsSync(path)) {
+			const raw = JSON.parse(stripBom(readFileSync(path, "utf8"))) as Record<string, unknown>;
+			const next = rewrite(String(raw.card ?? ""));
+			if (next && next !== raw.card) {
+				raw.card = next;
+				writeFileSync(path, `${JSON.stringify(raw, null, "\t")}\n`, "utf8");
+				log.push(`config.card → ${next}`);
+			}
+		}
+	} catch (err) {
+		log.push(`改写 config.card 失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+	// personas byCard（键是卡路径）
+	try {
+		const store = loadPersonas(cwd);
+		let touched = false;
+		const byCard: Record<string, string> = {};
+		for (const [k, v] of Object.entries(store.byCard)) {
+			const nk = rewrite(k);
+			if (nk && nk !== k) {
+				byCard[nk] = v;
+				touched = true;
+			} else {
+				byCard[k] = v;
+			}
+		}
+		if (touched) {
+			savePersonas(cwd, { ...store, byCard });
+			log.push("personas 按卡锁定改指新卡引用");
+		}
+	} catch (err) {
+		log.push(`改写 personas 失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+	// 卡收藏
+	try {
+		const favsFile = join(cwd, DIRS.cache, "card-favs.json");
+		if (existsSync(favsFile)) {
+			const favs = JSON.parse(stripBom(readFileSync(favsFile, "utf8"))) as unknown;
+			if (Array.isArray(favs)) {
+				const next = favs.map((f) => (typeof f === "string" ? (rewrite(f) ?? f) : f));
+				if (next.some((f, i) => f !== favs[i])) {
+					mkdirSync(join(cwd, DIRS.cache), { recursive: true });
+					writeFileSync(favsFile, `${JSON.stringify(next, null, "\t")}\n`, "utf8");
+					log.push("卡收藏改指新卡引用");
+				}
+	}
+		}
+	} catch (err) {
+		log.push(`改写卡收藏失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/** 引用归一（比对键）：正反斜杠/大小写/./前缀的差异不该挡住改写 */
+function normalizeRef(ref: string): string {
+	return ref.replace(/\\/g, "/").replace(/^\.\//, "").toLowerCase();
 }

@@ -5,6 +5,7 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { listCardSpaces, listChats, readChatMeta } from "../src/cardspace.ts";
+import { parseCardFromSessionHead } from "../src/session-scan.ts";
 import {
 	alreadyMigrated,
 	applyCardMigration,
@@ -110,6 +111,66 @@ test("迁移：卡进文件夹、旧会话各成一个子项目、随身数据�
 
 		// 补充设定集进卡文件夹
 		assert.ok(existsSync(join(cardDirOf(cwd, "甲卡"), "补充设定集.json")));
+
+		// 搬完的会话追加 rp-card 重绑定行：认最后一条 ⇒ 新引用
+		const moved2 = readFileSync(
+			join(chatSessionsDirOf(cardDirOf(cwd, "甲卡"), chatId), "2026-09-05T16-41-36-682Z_01a07272-aaaa.jsonl"),
+			"utf8",
+		).split(/\r?\n/).filter(Boolean);
+		assert.ok(moved2.length >= 4, "重绑定行已追加");
+		const last = JSON.parse(moved2[moved2.length - 1]) as { type: string; customType: string; data: { card: string; name?: string } };
+		assert.equal(last.customType, "rp-card");
+		assert.equal(last.data.card, "cards/甲卡/a.json", "重绑定行指向新卡引用");
+		assert.equal(last.data.name, "甲卡");
+		const parsed = parseCardFromSessionHead(moved2.join("\n"));
+		assert.equal(parsed?.card, "cards/甲卡/a.json", "浅扫描认最后一条 ⇒ 新引用");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(sessionDir, { recursive: true, force: true });
+	}
+});
+
+test("迁移：助手会话按 storyId 归入子项目，config.card 改指新引用", () => {
+	const { cwd, sessionDir } = mkProject();
+	try {
+		writeCard(join(cwd, "assets", "cards", "a.json"), "甲卡");
+		writeSession(sessionDir, "2026-09-05T16-41-36-682Z_01a07272-aaaa.jsonl", "assets/cards/a.json", "甲卡");
+
+		// config 指着旧卡；personas 有按旧卡锁定；收藏里有旧卡
+		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "assets/cards/a.json", userName: "旅人" }), "utf8");
+		writeFileSync(
+			join(cwd, ".liyuan-personas.json"),
+			JSON.stringify({ personas: [{ id: "p1", name: "明月", persona: "" }], current: "p1", byCard: { "assets/cards/a.json": "p1" } }),
+			"utf8",
+		);
+		mkdirSync(join(cwd, ".liyuan-cache"), { recursive: true });
+		writeFileSync(join(cwd, ".liyuan-cache", "card-favs.json"), JSON.stringify(["assets/cards/a.json", "assets/cards/别的.png"]));
+
+		// 助手会话：rp-card 带 storyId=01a07272-aaaa（对应上面那个剧情会话）
+		mkdirSync(join(cwd, ".liyuan-assistant"), { recursive: true });
+		const asst = [
+			'{"type":"session","version":3,"id":"x","cwd":"E:/proj"}',
+			'{"type":"custom","customType":"rp-card","data":{"card":"assets/cards/a.json","name":"甲卡","storyId":"01a07272-aaaa"},"id":"e1","parentId":null,"timestamp":"2026-07-18T00:00:00.000Z"}',
+		].join("\n") + "\n";
+		writeFileSync(join(cwd, ".liyuan-assistant", "2026-07-18T15-10-12-939Z_019f75c7.jsonl"), asst);
+		// storyId 对不上任何剧情会话的：原地不动
+		const orphan = asst.replace("01a07272-aaaa", "01a99999-zzzz");
+		writeFileSync(join(cwd, ".liyuan-assistant", "2026-08-31T02-14-20-905Z_01a05598.jsonl"), orphan);
+
+		applyCardMigration(cwd, planCardMigration(cwd, sessionDir));
+
+		// config.card 换新引用
+		assert.equal((JSON.parse(readFileSync(join(cwd, "liyuan.config.json"), "utf8")) as { card: string }).card, "cards/甲卡/a.json");
+		// personas byCard 换键
+		const store = JSON.parse(readFileSync(join(cwd, ".liyuan-personas.json"), "utf8")) as { byCard: Record<string, string> };
+		assert.ok(store.byCard["cards/甲卡/a.json"], "按卡锁定改指新引用");
+		assert.ok(!store.byCard["assets/cards/a.json"], "旧键不在");
+		// 收藏改指新引用，别的条目不动
+		const favs = JSON.parse(readFileSync(join(cwd, ".liyuan-cache", "card-favs.json"), "utf8")) as string[];
+		assert.deepEqual(favs, ["cards/甲卡/a.json", "assets/cards/别的.png"]);
+		// 助手会话：对得上的进子项目，对不上的原地不动
+		assert.ok(existsSync(join(chatDirOf(cardDirOf(cwd, "甲卡"), "20260905-164136-01a0"), "助手会话", "2026-07-18T15-10-12-939Z_019f75c7.jsonl")));
+		assert.ok(existsSync(join(cwd, ".liyuan-assistant", "2026-08-31T02-14-20-905Z_01a05598.jsonl")), "认不出的助手会话原地不动");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(sessionDir, { recursive: true, force: true });

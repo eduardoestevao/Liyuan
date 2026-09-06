@@ -254,7 +254,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		if (existsSync(abs)) fileGroups.push(loadLorebookFile(abs));
 	}
 	const fileEntries = mergeEntries(...fileGroups);
-	const overlayFile = overlayPathFor(cwd, card.name);
+	const overlayFile = overlayPathFor(cwd, card.name, config.card);
 	const overlayEntries = existsSync(overlayFile) ? loadLorebookFile(overlayFile) : [];
 	// 用户级停用 → 外部插件协议判死（M-C2）。协议条目是 H 类「脑内 harness」：
 	// 指望酒馆插件解析的输出格式强制令，梨园无解析器且原生 world_state_update 已覆盖其功能，

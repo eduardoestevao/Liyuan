@@ -623,7 +623,7 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 						if (entry) void bridge.refreshStoryMaterials();
 						return entry;
 					}
-					const entry = appendOverlayEntry(overlayPathFor(cwd, bridge.cardName()), input);
+					const entry = appendOverlayEntry(overlayPathFor(cwd, bridge.cardName(), currentCard().path), input);
 					if (entry) void bridge.refreshStoryMaterials();
 					return entry;
 				},
