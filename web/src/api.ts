@@ -86,6 +86,21 @@ export async function api<T>(path: string, init?: RequestInit): Promise<T> {
 	return data as T;
 }
 
+/** 上传二进制（File 直传原始字节，非 multipart）：服务器按 body 原样读（子项目 zip 导入用） */
+export async function apiPostFile<T>(path: string, file: Blob): Promise<T> {
+	const res = await fetch(path, { method: "POST", body: file });
+	let data: unknown = null;
+	try {
+		data = await res.json();
+	} catch {
+		// 非 JSON
+	}
+	const err = (data as { error?: string } | null)?.error;
+	if (!res.ok || err) throw new Error(err || `请求失败（HTTP ${res.status}）`);
+	invalidateAfterWrite(path);
+	return data as T;
+}
+
 /**
  * 面板重拉期间递增：其内的 apiGet 一律走网络（仍回写缓存供 peek）。
  * 内存缓存只负责「首帧秒开」，不负责「刷新/reload 结果」——否则右上角刷新会假成功。

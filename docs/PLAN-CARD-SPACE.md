@@ -81,17 +81,23 @@ cards/                       ← 卡库（新顶层，整棵用户私有数据�
 | 刀3b | 子项目级数据落点接线：state/panels/worldline/memory 四族全走 `chatDataPath`，老布局自动回落 | `bf7fbc4` |
 | 刀4 | 启动引导/新开对话/会话列表按两层布局接线（`src/story-guide.ts`：不换 cwd，全用 pi 显式 sessionDir；助手会话目录跟子项目走；new 帧＝新子项目/换 runtime）；端到端 6/6 | `3a7c342`→`c7b3e2a` |
 | 刀4尾巴 | 启动自动迁移（plan→快照→apply，幂等）；跨盘搬迁；rp-card 重绑定行；助手会话按 storyId 归位；config.card/personas/收藏改指新引用；overlay 读侧与卡库列表认 cards/；修 sessionInfos 的 listAll 传文件 bug | `6da3ae2` |
+| 刀5 | 会话面板两层树（仿 Codex 一行式）＋子项目导入导出删除：sessions 帧带 `chats`/`chatId`（老布局不带 ⇒ 前端扁平回落）；「新建项目」弹窗默认名顺延、`new` 帧带 name；项目行「＋」＝`chat_new_session`；导出 zip（`ziplite.buildZipBuffer`）/导入（落新 id 不覆盖、会话重绑定当前卡）/删除（当前项目拒删、`chatIdOk` 防穿越）；修 `assertListedSession` 只扫根目录导致子项目内会话删不掉 | 见 git log |
 
 每刀验证口径：全量测试逐项对照（既有 2 个红是本地卡库形状问题，与本工作无关）+ 实起
 `node server/main.ts` 探活 +（触到引擎的刀）无预设实弹一拍，拍后核对数据落点与还原现场。
 
-## 八 剩余
+## 八 剩余（项目化收官，2026-09-06 用户定案停手）
 
-- ~~刀4~~、~~刀4 尾巴~~（已完成，见 §七）。
-- **真跑迁移**：下一次启动 `node server/main.ts` 即自动发生（迁移前自动打快照到
-  `.liyuan-cache/backup/pre-cards-migration-*.zip`；沙箱已按 10/10 全过演练）。真实数据
-  只读试排：22 卡 / 149 会话全认领 / 0 认不出 / newRef 正确。
-- **刀5 退名单**：三套卡归属口径（`sameCardPath` 7 处 / `rp-card` 自描述 / 卡hash＋卡名两套）
-  收敛退役；`backup.ts` 按卡目录枚举（cards/ 进备份范围）；前端会话列表改两层展示。
+- ~~刀4~~、~~刀4 尾巴~~、~~刀5 前端与子项目导入导出~~（已完成，见 §七）。
+- **真跑迁移已发生**：2026-09-06 15:07 随启动自动完成（快照
+  `.liyuan-cache/backup/pre-cards-migration-2026-09-06T07-07-41-179Z.zip`；
+  22 卡 / 149 会话全落位，旧位已搬空）。
+- **遗留（已记录待办，不挡项目化收官）**：
+  - **backup 收 cards/**（`backup.ts` 按卡目录枚举）——**在补上之前，备份不含
+    cards/ 下的用户数据**，重要改动前请手动留快照；
+  - 三套卡归属名单退役（`sameCardPath` 7 处 / `rp-card` 自描述 / 卡hash＋卡名）——
+    现状可用（会话带重绑定行），属冗余非故障；
+  - 同卡导入项目包会产生同 id 会话双胞胎，导入侧 id 去重；
+  - HomePage 欢迎页「新建会话」字样未对齐「新建项目」词汇。
 - 铁律核查（每刀动手前）：全集＝所有卡与未迁移的老用户；负责人＝`cards/` 目录本身；
   没见过的卡＝进自己的文件夹，行为如常。

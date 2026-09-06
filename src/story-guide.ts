@@ -42,13 +42,14 @@ function byCardName(_cwd: string, _ref: string): CardSpace | null {
 
 /**
  * 「完全新开对话」＝新建一个子项目（建目录 + 会话目录 + 元数据），返回它的 sessionDir。
+ * name 给了就写进 对话.json（新建项目弹窗的命名），缺省由前端给默认名。
  * 当前卡不在 cards/ 里 ⇒ 返回 undefined：调用方走 runtime.newSession()（同 sessionDir
  * 再开一个会话——老布局下「新对话」与今天语义一致）。
  */
-export function newChatSessionDir(cwd: string, configCard: string): string | undefined {
+export function newChatSessionDir(cwd: string, configCard: string, name?: string): string | undefined {
 	const space = resolveCardSpace(cwd, configCard);
 	if (!space) return undefined;
-	return createChat(space.dir).sessionsDir;
+	return createChat(space.dir, name ? { name } : undefined).sessionsDir;
 }
 
 /**
@@ -86,6 +87,13 @@ function listChatsSafe(cardDir: string): ChatInfo[] {
 	} catch {
 		return [];
 	}
+}
+
+/** 当前卡的全部子项目（含空子项目），按最近活动倒序；老布局（卡不在 cards/）返回 null */
+export function chatsOfCard(cwd: string, configCard: string): ChatInfo[] | null {
+	const space = resolveCardSpace(cwd, configCard);
+	if (!space) return null;
+	return listChatsSafe(space.dir);
 }
 
 function safeReadDir(p: string): string[] {

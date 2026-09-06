@@ -135,6 +135,21 @@ export interface WireSessionInfo {
 	cardName?: string;
 	/** 会话绑定的角色卡路径（rp-card.data.card；用于前端兜底过滤） */
 	card?: string;
+	/** 两层布局：所在子项目（对话/<id>/）——老布局不带 */
+	chatId?: string;
+}
+
+/** 子项目（一段独立对话）条目：两层布局的 sessions 帧附带；老布局不带 ⇒ 前端回落扁平列表 */
+export interface WireChatInfo {
+	id: string;
+	/** 显示名（用户可改；缺省前端按 createdAt 生成） */
+	name?: string;
+	/** ISO */
+	createdAt: string;
+	/** 最近活动（epoch ms） */
+	modified: number;
+	/** 会话文件数 */
+	sessionCount: number;
 }
 
 /** 会话统计（getSessionStats 裁剪投影） */
@@ -265,7 +280,7 @@ export type ServerFrame =
 	| { type: "stats"; stats: WireStats }
 	| { type: "notify"; level: "info" | "warning" | "error"; text: string }
 	| { type: "compaction"; state: "start" | "end"; ok?: boolean }
-	| { type: "sessions"; list: WireSessionInfo[] }
+	| { type: "sessions"; list: WireSessionInfo[]; chats?: WireChatInfo[] }
 	/** 剧情决策询问（ask_director 停笔）：前端渲染选择卡，等用户应答 */
 	| { type: "choice"; id: string; question: string; options: string[]; placeholder?: string }
 	/** 询问已决（本端应答成功 / 他端先答 / 超时/中止）：前端把未决卡收敛成留痕态 */
@@ -337,7 +352,9 @@ export type ClientFrame =
 	| { type: "assistant_sessions" }
 	| { type: "assistant_open"; path: string }
 	| { type: "assistant_delete"; path: string }
-	| { type: "new" };
+	| { type: "new"; name?: string }
+	/** 两层布局：在指定子项目里再开一个会话（「第二个窗口继续聊」） */
+	| { type: "chat_new_session"; chatId: string };
 
 /** 翻译时需要的显示名 */
 export interface WireNames {

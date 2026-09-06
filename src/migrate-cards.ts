@@ -26,7 +26,7 @@ import { basename, join } from "node:path";
 
 import { loadCardFile } from "./card.ts";
 import { loadPersonas, savePersonas } from "./personas.ts";
-import { createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
+import { appendSessionCardRebind, createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
 import { stripBom } from "./jsonio.ts";
 import { readSessionHeadTail } from "./session-scan.ts";
 import {
@@ -269,7 +269,11 @@ export function applyCardMigration(cwd: string, plan: CardMigrationPlan): string
 		}
 		// 会话搬完就重绑定：追加一条 rp-card 行（pi 的 appendCustomEntry 落行格式），
 		// 指向新卡引用。旧卡引用的行留在前面（parse 取最后一条），但列表过滤从此认新引用。
-		rebindSessionCard(join(sessionsAbs, basename(s.file)), s.newRef, log);
+		try {
+			appendSessionCardRebind(join(sessionsAbs, basename(s.file)), s.newRef);
+		} catch (err) {
+			log.push(`重绑定 ${basename(s.file)} 失败：${err instanceof Error ? err.message : String(err)}`);
+		}
 	}
 	if (moved > 0) log.push(`${moved} 个旧会话各成一个子项目`);
 	for (const k of plan.skipped) log.push(`原地保留 ${basename(k.file)}：${k.why}`);
@@ -281,56 +285,6 @@ export function applyCardMigration(cwd: string, plan: CardMigrationPlan): string
 	// 5) 改写 config.card / personas byCard / 卡收藏：旧引用 → 新引用
 	rewriteCardRefs(cwd, plan, log);
 	return log;
-}
-
-/**
- * 给搬完的会话文件追加一条 rp-card 重绑定行。
- * 行格式与 pi 的 `appendCustomEntry` 逐字一致（session-manager.ts:1029）——
- * parentId 链在追加场景用「文件里最后一条有 id 的条目」接上；接不上（空文件）就 null。
- */
-function rebindSessionCard(file: string, newRef: string, log: string[]): void {
-	try {
-		const lines = readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
-		if (!lines.length) return;
-		let parentId: string | null = null;
-		for (let i = lines.length - 1; i >= 0; i--) {
-			try {
-				const e = JSON.parse(lines[i]) as { id?: unknown };
-				if (typeof e.id === "string" && e.id) {
-					parentId = e.id;
-					break;
-				}
-			} catch {
-				/* 半行跳过 */
-			}
-		}
-		const name = rebindCardName(lines);
-		const entry = {
-			type: "custom",
-			customType: "rp-card",
-			data: { card: newRef, ...(name ? { name } : {}) },
-			id: randomBytes(4).toString("hex"),
-			parentId,
-			timestamp: new Date().toISOString(),
-		};
-		appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
-	} catch (err) {
-		log.push(`重绑定 ${basename(file)} 失败：${err instanceof Error ? err.message : String(err)}`);
-	}
-}
-
-/** 重绑定行带上原卡名（显示用）；从既有 rp-card 行里取最后一条的 name */
-function rebindCardName(lines: string[]): string {
-	for (let i = lines.length - 1; i >= 0; i--) {
-		if (!lines[i].includes('"rp-card"')) continue;
-		try {
-			const e = JSON.parse(lines[i]) as { customType?: string; data?: { name?: unknown } };
-			if (e.customType === "rp-card" && typeof e.data?.name === "string" && e.data.name) return e.data.name;
-		} catch {
-			/* 半行跳过 */
-		}
-	}
-	return "";
 }
 
 /**

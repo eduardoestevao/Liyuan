@@ -10,6 +10,7 @@ export type {
 	UpdateWire,
 	WireActivity,
 	WireChannel,
+	WireChatInfo,
 	WireChoice,
 	WireMsg,
 	WireSessionInfo,

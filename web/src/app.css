@@ -740,9 +740,9 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 12px 12px 12px 16px;
+	padding: 10px 12px 10px 14px;
 	font-weight: 600;
-	font-size: 13.5px;
+	font-size: 13px;
 	color: var(--text-strong);
 	border-bottom: 1px solid var(--hairline);
 	flex: none;
@@ -758,7 +758,7 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	white-space: nowrap;
 }
 .panel-head-title svg {
-	color: var(--accent);
+	color: var(--text-soft);
 }
 
 /* 保活层：占满侧栏剩余高度，否则内部 panel-body 无法出现滚动条 */
@@ -2173,46 +2173,6 @@ html[data-theme="dark"] .msg-md-code {
 	display: flex;
 	flex-direction: column;
 	gap: 2px;
-}
-
-.session-item {
-	display: flex;
-	flex-direction: column;
-	gap: 3px;
-	width: 100%;
-	text-align: left;
-	background: none;
-	border: none;
-	border-left: 2px solid transparent;
-	border-radius: var(--radius-s);
-	padding: 8px 10px;
-	cursor: pointer;
-	color: var(--text);
-	transition: background 0.15s;
-}
-.session-item:hover {
-	background: var(--surface-dim);
-}
-.session-item.current {
-	border-left-color: var(--accent);
-	background: var(--accent-wash);
-	cursor: default;
-}
-.session-item.current .session-title {
-	color: var(--accent);
-	font-weight: 600;
-}
-
-.session-title {
-	font-size: 13px;
-	overflow: hidden;
-	text-overflow: ellipsis;
-	white-space: nowrap;
-}
-
-.session-meta {
-	font-size: 11.5px;
-	color: var(--text-faint);
 }
 
 .legacy-group {
@@ -3838,32 +3798,7 @@ input.panel-search.num {
 	background: var(--accent-wash);
 }
 
-/* ── 会话面板：当前会话卡、行内动作、末条预览、上下文条 ── */
-.current-session-card {
-	border: 1px solid color-mix(in srgb, var(--accent) 35%, var(--hairline-strong));
-	border-radius: var(--radius);
-	padding: 8px;
-	background: var(--accent-wash);
-	box-shadow: 0 0 0 1px color-mix(in srgb, var(--accent) 12%, transparent);
-}
-.current-session-card .session-row.current {
-	background: transparent;
-}
-.session-row {
-	display: flex;
-	align-items: stretch;
-	gap: 4px;
-	border-radius: var(--radius-s);
-	border-left: 2px solid transparent;
-}
-.session-row:hover {
-	background: var(--surface-dim);
-}
-.session-row.current {
-	border-left-color: var(--accent);
-	background: var(--accent-wash);
-}
-/* 多选态：勾选框与整行选中底色（逐条动作此时不渲染，行本身就是选择热区） */
+/* ── 会话面板（刀5 仿 Codex 重做）：多选勾选框、当前徽章（助手/首页共用）、末条预览 ── */
 .session-pick {
 	flex: none;
 	align-self: center;
@@ -3873,21 +3808,8 @@ input.panel-search.num {
 	accent-color: var(--accent);
 	cursor: pointer;
 }
-.session-row.picked {
-	background: var(--accent-wash);
-	border-left-color: var(--accent);
-}
 .session-pick-bar {
 	margin-top: 6px;
-}
-.session-row .session-item {
-	flex: 1;
-	min-width: 0;
-	cursor: pointer;
-}
-.session-row.current .session-title {
-	color: var(--accent);
-	font-weight: 600;
 }
 .session-current-badge {
 	display: inline-block;
@@ -3902,17 +3824,6 @@ input.panel-search.num {
 	vertical-align: middle;
 	line-height: 1.4;
 }
-.session-acts {
-	display: flex;
-	align-items: center;
-	gap: 1px;
-	opacity: 0;
-	transition: opacity 0.12s;
-}
-.session-row:hover .session-acts,
-.session-acts:focus-within {
-	opacity: 1;
-}
 .session-preview {
 	font-size: 11.5px;
 	color: var(--text-faint);
@@ -3925,6 +3836,440 @@ input.panel-search.num {
 	margin-bottom: 0;
 	padding: 3px 6px;
 	font-size: 13px;
+}
+
+/* ---- 会话面板 v2（刀5 像素级对齐 Codex 极简侧栏） ---- */
+.panel-body.spv2 {
+	padding: 10px 8px 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 0;
+}
+
+/* 顶部纯文字+图标动作区：仿 Codex 顶部「新对话」样式 */
+.spv2-actions {
+	display: flex;
+	flex-direction: column;
+	gap: 1px;
+	margin-bottom: 8px;
+}
+.spv2-action {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	width: 100%;
+	height: 32px;
+	padding: 0 8px;
+	background: none;
+	border: none;
+	border-radius: 6px;
+	font-size: 13px;
+	color: var(--text-strong);
+	cursor: pointer;
+	text-align: left;
+	transition: background 0.12s ease;
+}
+.spv2-action:hover {
+	background: color-mix(in srgb, var(--text) 5%, transparent);
+}
+.spv2-action svg {
+	flex: none;
+	color: var(--text-soft);
+}
+
+/* 极简沉浸式搜索框 */
+.spv2-search {
+	margin: 2px 4px 6px;
+}
+.spv2-search .panel-search {
+	margin-bottom: 0;
+	padding: 5px 10px;
+	height: 28px;
+	font-size: 12px;
+	border-radius: 6px;
+	border: 1px solid transparent;
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+	color: var(--text);
+}
+.spv2-search .panel-search:focus {
+	border-color: color-mix(in srgb, var(--text) 15%, transparent);
+	background: var(--surface);
+}
+
+/* 区块小标题：「项目」大纲头（小、灰、静止），右侧微型多选 */
+.spv2-label {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 8px;
+	margin: 10px 0 4px;
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--text-faint);
+}
+.spv2-label-act {
+	background: none;
+	border: none;
+	padding: 1px 4px;
+	font-size: 11px;
+	color: var(--text-faint);
+	cursor: pointer;
+	border-radius: 4px;
+}
+.spv2-label-act:hover {
+	color: var(--text-soft);
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+/* 主树容器 */
+.spv2-tree {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+	flex: 1 1 auto;
+}
+.spv2-tree-rest {
+	margin-top: 8px;
+	padding-top: 8px;
+	border-top: 1px dashed var(--hairline);
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+/* 项目块（父）：Codex 风格整块浮动浅灰圆角卡片 */
+.spv2-chat {
+	border-radius: 6px;
+	transition: background 0.15s ease;
+}
+.spv2-chat + .spv2-chat {
+	margin-top: 6px;
+}
+.spv2-chat.on {
+	background: color-mix(in srgb, var(--text) 5.5%, transparent);
+	padding: 5px 0 6px;
+}
+
+/* 项目行（父标题）：空心文件夹 + 13px粗体 */
+.spv2-chatrow {
+	display: flex;
+	align-items: center;
+	position: relative;
+	min-height: 34px;
+	padding: 0 6px 0 4px;
+}
+.spv2-chatname {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	flex: 1;
+	min-width: 0;
+	min-height: 34px;
+	padding: 0 4px;
+	background: none;
+	border: none;
+	border-radius: 4px;
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-strong);
+	cursor: pointer;
+	text-align: left;
+}
+.spv2-chatname:disabled {
+	cursor: default;
+}
+.spv2-chatname svg {
+	flex: none;
+	color: var(--text-soft);
+}
+.spv2-chatname-text {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 按钮通用触控尺寸增强（防误触、易按压） */
+.spv2-icon-btn {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	width: 28px;
+	height: 28px;
+	padding: 0;
+	background: none;
+	border: none;
+	border-radius: 6px;
+	color: var(--text-soft);
+	cursor: pointer;
+	text-decoration: none;
+	transition: all 0.12s ease;
+}
+.spv2-icon-btn:hover {
+	color: var(--text-strong);
+	background: color-mix(in srgb, var(--text) 8%, transparent);
+}
+.spv2-icon-btn.spv2-del-btn:hover {
+	color: var(--accent);
+	background: var(--accent-wash);
+}
+.spv2-icon-btn:disabled {
+	opacity: 0.35;
+	cursor: default;
+}
+
+/* 项目行右侧悬浮动作按钮组（＋ 新建对话，改名，导出，删除） */
+.spv2-chat-acts {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+}
+.spv2-chatrow:hover .spv2-chat-acts,
+.spv2-chat-acts:focus-within {
+	opacity: 1;
+}
+
+/* 子级会话容器：向右严密缩进对齐文件夹后文字起始位置（约 26px），拉开垂直间距 */
+.spv2-kids {
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+	padding-left: 26px;
+	padding-right: 4px;
+	margin-top: 2px;
+}
+
+/* 对话叶子行：单行极简，高度加到 30px 便于触控与阅读 */
+.spv2-leafrow {
+	display: flex;
+	align-items: center;
+	min-height: 30px;
+	border-radius: 4px;
+	padding: 0 4px 0 0;
+	position: relative;
+}
+.spv2-leafrow.picked {
+	background: var(--accent-wash);
+}
+.spv2-leaf {
+	display: flex;
+	align-items: center;
+	flex: 1;
+	min-width: 0;
+	min-height: 30px;
+	padding: 0 6px;
+	background: none;
+	border: none;
+	border-radius: 4px;
+	cursor: pointer;
+	text-align: left;
+	transition: background 0.1s ease;
+}
+.spv2-leaf:hover {
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.spv2-chat.on .spv2-leaf:hover {
+	background: color-mix(in srgb, var(--surface) 80%, transparent);
+}
+.spv2-leaf-title {
+	flex: 1;
+	min-width: 0;
+	font-size: 12.5px;
+	color: var(--text-soft);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+/* 当前活跃会话行：文字加重，无任何刺眼彩色徽章 */
+.spv2-leafrow.cur .spv2-leaf-title {
+	color: var(--text-strong);
+	font-weight: 600;
+}
+
+/* 叶子行右侧悬浮动作 */
+.spv2-leaf-acts {
+	display: flex;
+	align-items: center;
+	gap: 3px;
+	opacity: 0;
+	transition: opacity 0.12s ease;
+}
+.spv2-leafrow:hover .spv2-leaf-acts,
+.spv2-leaf-acts:focus-within {
+	opacity: 1;
+}
+
+.spv2-empty {
+	padding: 2px 6px 4px;
+	font-size: 12px;
+	color: var(--text-faint);
+}
+.spv2-more {
+	background: none;
+	border: none;
+	padding: 3px 6px;
+	text-align: left;
+	font-size: 11.5px;
+	color: var(--text-faint);
+	cursor: pointer;
+	border-radius: 4px;
+	margin-top: 1px;
+}
+.spv2-more:hover {
+	color: var(--text-soft);
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+
+/* 搜索结果 */
+.spv2-hit {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	width: 100%;
+	padding: 6px 8px;
+	background: none;
+	border: none;
+	border-radius: 5px;
+	cursor: pointer;
+	text-align: left;
+}
+.spv2-hit:hover {
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+}
+.spv2-hit.cur .spv2-hit-title {
+	color: var(--text-strong);
+	font-weight: 600;
+}
+.spv2-hit-title {
+	font-size: 12.5px;
+	color: var(--text-soft);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+.spv2-hit-snippet {
+	font-size: 11px;
+	color: var(--text-faint);
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+/* 底部极简独立区（仿 Codex 底部固定设置区） */
+.spv2-bottom {
+	margin-top: auto;
+	padding-top: 12px;
+	border-top: 1px solid var(--hairline);
+}
+.spv2-bottom-link {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+	width: 100%;
+	height: 28px;
+	padding: 0 8px;
+	background: none;
+	border: none;
+	border-radius: 5px;
+	font-size: 11.5px;
+	color: var(--text-faint);
+	cursor: pointer;
+	text-align: left;
+	transition: all 0.12s ease;
+}
+.spv2-bottom-link:hover {
+	background: color-mix(in srgb, var(--text) 4%, transparent);
+	color: var(--text-soft);
+}
+.spv2-import-body {
+	margin-top: 8px;
+	padding: 8px;
+	background: color-mix(in srgb, var(--text) 2.5%, transparent);
+	border-radius: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+/* 新建项目弹窗 */
+.spv2-modal-mask {
+	position: fixed;
+	inset: 0;
+	z-index: 60;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	background: rgb(33 30 27 / 32%);
+}
+.spv2-modal {
+	width: min(320px, calc(100vw - 48px));
+	background: var(--surface);
+	border-radius: var(--radius);
+	box-shadow: var(--shadow-2);
+	padding: 16px;
+	display: flex;
+	flex-direction: column;
+	gap: 12px;
+}
+.spv2-modal-title {
+	font-size: 14px;
+	font-weight: 600;
+	color: var(--text-strong);
+}
+.spv2-modal-input {
+	width: 100%;
+	box-sizing: border-box;
+}
+.spv2-modal-row {
+	display: flex;
+	gap: 8px;
+	justify-content: flex-end;
+}
+.spv2-modal-row .drawer-btn {
+	flex: none;
+	padding: 7px 16px;
+}
+.spv2-modal-ok {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: #fff;
+}
+.spv2-modal-ok:hover {
+	border-color: var(--accent-strong);
+	background: var(--accent-strong);
+}
+
+@media (hover: none), (max-width: 999px) {
+	/* 移动端/触屏：只对当前选中项/聚焦项常驻全部操作，其他未选中项仅常驻「＋」新建入口，防止右侧排布成灾挤压标题并导致误触 */
+	.spv2-chat-acts,
+	.spv2-leaf-acts {
+		opacity: 0;
+	}
+	.spv2-chat.on .spv2-chat-acts,
+	.spv2-leafrow.cur .spv2-leaf-acts,
+	.spv2-chatrow:focus-within .spv2-chat-acts,
+	.spv2-leafrow:focus-within .spv2-leaf-acts {
+		opacity: 1;
+	}
+	/* 未激活的项目行也允许直接「＋」新建对话，其余管理动作点击展开或切过去再用 */
+	.spv2-chat:not(.on) .spv2-chat-acts {
+		opacity: 1;
+	}
+	.spv2-chat:not(.on) .spv2-chat-acts > *:not(:first-child) {
+		display: none;
+	}
+
+	.spv2-icon-btn {
+		width: 30px;
+		height: 30px;
+	}
+	.spv2-chatrow {
+		min-height: 36px;
+	}
+	.spv2-leafrow {
+		min-height: 32px;
+	}
 }
 
 .ctx-bar-row {

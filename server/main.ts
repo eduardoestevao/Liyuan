@@ -139,7 +139,7 @@ import { registerAssistantRunner } from "../src/assistant-gateway.ts";
 import { sameCardPath } from "../src/paths.ts";
 import { readSessionCardInfo } from "../src/session-scan.ts";
 import { chatDataPath, chatDirOfSessionDir, createChat } from "../src/cardspace.ts";
-import { chatSessionsOf, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
+import { chatSessionsOf, chatsOfCard, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
 import { resolveCardSpace } from "../src/cardspace.ts";
 import { alreadyMigrated, applyCardMigration, planCardMigration } from "../src/migrate-cards.ts";
 import {
@@ -1480,6 +1480,11 @@ const restHost: RestHost = {
 	},
 	// ---- 会话管理（PLAN-PANELS §2.1）：面板的重命名/删除/导出/全文搜索 ----
 	sessions: () => sessionInfos(),
+	/** 当前子项目 id（REST 删除守卫用；老布局/未进对话时 null） */
+	currentChatId() {
+		const d = chatDirOfSessionDir(session.sessionManager.getSessionDir());
+		return d ? basename(d) : null;
+	},
 	async renameSession(path, name) {
 		await assertListedSession(path);
 		const clean = name.replace(/[\r\n]+/g, " ").trim();
@@ -2768,6 +2773,12 @@ const sessionInfos = async () => {
 	const all = chatEntries
 		? (await Promise.all([...new Set(chatEntries.map((e) => dirname(e.path)))].map((p) => SessionManager.listAll(p)))).flat()
 		: await SessionManager.list(cwd);
+	// 两层布局：会话文件所在目录即其子项目的会话目录——目录→chatId 一张表。
+	// 用 chatsOfCard 全量子项目建表（含还没有会话文件的空项目）——否则新建项目后的
+	// 当前会话（惰性、未落盘）认不出所属项目，会游离在树外。
+	const chatOfDir = new Map<string, string>();
+	if (chatEntries) for (const c of chatsOfCard(cwd, cardPath) ?? []) chatOfDir.set(c.sessionsDir, c.id);
+	const chatIdOf = (p: string): string | undefined => chatOfDir.get(dirname(p));
 	const curFile = session.sessionFile;
 	const curId = session.sessionId;
 	const list: Array<{
@@ -2781,6 +2792,7 @@ const sessionInfos = async () => {
 		preview?: string;
 		cardName: string;
 		card?: string;
+		chatId?: string;
 	}> = [];
 	const belongsHere = (card: string | undefined) => {
 		if (!cardPath) return false; // 未配置卡：不铺开历史
@@ -2801,6 +2813,7 @@ const sessionInfos = async () => {
 			if (!(isCurrent && !info && cardPath)) continue;
 		}
 		const preview = readSessionPreview(s.path, mtime);
+		const chatId = chatIdOf(s.path);
 		list.push({
 			path: s.path,
 			id: s.id,
@@ -2812,6 +2825,7 @@ const sessionInfos = async () => {
 			...(preview ? { preview } : {}),
 			cardName: info?.name || names.charName,
 			...(info?.card ? { card: info.card } : cardPath ? { card: cardPath } : {}),
+			...(chatId ? { chatId } : {}),
 		});
 	}
 	// 兜底：列表里没有任何 current，但进程确有打开会话 → 按 id/路径补一条（须属当前卡或无标记）
@@ -2825,6 +2839,7 @@ const sessionInfos = async () => {
 				// skip foreign current
 			} else {
 				const preview = readSessionPreview(mine.path, mtime);
+				const chatId = chatIdOf(mine.path);
 				const existing = list.find((x) => x.id === mine.id || isSameSessionPath(x.path, mine.path));
 				if (existing) {
 					existing.current = true;
@@ -2840,6 +2855,7 @@ const sessionInfos = async () => {
 						...(preview ? { preview } : {}),
 						cardName: info?.name || names.charName,
 						...(info?.card ? { card: info.card } : cardPath ? { card: cardPath } : {}),
+						...(chatId ? { chatId } : {}),
 					});
 				}
 			}
@@ -2871,6 +2887,7 @@ const sessionInfos = async () => {
 				} catch {
 					messageCount = 0;
 				}
+				const chatId = chatIdOf(curFile || "");
 				list.push({
 					path: curFile || "",
 					id: curId,
@@ -2880,6 +2897,7 @@ const sessionInfos = async () => {
 					current: true,
 					cardName,
 					...(boundCard ? { card: boundCard } : {}),
+					...(chatId ? { chatId } : {}),
 				});
 			}
 		}
@@ -2888,7 +2906,25 @@ const sessionInfos = async () => {
 	return list;
 };
 
-const listSessions = async (): Promise<ServerFrame> => ({ type: "sessions", list: await sessionInfos() });
+const listSessions = async (): Promise<ServerFrame> => {
+	// 两层布局附子项目清单（含空子项目，前端两层树用）；老布局不带 chats ⇒ 前端回落扁平列表
+	const chats = chatsOfCard(cwd, cardPath);
+	return {
+		type: "sessions",
+		list: await sessionInfos(),
+		...(chats
+			? {
+					chats: chats.map((c) => ({
+						id: c.id,
+						...(c.meta.name ? { name: c.meta.name } : {}),
+						createdAt: c.meta.createdAt,
+						modified: c.modified,
+						sessionCount: c.sessionCount,
+					})),
+				}
+			: {}),
+	};
+};
 
 // ---------- 会话文件辅助（预览/重命名/删除/搜索——面板重做 PLAN-PANELS §2.1） ----------
 
@@ -2953,8 +2989,11 @@ const readSessionPreview = (path: string, mtimeMs: number): string => {
 
 /** 校验路径确属本项目会话清单（所有会话文件操作的门），返回清单项 */
 const assertListedSession = async (path: string) => {
-	const all = await SessionManager.list(cwd);
-	const found = all.find((s) => s.path === path);
+	const chatEntries = chatSessionsOf(cwd, cardPath);
+	const all = chatEntries
+		? (await Promise.all([...new Set(chatEntries.map((e) => dirname(e.path)))].map((p) => SessionManager.listAll(p)))).flat()
+		: await SessionManager.list(cwd);
+	const found = all.find((s) => isSameSessionPath(s.path, path));
 	if (!found) throw new Error("不是本项目的会话文件");
 	return found;
 };
@@ -3064,7 +3103,9 @@ wss.on("connection", (ws, req) => {
 						// 新 sessionDir 上的干净会话（换 runtime 是 pi 提供的唯一切 sessionDir 通道，
 						// switchSession 只能在既有文件间切）。同一子项目里再开会话＝
 						// 「第二个窗口继续聊」，由 switchSession/open 承担。老布局走 runtime.newSession()。
-						const freshDir = newChatSessionDir(cwd, cardPath);
+						// name＝新建项目弹窗起的名（缺省前端已给「新建对话（N）」默认名）。
+						const newName = typeof frame.name === "string" ? frame.name.trim() || undefined : undefined;
+						const freshDir = newChatSessionDir(cwd, cardPath, newName);
 						if (freshDir) {
 							const previousSessionFile = session.sessionFile;
 							// 按 pi 的 teardownCurrent 同款收尾旧会话（session_shutdown → 扩展收尾 → dispose），
@@ -3094,6 +3135,50 @@ wss.on("connection", (ws, req) => {
 						}
 						broadcast({ type: "notify", level: "info", text: "已新建会话" });
 						break;
+					case "chat_new_session": {
+						if (refuseWhileStreaming(ws, "新建会话")) return;
+						// 「第二个窗口继续聊」＝在指定子项目里再开一个会话。当前子项目：
+						// runtime.newSession() 复用 sessionDir；别的子项目：换 runtime 落进
+						// 它的会话目录（换 runtime 是 pi 唯一切 sessionDir 的通道）。
+						const chatId = String(frame.chatId ?? "");
+						const target = chatsOfCard(cwd, cardPath)?.find((c) => c.id === chatId);
+						if (!target) {
+							ws.send(
+								JSON.stringify({ type: "notify", level: "error", text: "子项目不存在（或当前卡不在 cards/）" } satisfies ServerFrame),
+							);
+							return;
+						}
+						const currentChatDir = chatDirOfSessionDir(session.sessionManager.getSessionDir());
+						if (currentChatDir && currentChatDir === target.dir) {
+							await runtime.newSession();
+						} else {
+							const previousSessionFile = session.sessionFile;
+							// 按 pi 的 teardownCurrent 同款收尾旧会话（session_shutdown → 扩展收尾 → dispose），
+							// 不能只丢引用：roleplay.ts 在 shutdown 事件里落盘收尾。
+							await session.dispose();
+							runtime = await createAgentSessionRuntime(createRuntime, {
+								cwd,
+								agentDir: getAgentDir(),
+								sessionManager: SessionManager.create(cwd, target.sessionsDir),
+								sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+							});
+							wireRuntimeHooks();
+							await bindSession();
+							resyncAll();
+						}
+						if (assistantHost) {
+							try {
+								await assistantHost.switchToStory(session.sessionId);
+								broadcast(assistantHelloFrame());
+							} catch (err) {
+								console.error(
+									`[liyuan] 助手对齐剧情会话失败：${err instanceof Error ? err.message : String(err)}`,
+								);
+							}
+						}
+						broadcast({ type: "notify", level: "info", text: "已新建会话" });
+						break;
+					}
 					case "choice_reply": {
 						const id = String(frame.id ?? "");
 						if (!pendingChoices.has(id)) return; // 已被他端应答/超时收敛

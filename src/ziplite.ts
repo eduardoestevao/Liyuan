@@ -1,7 +1,7 @@
 /**
- * 极简 zip 解压（仅在线更新用）：node 原生 zlib，零外部依赖。
+ * 极简 zip：解压（在线更新/备份恢复/子项目导入用）＋ 打包（store 法，小包全内存）。
  *
- * 只支持梨园自己 pack-release.ps1 产出的 zip 形态：
+ * 只支持梨园自己产出的 zip 形态：
  * - 压缩方法 0（store）/ 8（deflate）
  * - 无加密、无分卷、无 zip64（包 ~12MB 远低于 4GB 界）
  * 以中央目录为准枚举条目（EOCD 定位），路径穿越防御（zip-slip）。
@@ -120,4 +120,85 @@ export function extractZipFile(zipPath: string, destDir: string): void {
 			}
 		}
 	}
+}
+
+// ---------- 打包（method 0 store；小包全内存，子项目导出用） ----------
+
+const CRC_TABLE = (() => {
+	const t = new Uint32Array(256);
+	for (let n = 0; n < 256; n++) {
+		let c = n;
+		for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+		t[n] = c >>> 0;
+	}
+	return t;
+})();
+
+function crc32(buf: Buffer): number {
+	let c = 0xffffffff;
+	for (let i = 0; i < buf.length; i++) c = CRC_TABLE[(c ^ buf[i]) & 0xff] ^ (c >>> 8);
+	return (c ^ 0xffffffff) >>> 0;
+}
+
+function dosDateTime(d: Date): { time: number; date: number } {
+	const y = d.getFullYear() >= 1980 ? d.getFullYear() - 1980 : 0;
+	const date = (y << 9) | ((d.getMonth() + 1) << 5) | d.getDate();
+	const time = (d.getHours() << 11) | (d.getMinutes() << 5) | Math.floor(d.getSeconds() / 2);
+	return { time, date };
+}
+
+/**
+ * 生成 zip（store 法）Buffer。条目名用 / 分隔；不写目录条目（解压侧自建目录）。
+ * manifest 之类的小文件排第一条即可，无需额外约定。
+ */
+export function buildZipBuffer(entries: Array<{ name: string; data: Buffer }>): Buffer {
+	const parts: Buffer[] = [];
+	const central: Buffer[] = [];
+	let offset = 0;
+	const dos = dosDateTime(new Date());
+	for (const e of entries) {
+		const nameBuf = Buffer.from(e.name, "utf8");
+		const crc = crc32(e.data);
+		const local = Buffer.alloc(30);
+		local.writeUInt32LE(0x04034b50, 0);
+		local.writeUInt16LE(20, 4); // version needed
+		local.writeUInt16LE(0x0800, 6); // UTF-8 名
+		local.writeUInt16LE(0, 8); // store
+		local.writeUInt16LE(dos.time, 10);
+		local.writeUInt16LE(dos.date, 12);
+		local.writeUInt32LE(crc, 14);
+		local.writeUInt32LE(e.data.length, 18);
+		local.writeUInt32LE(e.data.length, 22);
+		local.writeUInt16LE(nameBuf.length, 26);
+		local.writeUInt16LE(0, 28); // extra len
+		parts.push(local, nameBuf, e.data);
+		const cen = Buffer.alloc(46);
+		cen.writeUInt32LE(0x02014b50, 0);
+		cen.writeUInt16LE(20, 4); // version made by
+		cen.writeUInt16LE(20, 6); // version needed
+		cen.writeUInt16LE(0x0800, 8); // UTF-8 名
+		cen.writeUInt16LE(0, 10); // store
+		cen.writeUInt16LE(dos.time, 12);
+		cen.writeUInt16LE(dos.date, 14);
+		cen.writeUInt32LE(crc, 16);
+		cen.writeUInt32LE(e.data.length, 20);
+		cen.writeUInt32LE(e.data.length, 24);
+		cen.writeUInt16LE(nameBuf.length, 28);
+		cen.writeUInt16LE(0, 30); // extra len
+		cen.writeUInt16LE(0, 32); // comment len
+		cen.writeUInt16LE(0, 34); // disk start
+		cen.writeUInt16LE(0, 36); // internal attrs
+		cen.writeUInt32LE(0, 38); // external attrs
+		cen.writeUInt32LE(offset, 42);
+		central.push(cen, nameBuf);
+		offset += 30 + nameBuf.length + e.data.length;
+	}
+	const cd = Buffer.concat(central);
+	const eocd = Buffer.alloc(22);
+	eocd.writeUInt32LE(0x06054b50, 0);
+	eocd.writeUInt16LE(entries.length, 8);
+	eocd.writeUInt16LE(entries.length, 10);
+	eocd.writeUInt32LE(cd.length, 12);
+	eocd.writeUInt32LE(offset, 16);
+	return Buffer.concat([...parts, cd, eocd]);
 }

@@ -81,7 +81,7 @@ import {
 	normalizeDataPath,
 	resolveConfigPath,
 } from "../src/paths.ts";
-import { listCardSpaces } from "../src/cardspace.ts";
+import { deleteChat, exportChatZip, importChatZip, listCardSpaces, renameChat, resolveCardSpace } from "../src/cardspace.ts";
 import { scanSkillFiles } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import type { WorldlineView } from "../src/worldline.ts";
@@ -247,6 +247,8 @@ export interface RestHost {
 		kind?: string;
 	}): Promise<{ name: string; kind: string; updatedAt: number }>;
 	// ---- 会话管理（PLAN-PANELS §2.1，main.ts 实现） ----
+	/** 当前子项目 id（chats 删除守卫用）；老布局 null */
+	currentChatId(): string | null;
 	sessions(): Promise<SessionInfoLite[]>;
 	renameSession(path: string, name: string): Promise<void>;
 	deleteSession(path: string): Promise<void>;
@@ -372,6 +374,9 @@ function sendJson(res: ServerResponse, code: number, obj: unknown): void {
 }
 
 const resolvePath = (cwd: string, p: string) => (isAbsolute(p) ? p : join(cwd, p));
+
+/** 子项目 id 形状守卫：id 会拼进磁盘路径，禁路径段（..、斜杠等） */
+const chatIdOk = (id: string) => /^[\w][\w.-]*$/.test(id) && !id.includes("..");
 
 /** 带 .bak 备份的 JSON 写盘（tab 缩进，与手写配置一致） */
 export function writeJsonWithBackup(path: string, data: unknown): void {
@@ -2126,6 +2131,53 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const body = JSON.parse(await readBody(req)) as { path?: string; name?: string };
 				if (!body.path || !body.name?.trim()) throw new Error("缺少 path / name");
 				await host.renameSession(body.path, body.name);
+				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			// 子项目（对话层）改名：只动 对话.json 的 name，不触会话，流式中也无冲突
+			case "POST /api/chats/rename": {
+				const body = JSON.parse(await readBody(req)) as { chatId?: string; name?: string };
+				if (!body.chatId || !body.name?.trim()) throw new Error("缺少 chatId / name");
+				const space = resolveCardSpace(host.cwd, loadConfig(host.cwd).card);
+				if (!space) throw new Error("当前卡不在 cards/（老布局没有对话层）");
+				if (!chatIdOk(body.chatId)) throw new Error("chatId 不合法");
+				renameChat(space.dir, body.chatId, body.name);
+				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			// 导出子项目：整个 对话/<id>/ 打成 zip 下载
+			case "GET /api/chats/export": {
+				const chatId = (query.get("chatId") ?? "").trim();
+				if (!chatId) throw new Error("缺少 chatId");
+				if (!chatIdOk(chatId)) throw new Error("chatId 不合法");
+				const space = resolveCardSpace(host.cwd, loadConfig(host.cwd).card);
+				if (!space) throw new Error("当前卡不在 cards/（老布局没有对话层）");
+				const r = exportChatZip(space.dir, chatId);
+				writeMaybeGzip(res, 200, r.data, {
+					"content-type": "application/zip",
+					"content-disposition": `attachment; filename="chat.zip"; filename*=UTF-8''${encodeURIComponent(r.fileName)}`,
+				});
+				return true;
+			}
+			// 导入子项目包：落成新的 对话/<新id>/（不覆盖现有），会话重绑定到当前卡
+			case "POST /api/chats/import": {
+				const space = resolveCardSpace(host.cwd, loadConfig(host.cwd).card);
+				if (!space) throw new Error("当前卡不在 cards/（老布局没有对话层）");
+				const body = await readBodyRaw(req, MAX_UPLOAD);
+				if (!body.length) throw new Error("缺少包体（.zip）");
+				const r = importChatZip(space.dir, body, loadConfig(host.cwd).card);
+				sendJson(res, 200, { ok: true, ...r });
+				return true;
+			}
+			// 删除整个子项目（含全部对话与世界状态）；当前项目拒删（先切走再删）
+			case "DELETE /api/chats": {
+				const chatId = (query.get("chatId") ?? "").trim();
+				if (!chatId) throw new Error("缺少 chatId");
+				if (!chatIdOk(chatId)) throw new Error("chatId 不合法");
+				const space = resolveCardSpace(host.cwd, loadConfig(host.cwd).card);
+				if (!space) throw new Error("当前卡不在 cards/（老布局没有对话层）");
+				if (host.currentChatId() === chatId) throw new Error("当前项目不能删（先切到别的项目再删它）");
+				deleteChat(space.dir, chatId);
 				sendJson(res, 200, { ok: true });
 				return true;
 			}

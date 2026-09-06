@@ -105,6 +105,7 @@ import type {
 	RpPanel,
 	ServerFrame,
 	WireActivity,
+	WireChatInfo,
 	WireSessionInfo,
 	WireStats,
 	UpdateWire,
@@ -272,6 +273,8 @@ export default function App() {
 	/** 手机端输入框左侧工具收纳：展开成上方一行（桌面端按钮常驻，此态无效） */
 	const [composerTools, setComposerTools] = useState(false);
 	const [sessions, setSessions] = useState<WireSessionInfo[] | null>(null);
+	/** 两层布局的子项目清单（null＝老布局/未下发 ⇒ 面板回落扁平列表） */
+	const [chats, setChats] = useState<WireChatInfo[] | null>(null);
 	// 右栏数据
 	const [worldState, setWorldState] = useState<WorldState | null>(null);
 	const [stats, setStats] = useState<WireStats | null>(null);
@@ -363,6 +366,7 @@ export default function App() {
 		setWelcome(true);
 		setAtHome(true); // 主动回主页：刷新仍停主页，不再被短间隔续聊
 		setSessions(null);
+		setChats(null);
 	}, []);
 
 	const openStoreModal = useCallback(() => {
@@ -966,6 +970,7 @@ export default function App() {
 					break;
 				case "sessions":
 					setSessions(frame.list);
+					setChats(frame.chats ?? null);
 					break;
 				case "choice":
 					// 新的决策询问：弹出 live 选择卡（会话被切换时由 hello 分支清空）
@@ -1551,6 +1556,7 @@ export default function App() {
 				return (
 					<SessionsPanel
 						sessions={sessions}
+						chats={chats}
 						stats={stats}
 						atHome={welcome}
 						onOpen={(path) => {
@@ -1564,8 +1570,12 @@ export default function App() {
 							ws.send({ type: "open", path });
 							dismissWelcome();
 						}}
-						onNew={() => {
-							ws.send({ type: "new" });
+						onNew={(name) => {
+							ws.send({ type: "new", ...(name ? { name } : {}) });
+							dismissWelcome();
+						}}
+						onNewInChat={(chatId) => {
+							ws.send({ type: "chat_new_session", chatId });
 							dismissWelcome();
 						}}
 						onCompact={() => ws.send({ type: "compact" })}

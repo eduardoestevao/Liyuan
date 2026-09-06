@@ -1,13 +1,30 @@
 /**
- * 会话面板（左栏，PLAN-PANELS §2.1）：
- * 「当前会话」卡（改名/上下文占用/压缩）＋会话列表（末条预览、重命名/导出/删除）
- * ＋全文搜索（回车搜会话内容，借鉴 ST）＋ST 聊天记录导入（从设置面板迁入）。
+ * 会话面板（左栏，刀5 像素级对齐 Codex 设计语言）：
+ *
+ * 1. 顶栏操作项（新建项目 / 世界线 / 存档 / 压缩上下文）：纯文字+细线图标行，30px 行高，克制悬停底色。
+ * 2. 沉浸式微型搜索框：无硬边框，融入背景。
+ * 3. 分类标签栏：「项目」小灰字 + 右侧微型「多选」入口。
+ * 4. 项目树（父强子弱）：
+ *    - 项目行：空心文件夹 + 加粗主文本（13px，weight 600），hover 平滑浮现「＋」(新建对话) 与重命名。
+ *    - 对话行：严格缩进 28px，纯单行次级灰（12.5px，weight 400），尾部省略截断，彻底移除挤占空间的时间戳标签。
+ *    - 激活项目：浮动微透圆角块（仿 Codex 选中块），当前对话行文字加深加粗。
+ * 5. 底部辅助区：独立置底的极简「导入聊天记录」，不与会话树混杂。
  */
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { apiDelete, apiGet, apiPost, type SessionSearchHit } from "../api.ts";
-import type { WireSessionInfo, WireStats } from "../wire.ts";
-import { IconDownload, IconPencil, IconTrash } from "./icons.tsx";
+import { apiDelete, apiGet, apiPost, apiPostFile, type SessionSearchHit } from "../api.ts";
+import type { WireChatInfo, WireSessionInfo, WireStats } from "../wire.ts";
+import {
+	IconDownload,
+	IconFolder,
+	IconList,
+	IconPencil,
+	IconPin,
+	IconPlus,
+	IconTrash,
+	IconUploads,
+	IconWorldline,
+} from "./icons.tsx";
 import { ConfirmButton, Field, SearchInput, useAction } from "./kit.tsx";
 
 function timeAgo(ms: number): string {
@@ -19,11 +36,39 @@ function timeAgo(ms: number): string {
 	return new Date(ms).toLocaleDateString();
 }
 
+/** 子项目显示名：用户起的名优先，缺省按建立时间生成 */
+function chatLabel(c: WireChatInfo): string {
+	if (c.name) return c.name;
+	const t = Date.parse(c.createdAt);
+	if (Number.isNaN(t)) return "未命名项目";
+	const d = new Date(t);
+	const pad = (n: number) => String(n).padStart(2, "0");
+	return `${d.getMonth() + 1}月${d.getDate()}日 ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** 新建项目弹窗的默认名：已有「新建对话（N）」取最大 N＋1，否则从（1）起 */
+function nextProjectName(chats: WireChatInfo[]): string {
+	let max = 0;
+	for (const c of chats) {
+		const m = /^新建对话（(\d+)）$/.exec(c.name ?? "");
+		if (m) max = Math.max(max, Number(m[1]));
+	}
+	return `新建对话（${max + 1}）`;
+}
+
+/** 每个项目默认露出的对话数（当前项目永远全展开）；超出折叠进「展开显示」 */
+const CHAT_PREVIEW_COUNT = 5;
+
 export interface SessionsPanelProps {
 	sessions: WireSessionInfo[] | null;
+	/** 两层布局的子项目清单（null＝老布局/未下发 ⇒ 扁平列表） */
+	chats?: WireChatInfo[] | null;
 	stats: WireStats | null;
 	onOpen: (path: string) => void;
-	onNew: () => void;
+	/** 新建：两层布局经弹窗起名后带 name（新建项目）；老布局无参直接建会话 */
+	onNew: (name?: string) => void;
+	/** 在指定子项目里再开一个会话（项目行右边的「＋」） */
+	onNewInChat?: (chatId: string) => void;
 	onCompact: () => void;
 	/** 打开世界线时间线面板 */
 	onWorldline?: () => void;
@@ -36,10 +81,8 @@ export interface SessionsPanelProps {
 	atHome?: boolean;
 }
 
-const exportUrl = (path: string) => `/api/sessions/export?path=${encodeURIComponent(path)}`;
-
 function sessionTitle(s: { name?: string; firstMessage: string }): string {
-	return s.name || s.firstMessage.slice(0, 40) || "（空会话）";
+	return s.name || s.firstMessage.slice(0, 40) || "暂无聊天";
 }
 
 function RenameBox({ initial, onDone }: { initial: string; onDone: (name: string | null) => void }) {
@@ -61,15 +104,54 @@ function RenameBox({ initial, onDone }: { initial: string; onDone: (name: string
 	);
 }
 
-function Item({
+/** 新建项目弹窗 */
+function NewProjectBox({ initial, busy, onDone }: { initial: string; busy: boolean; onDone: (name: string | null) => void }) {
+	const [value, setValue] = useState(initial);
+	const ref = useRef<HTMLInputElement>(null);
+	useEffect(() => {
+		ref.current?.select();
+		ref.current?.focus();
+	}, []);
+	return (
+		<div
+			className="spv2-modal-mask"
+			onClick={(e) => {
+				if (e.target === e.currentTarget) onDone(null);
+			}}
+		>
+			<div className="spv2-modal">
+				<div className="spv2-modal-title">新建项目</div>
+				<input
+					ref={ref}
+					className="panel-search spv2-modal-input"
+					value={value}
+					onChange={(e) => setValue(e.target.value)}
+					onKeyDown={(e) => {
+						if (e.key === "Enter") onDone(value.trim() || null);
+						if (e.key === "Escape") onDone(null);
+					}}
+				/>
+				<div className="spv2-modal-row">
+					<button type="button" className="drawer-btn" onClick={() => onDone(null)}>
+						取消
+					</button>
+					<button type="button" className="drawer-btn spv2-modal-ok" disabled={busy} onClick={() => onDone(value.trim() || null)}>
+						创建
+					</button>
+				</div>
+			</div>
+		</div>
+	);
+}
+
+/** 对话行（叶子节点）：纯单行文本截断，绝不混入时间戳挤占空间 */
+function Leaf({
 	s,
 	busy,
 	onOpen,
 	onRename,
 	onDelete,
-	/** 当前会话再点：回主页 / 进对话，由父组件决定 */
 	currentHint,
-	/** 多选态：整行改成选中/取消，逐条动作让位（免得手机上误触重命名/删除） */
 	picking = false,
 	selected = false,
 	onToggleSelect,
@@ -85,8 +167,10 @@ function Item({
 	onToggleSelect?: (path: string) => void;
 }) {
 	const [renaming, setRenaming] = useState(false);
+	const hint = `${sessionTitle(s)}${s.preview ? `\n${s.preview}` : ""}\n(${timeAgo(s.modified)} · ${s.messageCount} 条)${s.current && currentHint ? `\n${currentHint}` : ""}`;
+
 	return (
-		<div className={`session-row ${s.current ? "current" : ""} ${picking && selected ? "picked" : ""}`}>
+		<div className={`spv2-leafrow ${s.current ? "cur" : ""} ${picking && selected ? "picked" : ""}`}>
 			{picking && (
 				<input
 					type="checkbox"
@@ -97,56 +181,46 @@ function Item({
 				/>
 			)}
 			{renaming ? (
-				<div className="session-item">
-					<RenameBox
-						initial={s.name ?? ""}
-						onDone={(name) => {
-							setRenaming(false);
-							if (name) onRename(s.path, name);
-						}}
-					/>
-					<span className="session-meta">回车确认，Esc 取消</span>
-				</div>
+				<RenameBox
+					initial={s.name ?? ""}
+					onDone={(name) => {
+						setRenaming(false);
+						if (name) onRename(s.path, name);
+					}}
+				/>
 			) : (
 				<button
-					className="session-item"
 					type="button"
-					title={picking ? undefined : s.current ? currentHint : undefined}
+					className="spv2-leaf"
+					title={picking ? undefined : hint}
 					onClick={() => (picking ? onToggleSelect?.(s.path) : onOpen(s.path))}
 				>
-					<span className="session-title">{sessionTitle(s)}</span>
-					{s.preview && <span className="session-preview">{s.preview}</span>}
-					<span className="session-meta">
-						{timeAgo(s.modified)} · {s.messageCount} 条
-						{s.current ? <span className="session-current-badge">当前</span> : ""}
-					</span>
+					<span className="spv2-leaf-title">{sessionTitle(s)}</span>
 				</button>
 			)}
 			{!picking && (
-				<span className="session-acts">
+				<span className="spv2-leaf-acts">
 					<button
-						className="act"
+						className="spv2-icon-btn"
 						title="重命名"
-						aria-label="重命名会话"
+						aria-label="重命名对话"
 						onClick={(e) => {
 							e.stopPropagation();
 							setRenaming(true);
 						}}
 					>
-						<IconPencil size={13} />
+						<IconPencil size={14} />
 					</button>
-					<a className="act" href={exportUrl(s.path)} download title="导出 .jsonl" aria-label="导出会话">
-						<IconDownload size={13} />
-					</a>
 					{!s.current && (
 						<ConfirmButton
+							className="spv2-icon-btn spv2-del-btn"
 							disabled={busy}
-							title="删除会话（含其全部分支，不可恢复）"
-							aria-label="删除会话"
-							confirmText="确认删除"
+							title="删除对话（不可恢复）"
+							aria-label="删除对话"
+							confirmText="删除"
 							onConfirm={() => onDelete(s.path)}
 						>
-							<IconTrash size={13} />
+							<IconTrash size={14} />
 						</ConfirmButton>
 					)}
 				</span>
@@ -155,11 +229,134 @@ function Item({
 	);
 }
 
+/** 项目组（父级树节点）：空心文件夹 + 醒目文字 + 右侧悬浮新建/改名 */
+function ChatGroup({
+	chat,
+	list,
+	isCurrent,
+	busy,
+	onOpen,
+	onSessionRename,
+	onSessionDelete,
+	onRename,
+	onNewIn,
+	onDeleteChat,
+	currentHint,
+	picking,
+	isPicked,
+	onToggleSelect,
+}: {
+	chat: WireChatInfo;
+	list: WireSessionInfo[];
+	isCurrent: boolean;
+	busy: boolean;
+	onOpen: (path: string) => void;
+	onSessionRename: (path: string, name: string) => void;
+	onSessionDelete: (path: string) => void;
+	onRename: (chatId: string, name: string) => void;
+	onNewIn: (chatId: string) => void;
+	onDeleteChat: (chatId: string) => void;
+	currentHint?: string;
+	picking: boolean;
+	isPicked: (path: string) => boolean;
+	onToggleSelect: (path: string) => void;
+}) {
+	const [expanded, setExpanded] = useState(false);
+	const [renaming, setRenaming] = useState(false);
+	const visible = isCurrent || expanded ? list : list.slice(0, CHAT_PREVIEW_COUNT);
+	const hidden = list.length - visible.length;
+
+	const openLatest = () => {
+		if (list[0]) onOpen(list[0].path);
+	};
+
+	return (
+		<div className={`spv2-chat ${isCurrent ? "on" : ""}`}>
+			<div className="spv2-chatrow">
+				{renaming ? (
+					<RenameBox
+						initial={chat.name ?? chatLabel(chat)}
+						onDone={(name) => {
+							setRenaming(false);
+							if (name) onRename(chat.id, name);
+						}}
+					/>
+				) : (
+					<button type="button" className="spv2-chatname" onClick={openLatest} disabled={list.length === 0}>
+						<IconFolder size={15} />
+						<span className="spv2-chatname-text">{chatLabel(chat)}</span>
+					</button>
+				)}
+				{!renaming && (
+					<span className="spv2-chat-acts">
+						<button
+							className="spv2-icon-btn"
+							type="button"
+							title="新建对话"
+							aria-label="在这个项目里新建对话"
+							onClick={() => onNewIn(chat.id)}
+						>
+							<IconPlus size={15} />
+						</button>
+						<button className="spv2-icon-btn" type="button" title="重命名项目" aria-label="重命名项目" onClick={() => setRenaming(true)}>
+							<IconPencil size={14} />
+						</button>
+						<a
+							className="spv2-icon-btn"
+							href={`/api/chats/export?chatId=${encodeURIComponent(chat.id)}`}
+							download
+							title="导出项目（zip，含全部对话）"
+							aria-label="导出项目"
+						>
+							<IconDownload size={14} />
+						</a>
+						{!isCurrent && (
+							<ConfirmButton
+								disabled={busy}
+								className="spv2-icon-btn spv2-del-btn"
+								title="删除整个项目（含全部对话与世界状态，不可恢复）"
+								aria-label="删除项目"
+								confirmText="删除"
+								onConfirm={() => onDeleteChat(chat.id)}
+							>
+								<IconTrash size={14} />
+							</ConfirmButton>
+						)}
+					</span>
+				)}
+			</div>
+			<div className="spv2-kids">
+				{list.length === 0 && <div className="spv2-empty">暂无聊天</div>}
+				{visible.map((s) => (
+					<Leaf
+						key={s.path}
+						s={s}
+						busy={busy}
+						onOpen={onOpen}
+						onRename={onSessionRename}
+						onDelete={onSessionDelete}
+						currentHint={currentHint}
+						picking={picking}
+						selected={isPicked(s.path)}
+						onToggleSelect={onToggleSelect}
+					/>
+				))}
+				{hidden > 0 && (
+					<button type="button" className="spv2-more" onClick={() => setExpanded(true)}>
+						展开显示
+					</button>
+				)}
+			</div>
+		</div>
+	);
+}
+
 export function SessionsPanel({
 	sessions,
-	stats,
+	chats = null,
 	onOpen,
 	onNew,
+	onNewInChat,
 	onCompact,
 	onWorldline,
 	onStore,
@@ -171,20 +368,14 @@ export function SessionsPanel({
 	const [hits, setHits] = useState<SessionSearchHit[] | null>(null);
 	const [searching, setSearching] = useState(false);
 	const { busy, run } = useAction(toast);
-	// 相对时间不冻结：分钟级心跳重渲染
+	const [naming, setNaming] = useState(false);
+
 	const [, setTick] = useState(0);
 	useEffect(() => {
 		const t = setInterval(() => setTick((n) => n + 1), 60_000);
 		return () => clearInterval(t);
 	}, []);
 
-	/** 服务端只下发当前卡会话；优先 current 标记，否则取列表首条（避免顶栏「当前会话」空白） */
-	const current = useMemo(() => {
-		if (!sessions?.length) return null;
-		return sessions.find((s) => s.current) ?? sessions[0] ?? null;
-	}, [sessions]);
-
-	/** 服务端只下发当前卡会话；全部按卡绑定，无「未标记」分组 */
 	const matched = useMemo(() => {
 		const q = query.trim().toLowerCase();
 		const filter = (s: WireSessionInfo) =>
@@ -193,10 +384,28 @@ export function SessionsPanel({
 	}, [sessions, query]);
 
 	const others = useMemo(() => {
-		if (!current) return matched;
-		return matched.filter((s) => s.path !== current.path && s.id !== current.id);
-	}, [matched, current]);
+		const cur = sessions?.find((s) => s.current);
+		if (!cur) return matched;
+		return matched.filter((s) => s.path !== cur.path && s.id !== cur.id);
+	}, [matched, sessions]);
 
+	const grouped = useMemo(() => {
+		if (!chats) return null;
+		const byChat = new Map<string, WireSessionInfo[]>();
+		const rest: WireSessionInfo[] = [];
+		for (const s of matched) {
+			if (s.chatId && chats.some((c) => c.id === s.chatId)) {
+				const arr = byChat.get(s.chatId);
+				if (arr) arr.push(s);
+				else byChat.set(s.chatId, [s]);
+			} else {
+				rest.push(s);
+			}
+		}
+		return { groups: chats.map((c) => ({ chat: c, list: byChat.get(c.id) ?? [] })), rest };
+	}, [chats, matched]);
+
+	const currentChatId = sessions?.find((s) => s.current)?.chatId;
 	const currentHint = atHome ? "点击进入当前对话" : "再次点击回到主页";
 
 	const doSearch = async () => {
@@ -228,10 +437,20 @@ export function SessionsPanel({
 			onRefresh();
 		});
 
-	// ---- 多选删除：path 可重复给，服务端一次删完只回一条 ----
+	const renameChat = (chatId: string, name: string) =>
+		run(async () => {
+			await apiPost("/api/chats/rename", { chatId, name });
+			onRefresh();
+		}, "已重命名");
+
+	const removeChat = (chatId: string) =>
+		run(async () => {
+			await apiDelete(`/api/chats?chatId=${encodeURIComponent(chatId)}`);
+			onRefresh();
+		}, "已删除项目");
+
 	const [picking, setPicking] = useState(false);
 	const [picked, setPicked] = useState<string[]>([]);
-	// 列表变了（删完/新建/切卡）就把已消失的选中项剪掉，免得删一个不存在的路径
 	useEffect(() => {
 		if (!sessions) return;
 		setPicked((ps) => {
@@ -257,10 +476,27 @@ export function SessionsPanel({
 			onRefresh();
 		});
 
-	// ---- 导入 ST 聊天记录（从设置面板迁入：它产出的是一个会话） ----
+	const [importOpen, setImportOpen] = useState(false);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const [importTag, setImportTag] = useState("");
 	const [importing, setImporting] = useState(false);
+	// 导入项目包（zip）
+	const zipRef = useRef<HTMLInputElement>(null);
+	const [importingChat, setImportingChat] = useState(false);
+
+	const doImportChat = async (file: File) => {
+		setImportingChat(true);
+		try {
+			const r = await apiPostFile<{ chatId: string; fileCount: number }>("/api/chats/import", file);
+			toast("info", `已导入项目（${r.fileCount} 个会话文件）`);
+			onRefresh();
+		} catch (e) {
+			toast("error", e instanceof Error ? e.message : String(e));
+		} finally {
+			setImportingChat(false);
+			if (zipRef.current) zipRef.current.value = "";
+		}
+	};
 
 	const doImport = async (file: File) => {
 		setImporting(true);
@@ -278,158 +514,223 @@ export function SessionsPanel({
 	};
 
 	return (
-		<div className="panel-body">
-			{current && (
-				<section className="sp-section">
-					<h4>当前会话</h4>
-					<div className="current-session-card" title={currentHint}>
-						<Item s={current} busy={busy} onOpen={onOpen} onRename={rename} onDelete={remove} currentHint={currentHint} />
-						{stats?.contextPercent !== null && stats !== null && (
-							<div className="ctx-bar-row" title={`上下文占用 ${Math.round(stats.contextPercent)}%`}>
-								<div className="ctx-bar">
-									<div
-										className={`ctx-bar-fill ${stats.contextPercent >= 85 ? "danger" : stats.contextPercent >= 65 ? "warn" : ""}`}
-										style={{ width: `${Math.min(100, Math.round(stats.contextPercent))}%` }}
-									/>
-								</div>
-								<span className="ctx-bar-num">{Math.round(stats.contextPercent)}%</span>
-							</div>
-						)}
-						<div className="panel-row">
-							<button className="drawer-btn" onClick={onNew}>
-								＋ 新建会话
-							</button>
-							<button className="drawer-btn" onClick={onCompact} title="把较早的对话压缩成摘要，腾出上下文空间">
-								压缩上下文
-							</button>
-						</div>
-						<div className="panel-row">
-							{onStore && (
-								<button className="drawer-btn" onClick={onStore} title="在当前剧情点钉存档（世界线节点）">
-									存档
-								</button>
-							)}
-							{onWorldline && (
-								<button className="drawer-btn" onClick={onWorldline} title="查看世界线时间线">
-									世界线
-								</button>
-							)}
-						</div>
-					</div>
-				</section>
-			)}
-			{!current && (
-				<div className="panel-row">
-					<button className="drawer-btn" onClick={onNew}>
-						＋ 新建会话
+		<div className="panel-body spv2">
+			{/* 顶部纯文字+图标动作条（仿 Codex 顶部入口） */}
+			<div className="spv2-actions">
+				<button type="button" className="spv2-action" onClick={() => (chats ? setNaming(true) : onNew())}>
+					<IconPlus size={15} />
+					<span>{chats ? "新建项目" : "新建会话"}</span>
+				</button>
+				{onWorldline && (
+					<button type="button" className="spv2-action" onClick={onWorldline} title="查看世界线时间线">
+						<IconWorldline size={15} />
+						<span>世界线</span>
 					</button>
-				</div>
-			)}
+				)}
+				{onStore && (
+					<button type="button" className="spv2-action" onClick={onStore} title="在当前剧情点钉存档">
+						<IconPin size={15} />
+						<span>存档</span>
+					</button>
+				)}
+				<button type="button" className="spv2-action" onClick={onCompact} title="压缩较早对话">
+					<IconList size={15} />
+					<span>压缩上下文</span>
+				</button>
+			</div>
 
-			<section className="sp-section">
-				<h4>会话列表</h4>
+			{/* 搜索栏 */}
+			<div className="spv2-search">
 				<SearchInput
 					value={query}
 					onChange={(v) => {
 						setQuery(v);
 						if (!v.trim()) setHits(null);
 					}}
-					placeholder="过滤标题；回车搜全文…"
+					placeholder="搜索..."
 					onEnter={() => void doSearch()}
 				/>
-				{hits === null && others.length > 0 && (
-					<div className="panel-row list-toolbar session-pick-bar">
-						{picking ? (
-							<>
-								<button className="drawer-btn" onClick={() => setPicked(allPicked ? [] : others.map((s) => s.path))}>
-									{allPicked ? "全不选" : `全选 ${others.length}`}
-								</button>
-								<ConfirmButton
-									className="drawer-btn preset-del-btn"
-									disabled={busy || picked.length === 0}
-									confirmText={`确认删除 ${picked.length} 个`}
-									title="删除所选会话（含各自全部分支，不可恢复）"
-									onConfirm={removePicked}
-								>
-									删除所选 {picked.length}
-								</ConfirmButton>
-								<button className="drawer-btn" onClick={exitPicking}>
-									取消
-								</button>
-							</>
-						) : (
-							<button className="drawer-btn" onClick={() => setPicking(true)}>
-								多选
-							</button>
-						)}
-					</div>
-				)}
-				{searching && <div className="sp-empty">全文搜索中…</div>}
-				{hits !== null && !searching && (
-					<div className="session-list">
-						<div className="field-hint">全文命中 {hits.length} 个会话（清空搜索框恢复列表）</div>
-						{hits.map((h) => (
-							<button
-								key={h.path}
-								type="button"
-								className={`session-item ${h.current ? "current" : ""}`}
-								title={h.current ? currentHint : undefined}
-								onClick={() => onOpen(h.path)}
-							>
-								<span className="session-title">{sessionTitle(h)}</span>
-								<span className="session-preview">{h.snippet}</span>
-								<span className="session-meta">
-									{timeAgo(h.modified)} · {h.messageCount} 条
-									{h.current ? <span className="session-current-badge">当前</span> : ""}
-								</span>
-							</button>
-						))}
-					</div>
-				)}
-				{hits === null && (
-					<div className="session-list">
-						{sessions === null && <div className="info-line">读取中…</div>}
-						{sessions !== null && matched.length === 0 && <div className="info-line">暂无会话</div>}
-						{others.map((s) => (
-							<Item
-								key={s.path}
-								s={s}
-								busy={busy}
-								onOpen={onOpen}
-								onRename={rename}
-								onDelete={remove}
-								currentHint={currentHint}
-								picking={picking}
-								selected={picked.includes(s.path)}
-								onToggleSelect={togglePick}
-							/>
-						))}
-					</div>
-				)}
-			</section>
+			</div>
 
-			<section className="sp-section">
-				<h4>导入 ST 聊天记录</h4>
-				<div className="field-hint">
-					选择 SillyTavern 导出的聊天 .jsonl：旧剧情自动摘要、世界状态自动建账，然后从断点继续。建议先新建会话再导入。
+			{/* 多选工具行 */}
+			{picking && (
+				<div className="panel-row list-toolbar session-pick-bar">
+					<button className="drawer-btn" onClick={() => setPicked(allPicked ? [] : others.map((s) => s.path))}>
+						{allPicked ? "全不选" : `全选 ${others.length}`}
+					</button>
+					<ConfirmButton
+						className="drawer-btn preset-del-btn"
+						disabled={busy || picked.length === 0}
+						confirmText={`删除 ${picked.length} 个`}
+						title="删除所选对话（不可恢复）"
+						onConfirm={removePicked}
+					>
+						删除所选 {picked.length}
+					</ConfirmButton>
+					<button className="drawer-btn" onClick={exitPicking}>
+						取消
+					</button>
 				</div>
-				<Field label="正文标签名（可选）" hint="预设约定正文包在如 <content> 标签内时填 content；留空按默认规则剥离">
-					<input className="panel-search" placeholder="content" value={importTag} onChange={(e) => setImportTag(e.target.value)} />
-				</Field>
+			)}
+
+			{/* 分组标题栏 */}
+			<div className="spv2-label">
+				<span>{chats ? "项目" : "会话"}</span>
+				{!picking && others.length > 0 && (
+					<button type="button" className="spv2-label-act" onClick={() => setPicking(true)}>
+						多选
+					</button>
+				)}
+			</div>
+
+			{searching && <div className="sp-empty">搜索中…</div>}
+
+			{/* 搜索命中列表 */}
+			{hits !== null && !searching && (
+				<div className="spv2-tree">
+					<div className="field-hint" style={{ padding: "0 8px 6px" }}>命中 {hits.length} 个对话</div>
+					{hits.map((h) => (
+						<button
+							key={h.path}
+							type="button"
+							className={`spv2-hit ${h.current ? "cur" : ""}`}
+							title={h.current ? currentHint : undefined}
+							onClick={() => onOpen(h.path)}
+						>
+							<div className="spv2-hit-title">{sessionTitle(h)}</div>
+							<div className="spv2-hit-snippet">{h.snippet}</div>
+						</button>
+					))}
+				</div>
+			)}
+
+			{/* 主树形列表 */}
+			{hits === null && (
+				<div className="spv2-tree">
+					{sessions === null && <div className="info-line">读取中…</div>}
+					{sessions !== null && matched.length === 0 && <div className="info-line">{chats ? "暂无项目" : "暂无会话"}</div>}
+					{grouped
+						? grouped.groups.map(({ chat, list }) => (
+								<ChatGroup
+									key={chat.id}
+									chat={chat}
+									list={list}
+									isCurrent={chat.id === currentChatId}
+									busy={busy}
+									onOpen={onOpen}
+									onSessionRename={rename}
+									onSessionDelete={remove}
+									onRename={renameChat}
+									onNewIn={(id) => onNewInChat?.(id)}
+									onDeleteChat={removeChat}
+									currentHint={currentHint}
+									picking={picking}
+									isPicked={(p) => picked.includes(p)}
+									onToggleSelect={togglePick}
+								/>
+							))
+						: matched.map((s) => (
+								<Leaf
+									key={s.path}
+									s={s}
+									busy={busy}
+									onOpen={onOpen}
+									onRename={rename}
+									onDelete={remove}
+									currentHint={currentHint}
+									picking={picking}
+									selected={picked.includes(s.path)}
+									onToggleSelect={togglePick}
+								/>
+							))}
+					{grouped && grouped.rest.length > 0 && (
+						<div className="spv2-tree-rest">
+							{grouped.rest.map((s) => (
+								<Leaf
+									key={s.path}
+									s={s}
+									busy={busy}
+									onOpen={onOpen}
+									onRename={rename}
+									onDelete={remove}
+									currentHint={currentHint}
+									picking={picking}
+									selected={picked.includes(s.path)}
+									onToggleSelect={togglePick}
+								/>
+							))}
+						</div>
+					)}
+				</div>
+			)}
+
+			{/* 底部极简导入入口 */}
+			<div className="spv2-bottom">
 				<input
-					ref={fileRef}
+					ref={zipRef}
 					type="file"
-					accept=".jsonl,.json,application/json"
+					accept=".zip,application/zip"
 					hidden
 					onChange={(e) => {
 						const f = e.target.files?.[0];
-						if (f) void doImport(f);
+						if (f) void doImportChat(f);
 					}}
 				/>
-				<button className="drawer-btn" disabled={importing} onClick={() => fileRef.current?.click()}>
-					{importing ? "导入中（解析→摘要→建账）…" : "选择 .jsonl 文件导入"}
+				<button
+					type="button"
+					className="spv2-bottom-link"
+					disabled={importingChat}
+					onClick={() => zipRef.current?.click()}
+					title="把导出的项目包（zip）导回本卡，落成新项目，不覆盖现有"
+				>
+					<IconFolder size={13} />
+					<span>{importingChat ? "导入中…" : "导入项目"}</span>
 				</button>
-			</section>
+				<button type="button" className="spv2-bottom-link" onClick={() => setImportOpen((v) => !v)}>
+					<IconUploads size={13} />
+					<span>导入聊天记录</span>
+				</button>
+				{importOpen && (
+					<div className="spv2-import-body">
+						<div className="field-hint">
+							选择 SillyTavern 导出的 .jsonl 文件，自动提取历史剧情与世界状态。
+						</div>
+						<Field label="正文标签名（可选）">
+							<input
+								className="panel-search"
+								placeholder="content"
+								value={importTag}
+								onChange={(e) => setImportTag(e.target.value)}
+							/>
+						</Field>
+						<input
+							ref={fileRef}
+							type="file"
+							accept=".jsonl,.json,application/json"
+							hidden
+							onChange={(e) => {
+								const f = e.target.files?.[0];
+								if (f) void doImport(f);
+							}}
+						/>
+						<button className="drawer-btn" disabled={importing} onClick={() => fileRef.current?.click()}>
+							{importing ? "正在导入…" : "选择文件导入"}
+						</button>
+					</div>
+				)}
+			</div>
+
+			{/* 新建项目弹窗 */}
+			{naming && chats && (
+				<NewProjectBox
+					initial={nextProjectName(chats)}
+					busy={busy}
+					onDone={(name) => {
+						setNaming(false);
+						if (name) onNew(name);
+					}}
+				/>
+			)}
 		</div>
 	);
 }

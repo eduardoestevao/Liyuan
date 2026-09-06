@@ -17,10 +17,11 @@
  */
 
 import { randomBytes } from "node:crypto";
-import { existsSync, mkdirSync, readdirSync, renameSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
 import { readJsonFile } from "./jsonio.ts";
+import { buildZipBuffer, extractZipFile } from "./ziplite.ts";
 import {
 	CARD_CONFIG_FILE,
 	CARDS_ROOT,
@@ -187,6 +188,160 @@ export function writeChatMeta(cardDir: string, chatId: string, meta: ChatMeta): 
 	const dirAbs = chatDirOf(cardDir, chatId);
 	mkdirSync(dirAbs, { recursive: true });
 	writeFileSync(join(dirAbs, CHAT_META_FILE), `${JSON.stringify(meta, null, "\t")}\n`, "utf8");
+}
+
+/** 改子项目显示名：只动 name，createdAt 原样保留；子项目不存在时报错 */
+export function renameChat(cardDir: string, chatId: string, name: string): void {
+	const old = readChatMeta(cardDir, chatId);
+	if (!old) throw new Error(`子项目不存在：${chatId}`);
+	const clean = name.replace(/[\r\n]+/g, " ").trim();
+	if (!clean) throw new Error("名字不能为空");
+	writeChatMeta(cardDir, chatId, { ...old, name: clean });
+}
+
+/** 删除整个子项目（`对话/<id>/` 整棵，含全部会话与世界状态）；不存在时报错 */
+export function deleteChat(cardDir: string, chatId: string): void {
+	const dirAbs = chatDirOf(cardDir, chatId);
+	if (!existsSync(dirAbs)) throw new Error(`子项目不存在：${chatId}`);
+	rmSync(dirAbs, { recursive: true, force: true });
+}
+
+// ---------- 子项目导入导出（刀5：项目化落到文件上，就该能整段搬走） ----------
+
+/** 收集目录下全部文件的相对名（/ 分隔）与绝对路径 */
+function collectFiles(rootAbs: string, rel = ""): Array<{ name: string; abs: string }> {
+	const out: Array<{ name: string; abs: string }> = [];
+	for (const f of readdirSync(join(rootAbs, rel))) {
+		const r = rel ? `${rel}/${f}` : f;
+		let st;
+		try {
+			st = statSync(join(rootAbs, r));
+		} catch {
+			continue;
+		}
+		if (st.isDirectory()) out.push(...collectFiles(rootAbs, r));
+		else out.push({ name: r, abs: join(rootAbs, r) });
+	}
+	return out;
+}
+
+/**
+ * 导出子项目：`对话/<id>/` 整棵打成 zip（store）。manifest 恒为第一条（格式与版本），
+ * 其余条目名相对子项目根。返回 Buffer 与建议下载名。
+ */
+export function exportChatZip(cardDir: string, chatId: string): { data: Buffer; fileCount: number; fileName: string } {
+	const dirAbs = chatDirOf(cardDir, chatId);
+	if (!existsSync(dirAbs)) throw new Error(`子项目不存在：${chatId}`);
+	const files = collectFiles(dirAbs);
+	if (!files.length) throw new Error("子项目是空的，没有可导出的内容");
+	const manifest = Buffer.from(
+		JSON.stringify({ format: "liyuan-chat", version: 1, chatId, exportedAt: new Date().toISOString() }, null, "\t"),
+		"utf8",
+	);
+	const data = buildZipBuffer([
+		{ name: "chat-manifest.json", data: manifest },
+		...files.map((f) => ({ name: f.name, data: readFileSync(f.abs) })),
+	]);
+	const meta = readChatMeta(cardDir, chatId);
+	const safe = (meta?.name || chatId).replace(/[\\/:*?"<>|]/g, "_");
+	return { data, fileCount: files.length, fileName: `${safe}.zip` };
+}
+
+/**
+ * 导入子项目包：解包成新的 `对话/<新id>/`（不覆盖任何现有项目），并给每个会话文件
+ * 追加 rp-card 重绑定行指向当前卡——跨卡导入的会话也能正确列出（同卡导入等于再钉一次，幂等）。
+ * 临时目录放在卡文件夹内（同盘 rename，不撞跨盘 EXDEV）；`对话/` 只收正式项目，不受污染。
+ */
+export function importChatZip(cardDir: string, zip: Buffer, currentCardRef: string): { chatId: string; fileCount: number } {
+	if (!existsSync(chatsRoot(cardDir))) mkdirSync(chatsRoot(cardDir), { recursive: true });
+	const tmp = join(cardDir, `.chat-import-${randomBytes(4).toString("hex")}`);
+	try {
+		const zipPath = join(tmp, "in.zip");
+		const ex = join(tmp, "ex");
+		mkdirSync(ex, { recursive: true });
+		writeFileSync(zipPath, zip);
+		extractZipFile(zipPath, ex); // 自带 zip-slip 防御
+		// 认根：条目直接铺在根上（梨园导出形态）；用户手动压时多包一层目录也认
+		let root = ex;
+		const top = readdirSync(ex);
+		if (!top.some((f) => f === CHAT_SESSIONS_DIR || f === CHAT_META_FILE)) {
+			const sub = top.filter((f) => {
+				try {
+					return statSync(join(ex, f)).isDirectory();
+				} catch {
+					return false;
+				}
+			});
+			if (sub.length === 1) {
+				const inner = readdirSync(join(ex, sub[0]));
+				if (inner.some((f) => f === CHAT_SESSIONS_DIR || f === CHAT_META_FILE)) root = join(ex, sub[0]);
+			}
+		}
+		if (!existsSync(join(root, CHAT_SESSIONS_DIR)) && !existsSync(join(root, CHAT_META_FILE))) {
+			throw new Error("不是子项目包（找不到 会话/ 或 对话.json）");
+		}
+		let chatId = newChatId();
+		while (existsSync(join(chatsRoot(cardDir), chatId))) chatId = newChatId();
+		const dest = join(chatsRoot(cardDir), chatId);
+		renameSync(root, dest);
+		mkdirSync(join(dest, CHAT_SESSIONS_DIR), { recursive: true }); // 空项目包没有会话目录：补上
+		rmSync(join(dest, "chat-manifest.json"), { force: true }); // 包元数据不进项目目录
+		let fileCount = 0;
+		const sdir = join(dest, CHAT_SESSIONS_DIR);
+		for (const f of readdirSync(sdir)) {
+			if (!f.endsWith(".jsonl")) continue;
+			fileCount += 1;
+			appendSessionCardRebind(join(sdir, f), currentCardRef);
+		}
+		return { chatId, fileCount };
+	} finally {
+		rmSync(tmp, { recursive: true, force: true });
+	}
+}
+
+/**
+ * 给会话文件追加一条 rp-card 重绑定行（pi 的 `appendCustomEntry` 落行格式）。
+ * parentId 链在追加场景用「文件里最后一条有 id 的条目」接上；接不上（空文件）就 null。
+ */
+export function appendSessionCardRebind(file: string, newRef: string): void {
+	const lines = readFileSync(file, "utf8").split(/\r?\n/).filter(Boolean);
+	if (!lines.length) return;
+	let parentId: string | null = null;
+	for (let i = lines.length - 1; i >= 0; i--) {
+		try {
+			const e = JSON.parse(lines[i]) as { id?: unknown };
+			if (typeof e.id === "string" && e.id) {
+				parentId = e.id;
+				break;
+			}
+		} catch {
+			/* 半行跳过 */
+		}
+	}
+	const name = lastCardNameOf(lines);
+	const entry = {
+		type: "custom",
+		customType: "rp-card",
+		data: { card: newRef, ...(name ? { name } : {}) },
+		id: randomBytes(4).toString("hex"),
+		parentId,
+		timestamp: new Date().toISOString(),
+	};
+	appendFileSync(file, `${JSON.stringify(entry)}\n`, "utf8");
+}
+
+/** 重绑定行带上原卡名（显示用）；从既有 rp-card 行里取最后一条的 name */
+function lastCardNameOf(lines: string[]): string {
+	for (let i = lines.length - 1; i >= 0; i--) {
+		if (!lines[i].includes('"rp-card"')) continue;
+		try {
+			const e = JSON.parse(lines[i]) as { customType?: string; data?: { name?: unknown } };
+			if (e.customType === "rp-card" && typeof e.data?.name === "string" && e.data.name) return e.data.name;
+		} catch {
+			/* 半行跳过 */
+		}
+	}
+	return "";
 }
 
 /** 一个子项目的现状（会话数与最近活动时间取自会话目录，元数据缺失也照样列出） */
