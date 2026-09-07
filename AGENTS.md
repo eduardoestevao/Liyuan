@@ -11,14 +11,16 @@
    timestamp 核对北京时间。
 3. **流程与提示词的最终形态**定义在 `docs/PLAN-ROUND-FLOW.md`——任何提示词/
    引擎改动都要回答「离这个流程近了多少」。
-4. 预设拆层规则见 `docs/PRESET-SPLIT-TAXONOMY.md`；RP agent 执行计划见
-   `docs/PLAN-RP-AGENT-EXEC.md`。
+4. **当前顺序见 `docs/PLAN-RP-AGENT-NEXT.md`（2026-09-08 用户定案）**：先优化无预设扮演体验，
+   再补齐角色卡制作与配套代码能力，第三步前端优化；预设低优先级后置，小说模式继续延期。
+   `docs/PLAN-RP-AGENT-EXEC.md` 与 `docs/PRESET-SPLIT-TAXONOMY.md` 保留为历史计划与研究资料。
 
 ## 快速索引
 
+- `docs/PLAN-RP-AGENT-NEXT.md` — 当前路线、已提交基线与下一窗口交接（优先读）
 - `docs/PLAN-ROUND-FLOW.md` — 分轮演出流程（最终形态 + 落地记录）
 - `docs/READING-THINKING.md` — 读思考记录的**正确方法**（先读这个再碰会话文件）
 - `docs/DRAFT-prompt-rp-agent.md` — 「怎么演这一拍」演出指导草稿（B 版）
 - `src/stage/` — 台上引擎（assemble 提示词 / engine 回合循环 / workspace 稿纸 /
   tools 工具 schema）
-- 测试：`npx tsx --test test/*.test.ts`（当前 563 绿）
+- 测试：`node --test test/*.test.ts`（2026-09-08 最近验证：729 项，727 通过，2 项既有失败，详见上一拍修订记录）
