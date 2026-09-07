@@ -1,3 +1,4 @@
+export declare function loadAllHighlightLanguages(): Promise<void>;
 export type HighlightFormatter = (text: string) => string;
 export type HighlightTheme = Partial<Record<string, HighlightFormatter>>;
 export interface HighlightOptions {

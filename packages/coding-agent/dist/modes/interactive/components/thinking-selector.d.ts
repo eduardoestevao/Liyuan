@@ -1,11 +1,23 @@
 import type { ThinkingLevel } from "@liyuan/agent-core";
-import { Container, SelectList } from "@liyuan/tui";
+import { Container, type Focusable, SelectList } from "@liyuan/tui";
 /**
  * Component that renders a thinking level selector with borders
  */
-export declare class ThinkingSelectorComponent extends Container {
+export declare class ThinkingSelectorComponent extends Container implements Focusable {
+    private searchInput;
     private selectList;
-    constructor(currentLevel: ThinkingLevel, availableLevels: ThinkingLevel[], onSelect: (level: ThinkingLevel) => void, onCancel: () => void);
+    private selectListChildIndex;
+    private allItems;
+    private onSelect;
+    private onCancel;
+    private onSelectAsDefault?;
+    private _focused;
+    get focused(): boolean;
+    set focused(value: boolean);
+    constructor(currentLevel: ThinkingLevel, availableLevels: ThinkingLevel[], onSelect: (level: ThinkingLevel) => void, onCancel: () => void, onSelectAsDefault?: (level: ThinkingLevel) => void, defaultThinkingLevel?: ThinkingLevel);
+    private buildSelectList;
+    private applyFilter;
+    handleInput(keyData: string): void;
     getSelectList(): SelectList;
 }
 //# sourceMappingURL=thinking-selector.d.ts.map

@@ -1,10 +1,14 @@
 import Anthropic from "@anthropic-ai/sdk";
 import { calculateCost } from "../models.js";
+import { splitDeferredTools } from "../utils/deferred-tools.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
 import { parseJsonWithRepair, parseStreamingJson } from "../utils/json-parse.js";
+import { getPiUserAgent } from "../utils/pi-user-agent.js";
 import { getProviderEnvValue } from "../utils/provider-env.js";
+import { retryProviderRequest } from "../utils/provider-retry.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
+import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { adjustMaxTokensForThinking, buildBaseOptions, clampMaxTokensToContext } from "./simple-options.js";
 import { transformMessages } from "./transform-messages.js";
@@ -106,15 +110,37 @@ function convertContentBlocks(content) {
 }
 const FINE_GRAINED_TOOL_STREAMING_BETA = "fine-grained-tool-streaming-2025-05-14";
 const INTERLEAVED_THINKING_BETA = "interleaved-thinking-2025-05-14";
+const SERVER_SIDE_FALLBACK_BETA = "server-side-fallback-2026-07-01";
+function shouldUseServerSideFallbackBeta(model) {
+    return (model.compat?.allowedFallbackModels?.length ?? 0) > 0;
+}
 function getAnthropicCompat(model) {
     return {
+        streaming: model.compat?.streaming ?? true,
         supportsEagerToolInputStreaming: model.compat?.supportsEagerToolInputStreaming ?? true,
         supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
         sendSessionAffinityHeaders: model.compat?.sendSessionAffinityHeaders ?? false,
         supportsCacheControlOnTools: model.compat?.supportsCacheControlOnTools ?? true,
         supportsTemperature: model.compat?.supportsTemperature ?? true,
         allowEmptySignature: model.compat?.allowEmptySignature ?? false,
+        supportsStrictTools: model.compat?.supportsStrictTools ?? false,
+        supportsToolReferences: model.compat?.supportsToolReferences ?? defaultSupportsToolReferences(model),
     };
+}
+/**
+ * Default for `supportsToolReferences`: first-party Anthropic models except
+ * Haiku (rejects client-side tool_reference blocks) and models that predate
+ * tool search (Claude 3.x, Opus/Sonnet 4.0, Opus 4.1).
+ */
+function defaultSupportsToolReferences(model) {
+    if (model.provider !== "anthropic" || model.id.includes("haiku"))
+        return false;
+    const version = model.id.match(/^claude-(?:opus|sonnet|fable)-(\d+)(?:-(\d+))?(?:-|$)/);
+    if (!version)
+        return false;
+    const major = Number(version[1]);
+    const minor = version[2] && version[2].length < 8 ? Number(version[2]) : 0;
+    return major > 4 || (major === 4 && minor >= 5);
 }
 function mergeHeaders(...headerSources) {
     const merged = {};
@@ -124,6 +150,9 @@ function mergeHeaders(...headerSources) {
         }
     }
     return merged;
+}
+function mergeClientHeaders(...headerSources) {
+    return mergeHeaders({ "User-Agent": getPiUserAgent() }, ...headerSources);
 }
 function hasHeader(headers, name) {
     if (!headers)
@@ -313,12 +342,13 @@ export const stream = (model, context, options) => {
                 totalTokens: 0,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
             },
-            stopReason: "stop",
+            stopReason: "pending",
             timestamp: Date.now(),
         };
         try {
             let client;
             let isOAuth;
+            let usageModel = model;
             if (options?.client) {
                 client = options.client;
                 isOAuth = false;
@@ -336,7 +366,7 @@ export const stream = (model, context, options) => {
                 }
                 const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
                 const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-                const created = createClient(model, apiKey, options?.interleavedThinking ?? true, shouldUseFineGrainedToolStreamingBeta(model, context), options?.headers, copilotDynamicHeaders, cacheSessionId);
+                const created = createClient(model, apiKey, options?.interleavedThinking ?? true, shouldUseFineGrainedToolStreamingBeta(model, context), shouldUseServerSideFallbackBeta(model), options?.headers, options?.fetch, copilotDynamicHeaders, cacheSessionId);
                 client = created.client;
                 isOAuth = created.isOAuthToken;
             }
@@ -348,15 +378,30 @@ export const stream = (model, context, options) => {
             const requestOptions = {
                 ...(options?.signal ? { signal: options.signal } : {}),
                 ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-                maxRetries: options?.maxRetries ?? 0,
+                maxRetries: 0,
             };
-            const response = await client.messages.create({ ...params, stream: true }, requestOptions).asResponse();
-            await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+            const retryOptions = { maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs, signal: options?.signal };
+            let events;
+            if (model.compat?.streaming !== false) {
+                const response = await retryProviderRequest(() => client.messages.create({ ...params, stream: true }, requestOptions).asResponse(), retryOptions);
+                await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                events = iterateAnthropicEvents(response, options?.signal);
+            }
+            else {
+                const { data: message, response } = await retryProviderRequest(() => client.messages.create({ ...params, stream: false }, requestOptions).withResponse(), retryOptions);
+                await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                events = messageToEvents(message);
+            }
             stream.push({ type: "start", partial: output });
             const blocks = output.content;
-            for await (const event of iterateAnthropicEvents(response, options?.signal)) {
+            for await (const event of events) {
                 if (event.type === "message_start") {
                     output.responseId = event.message.id;
+                    output.model = event.message.model;
+                    const fallbackCost = output.model === model.id
+                        ? undefined
+                        : model.compat?.allowedFallbackModels?.find((fallback) => fallback.provider === model.provider && fallback.model === output.model)?.cost;
+                    usageModel = fallbackCost ? { ...model, id: output.model, cost: fallbackCost } : model;
                     // Capture initial token usage from message_start event
                     // This ensures we have input token counts even if the stream is aborted early
                     output.usage.input = event.message.usage.input_tokens || 0;
@@ -367,13 +412,13 @@ export const stream = (model, context, options) => {
                     // Anthropic doesn't provide total_tokens, compute from components
                     output.usage.totalTokens =
                         output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-                    calculateCost(model, output.usage);
+                    calculateCost(usageModel, output.usage);
                 }
                 else if (event.type === "content_block_start") {
                     if (event.content_block.type === "text") {
                         const block = {
                             type: "text",
-                            text: "",
+                            text: event.content_block.text ?? "",
                             index: event.index,
                         };
                         output.content.push(block);
@@ -382,8 +427,8 @@ export const stream = (model, context, options) => {
                     else if (event.content_block.type === "thinking") {
                         const block = {
                             type: "thinking",
-                            thinking: "",
-                            thinkingSignature: "",
+                            thinking: event.content_block.thinking ?? "",
+                            thinkingSignature: event.content_block.signature ?? "",
                             index: event.index,
                         };
                         output.content.push(block);
@@ -502,6 +547,7 @@ export const stream = (model, context, options) => {
                 }
                 else if (event.type === "message_delta") {
                     if (event.delta.stop_reason) {
+                        output.rawStopReason = event.delta.stop_reason;
                         const stopReasonResult = mapStopReason(event.delta.stop_reason, event.delta.stop_details);
                         output.stopReason = stopReasonResult.stopReason;
                         if (stopReasonResult.errorMessage) {
@@ -510,34 +556,39 @@ export const stream = (model, context, options) => {
                     }
                     // Only update usage fields if present (not null).
                     // Preserves input_tokens from message_start when proxies omit it in message_delta.
-                    if (event.usage.input_tokens != null) {
-                        output.usage.input = event.usage.input_tokens;
-                    }
-                    if (event.usage.output_tokens != null) {
-                        output.usage.output = event.usage.output_tokens;
-                    }
-                    if (event.usage.cache_read_input_tokens != null) {
-                        output.usage.cacheRead = event.usage.cache_read_input_tokens;
-                    }
-                    if (event.usage.cache_creation_input_tokens != null) {
-                        output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
-                    }
-                    // Anthropic reports reasoning tokens in `output_tokens_details.thinking_tokens` on the
-                    // final message_delta usage (a subset of output_tokens). SDK 0.91.1 omits the field from
-                    // its Usage type, so read it through a narrow cast. Verified against the live API.
-                    const thinkingTokens = event.usage
-                        .output_tokens_details?.thinking_tokens;
-                    if (thinkingTokens != null) {
-                        output.usage.reasoning = thinkingTokens;
+                    if (event.usage) {
+                        if (event.usage.input_tokens != null) {
+                            output.usage.input = event.usage.input_tokens;
+                        }
+                        if (event.usage.output_tokens != null) {
+                            output.usage.output = event.usage.output_tokens;
+                        }
+                        if (event.usage.cache_read_input_tokens != null) {
+                            output.usage.cacheRead = event.usage.cache_read_input_tokens;
+                        }
+                        if (event.usage.cache_creation_input_tokens != null) {
+                            output.usage.cacheWrite = event.usage.cache_creation_input_tokens;
+                        }
+                        // Anthropic reports reasoning tokens in `output_tokens_details.thinking_tokens` on the
+                        // final message_delta usage (a subset of output_tokens). SDK 0.91.1 omits the field from
+                        // its Usage type, so read it through a narrow cast. Verified against the live API.
+                        const thinkingTokens = event.usage
+                            .output_tokens_details?.thinking_tokens;
+                        if (thinkingTokens != null) {
+                            output.usage.reasoning = thinkingTokens;
+                        }
                     }
                     // Anthropic doesn't provide total_tokens, compute from components
                     output.usage.totalTokens =
                         output.usage.input + output.usage.output + output.usage.cacheRead + output.usage.cacheWrite;
-                    calculateCost(model, output.usage);
+                    calculateCost(usageModel, output.usage);
                 }
             }
             if (options?.signal?.aborted) {
                 throw new Error("Request was aborted");
+            }
+            if (output.stopReason === "pending") {
+                throw new Error("Anthropic stream ended without a stop reason");
             }
             if (output.stopReason === "aborted" || output.stopReason === "error") {
                 throw new Error(output.errorMessage || "An unknown error occurred");
@@ -561,7 +612,8 @@ export const stream = (model, context, options) => {
 };
 /**
  * Map ThinkingLevel to Anthropic effort levels for adaptive thinking.
- * Note: effort "max" is only valid on Opus 4.6, while Opus 4.7+ and Fable 5 support "xhigh".
+ * Note: effort "max" is available on all adaptive-thinking Claude models, while native
+ * "xhigh" is only available on Opus 4.7/4.8, Sonnet 5, and Fable 5.
  */
 function mapThinkingLevelToEffort(model, level) {
     const mapped = level ? model.thinkingLevelMap?.[level] : undefined;
@@ -581,9 +633,15 @@ function mapThinkingLevelToEffort(model, level) {
 }
 export const streamSimple = (model, context, options) => {
     assertRequestAuth(model.provider, options?.apiKey, options?.headers);
-    const base = buildBaseOptions(model, context, options, options?.apiKey);
+    const base = {
+        ...buildBaseOptions(model, context, options, options?.apiKey),
+        toolChoice: options?.toolChoice,
+    };
     if (!options?.reasoning) {
-        return stream(model, context, { ...base, thinkingEnabled: false });
+        return stream(model, context, {
+            ...base,
+            thinkingEnabled: false,
+        });
     }
     // For models with adaptive thinking: use an effort level.
     // For older models: use budget-based thinking.
@@ -609,7 +667,7 @@ export const streamSimple = (model, context, options) => {
 function isOAuthToken(apiKey) {
     return apiKey.includes("sk-ant-oat");
 }
-function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStreamingBeta, optionsHeaders, dynamicHeaders, sessionId) {
+function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStreamingBeta, useServerSideFallbackBeta, optionsHeaders, fetch, dynamicHeaders, sessionId) {
     // Adaptive thinking models have interleaved thinking built in, so skip the beta header.
     const needsInterleavedBeta = interleavedThinking && model.compat?.forceAdaptiveThinking !== true;
     const betaFeatures = [];
@@ -619,6 +677,9 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
     if (needsInterleavedBeta) {
         betaFeatures.push(INTERLEAVED_THINKING_BETA);
     }
+    if (useServerSideFallbackBeta) {
+        betaFeatures.push(SERVER_SIDE_FALLBACK_BETA);
+    }
     // Copilot: Bearer auth, selective betas.
     if (model.provider === "github-copilot") {
         const client = new Anthropic({
@@ -626,7 +687,8 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
             authToken: apiKey ?? null,
             baseURL: model.baseUrl,
             dangerouslyAllowBrowser: true,
-            defaultHeaders: mergeHeaders({
+            fetch,
+            defaultHeaders: mergeClientHeaders({
                 accept: "application/json",
                 "anthropic-dangerous-direct-browser-access": "true",
                 ...(betaFeatures.length > 0 ? { "anthropic-beta": betaFeatures.join(",") } : {}),
@@ -641,7 +703,8 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
             authToken: apiKey,
             baseURL: model.baseUrl,
             dangerouslyAllowBrowser: true,
-            defaultHeaders: mergeHeaders({
+            fetch,
+            defaultHeaders: mergeClientHeaders({
                 accept: "application/json",
                 "anthropic-dangerous-direct-browser-access": "true",
                 "anthropic-beta": ["claude-code-20250219", "oauth-2025-04-20", ...betaFeatures].join(","),
@@ -653,7 +716,7 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
     }
     // API key or header-owned auth.
     const sessionAffinityHeaders = sessionId && getAnthropicCompat(model).sendSessionAffinityHeaders ? { "x-session-affinity": sessionId } : {};
-    const defaultHeaders = mergeHeaders({
+    const defaultHeaders = mergeClientHeaders({
         accept: "application/json",
         "anthropic-dangerous-direct-browser-access": "true",
         ...(betaFeatures.length > 0 ? { "anthropic-beta": betaFeatures.join(",") } : {}),
@@ -663,6 +726,7 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
         authToken: null,
         baseURL: model.baseUrl,
         dangerouslyAllowBrowser: true,
+        fetch,
         defaultHeaders,
     });
     return { client, isOAuthToken: false };
@@ -670,9 +734,19 @@ function createClient(model, apiKey, interleavedThinking, useFineGrainedToolStre
 function buildParams(model, context, isOAuthToken, options) {
     const { cacheControl } = getCacheControl(model, options?.cacheRetention, options?.env);
     const compat = getAnthropicCompat(model);
+    const transformedMessages = transformMessages(context.messages, model, normalizeToolCallId);
+    const normalizeToolName = isOAuthToken ? toClaudeCodeName : (name) => name;
+    const toolPlacement = splitDeferredTools({ ...context, messages: transformedMessages }, compat.supportsToolReferences, normalizeToolName);
+    let immediateTools = toolPlacement.immediate;
+    let deferredTools = [...toolPlacement.deferred.values()];
+    if (immediateTools.length === 0 && deferredTools.length > 0) {
+        immediateTools = deferredTools;
+        deferredTools = [];
+    }
+    const deferredToolNames = new Set(deferredTools.map((tool) => normalizeToolName(tool.name)));
     const params = {
         model: model.id,
-        messages: convertMessages(context.messages, model, isOAuthToken, cacheControl, compat.allowEmptySignature),
+        messages: convertMessages(transformedMessages, isOAuthToken, cacheControl, compat.allowEmptySignature, deferredToolNames, normalizeToolName),
         max_tokens: options?.maxTokens ?? model.maxTokens,
         stream: true,
     };
@@ -707,8 +781,11 @@ function buildParams(model, context, isOAuthToken, options) {
     if (options?.temperature !== undefined && !options?.thinkingEnabled && compat.supportsTemperature) {
         params.temperature = options.temperature;
     }
-    if (context.tools && context.tools.length > 0) {
-        params.tools = convertTools(context.tools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsCacheControlOnTools ? cacheControl : undefined);
+    if (immediateTools.length > 0 || deferredTools.length > 0) {
+        params.tools = [
+            ...convertTools(immediateTools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, compat.supportsCacheControlOnTools ? cacheControl : undefined),
+            ...convertTools(deferredTools, isOAuthToken, compat.supportsEagerToolInputStreaming, compat.supportsStrictTools, undefined, true),
+        ];
     }
     // Configure thinking mode: adaptive, budget-based, or explicitly disabled.
     if (model.reasoning) {
@@ -754,16 +831,47 @@ function buildParams(model, context, isOAuthToken, options) {
             params.tool_choice = options.toolChoice;
         }
     }
+    const allowedFallbackModels = model.compat?.allowedFallbackModels;
+    if (allowedFallbackModels && allowedFallbackModels.length > 0) {
+        params.fallbacks = allowedFallbackModels.map((fallback) => ({ model: fallback.model }));
+    }
     return params;
 }
 // Normalize tool call IDs to match Anthropic's required pattern and length
 function normalizeToolCallId(id) {
     return id.replace(/[^a-zA-Z0-9_-]/g, "_").slice(0, 64);
 }
-function convertMessages(messages, model, isOAuthToken, cacheControl, allowEmptySignature = false) {
+function convertToolResult(msg, isOAuthToken, deferredToolNames, loadedToolNames, normalizeToolName) {
+    const references = [];
+    for (const name of msg.addedToolNames ?? []) {
+        const normalizedName = normalizeToolName(name);
+        if (!deferredToolNames.has(normalizedName) || loadedToolNames.has(normalizedName))
+            continue;
+        loadedToolNames.add(normalizedName);
+        references.push({
+            type: "tool_reference",
+            tool_name: isOAuthToken ? toClaudeCodeName(name) : name,
+        });
+    }
+    const convertedContent = convertContentBlocks(msg.content);
+    // Anthropic rejects tool references mixed with ordinary tool-result content.
+    return {
+        toolResult: {
+            type: "tool_result",
+            tool_use_id: msg.toolCallId,
+            content: references.length > 0 ? references : convertedContent,
+            is_error: msg.isError,
+        },
+        siblingContent: references.length === 0
+            ? []
+            : typeof convertedContent === "string"
+                ? [{ type: "text", text: convertedContent }]
+                : convertedContent,
+    };
+}
+function convertMessages(transformedMessages, isOAuthToken, cacheControl, allowEmptySignature = false, deferredToolNames = new Set(), normalizeToolName = (name) => name) {
     const params = [];
-    // Transform messages for cross-provider compatibility
-    const transformedMessages = transformMessages(messages, model, normalizeToolCallId);
+    const loadedToolNames = new Set();
     for (let i = 0; i < transformedMessages.length; i++) {
         const msg = transformedMessages[i];
         if (msg.role === "user") {
@@ -828,12 +936,14 @@ function convertMessages(messages, model, isOAuthToken, cacheControl, allowEmpty
                         });
                         continue;
                     }
-                    if (block.thinking.trim().length === 0)
+                    const thinkingSignature = block.thinkingSignature;
+                    const hasThinkingSignature = !!thinkingSignature && thinkingSignature.trim().length > 0;
+                    if (block.thinking.trim().length === 0 && !hasThinkingSignature)
                         continue;
                     // If thinking signature is missing/empty (e.g., from aborted stream),
                     // convert to plain text for Anthropic. Some compatible providers emit
                     // and accept empty signatures, so let marked models preserve the block.
-                    if (!block.thinkingSignature || block.thinkingSignature.trim().length === 0) {
+                    if (!hasThinkingSignature) {
                         blocks.push(allowEmptySignature
                             ? {
                                 type: "thinking",
@@ -849,7 +959,7 @@ function convertMessages(messages, model, isOAuthToken, cacheControl, allowEmpty
                         blocks.push({
                             type: "thinking",
                             thinking: sanitizeSurrogates(block.thinking),
-                            signature: block.thinkingSignature,
+                            signature: thinkingSignature,
                         });
                     }
                 }
@@ -870,33 +980,22 @@ function convertMessages(messages, model, isOAuthToken, cacheControl, allowEmpty
             });
         }
         else if (msg.role === "toolResult") {
-            // Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint
+            // Collect all consecutive toolResult messages, needed for z.ai Anthropic endpoint.
             const toolResults = [];
-            // Add the current tool result
-            toolResults.push({
-                type: "tool_result",
-                tool_use_id: msg.toolCallId,
-                content: convertContentBlocks(msg.content),
-                is_error: msg.isError,
-            });
-            // Look ahead for consecutive toolResult messages
-            let j = i + 1;
+            const siblingContent = [];
+            let j = i;
             while (j < transformedMessages.length && transformedMessages[j].role === "toolResult") {
-                const nextMsg = transformedMessages[j]; // We know it's a toolResult
-                toolResults.push({
-                    type: "tool_result",
-                    tool_use_id: nextMsg.toolCallId,
-                    content: convertContentBlocks(nextMsg.content),
-                    is_error: nextMsg.isError,
-                });
+                const converted = convertToolResult(transformedMessages[j], isOAuthToken, deferredToolNames, loadedToolNames, normalizeToolName);
+                toolResults.push(converted.toolResult);
+                siblingContent.push(...converted.siblingContent);
                 j++;
             }
-            // Skip the messages we've already processed
+            // Skip the messages we've already processed.
             i = j - 1;
-            // Add a single user message with all tool results
+            // Displaced reference-bearing results must follow every tool_result block.
             params.push({
                 role: "user",
-                content: toolResults,
+                content: [...toolResults, ...siblingContent],
             });
         }
     }
@@ -927,23 +1026,111 @@ function convertMessages(messages, model, isOAuthToken, cacheControl, allowEmpty
 function shouldUseFineGrainedToolStreamingBeta(model, context) {
     return !!context.tools?.length && !getAnthropicCompat(model).supportsEagerToolInputStreaming;
 }
-function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, cacheControl) {
+function convertTools(tools, isOAuthToken, supportsEagerToolInputStreaming, supportsStrictTools, cacheControl, deferLoading = false) {
     if (!tools)
         return [];
     return tools.map((tool, index) => {
-        const schema = tool.parameters;
+        const strict = resolveJsonSchemaStrictSampling(tool, supportsStrictTools);
+        const parameters = getJsonSchemaToolParameters(tool, strict);
+        const schema = parameters;
+        const legacyInputSchema = {
+            type: "object",
+            properties: schema.properties ?? {},
+            required: schema.required ?? [],
+        };
+        const inputSchema = strict === true
+            ? {
+                ...parameters,
+                ...legacyInputSchema,
+            }
+            : legacyInputSchema;
         return {
             name: isOAuthToken ? toClaudeCodeName(tool.name) : tool.name,
             description: tool.description,
             ...(supportsEagerToolInputStreaming ? { eager_input_streaming: true } : {}),
-            input_schema: {
-                type: "object",
-                properties: schema.properties ?? {},
-                required: schema.required ?? [],
-            },
+            ...(strict === true ? { strict: true } : {}),
+            input_schema: inputSchema,
+            ...(deferLoading ? { defer_loading: true } : {}),
             ...(cacheControl && index === tools.length - 1 ? { cache_control: cacheControl } : {}),
         };
     });
+}
+/**
+ * Synthesize the streaming event sequence from a non-streaming Message so that
+ * compat.streaming === false runs through the same event loop as streaming.
+ */
+function messageToEvents(message) {
+    const events = [
+        { type: "message_start", message: { ...message, content: [] } },
+    ];
+    message.content.forEach((block, index) => {
+        if (block.type === "text") {
+            events.push({
+                type: "content_block_start",
+                index,
+                content_block: { ...block, text: "" },
+            });
+            if (block.text) {
+                events.push({
+                    type: "content_block_delta",
+                    index,
+                    delta: { type: "text_delta", text: block.text },
+                });
+            }
+        }
+        else if (block.type === "thinking") {
+            events.push({
+                type: "content_block_start",
+                index,
+                content_block: { type: "thinking", thinking: "", signature: "" },
+            });
+            if (block.thinking) {
+                events.push({
+                    type: "content_block_delta",
+                    index,
+                    delta: { type: "thinking_delta", thinking: block.thinking },
+                });
+            }
+            if (block.signature) {
+                events.push({
+                    type: "content_block_delta",
+                    index,
+                    delta: { type: "signature_delta", signature: block.signature },
+                });
+            }
+        }
+        else if (block.type === "tool_use") {
+            // Emit arguments via input_json_delta: the loop re-parses partialJson at
+            // content_block_stop, so full input must flow through the delta path.
+            events.push({
+                type: "content_block_start",
+                index,
+                content_block: { type: "tool_use", id: block.id, name: block.name, input: {} },
+            });
+            events.push({
+                type: "content_block_delta",
+                index,
+                delta: { type: "input_json_delta", partial_json: JSON.stringify(block.input ?? {}) },
+            });
+        }
+        else {
+            // redacted_thinking and future block types carry everything on the start event.
+            events.push({ type: "content_block_start", index, content_block: block });
+        }
+        events.push({ type: "content_block_stop", index });
+    });
+    const stopDetails = message.stop_details;
+    events.push({
+        type: "message_delta",
+        delta: {
+            stop_reason: message.stop_reason ?? "end_turn",
+            stop_sequence: message.stop_sequence ?? null,
+            ...(stopDetails !== undefined ? { stop_details: stopDetails } : {}),
+        },
+        usage: message.usage,
+    });
+    events.push({ type: "message_stop" });
+    return events;
 }
 function mapStopReason(reason, stopDetails) {
     switch (reason) {
@@ -963,7 +1150,7 @@ function mapStopReason(reason, stopDetails) {
         case "stop_sequence":
             return { stopReason: "stop" }; // We don't supply stop sequences, so this should never happen
         case "sensitive": // Content flagged by safety filters (not yet in SDK types)
-            return { stopReason: "error" };
+            return { stopReason: "error", errorMessage: "Provider stopped with: sensitive" };
         default:
             // Handle unknown stop reasons gracefully (API may add new values)
             throw new Error(`Unhandled stop reason: ${reason}`);

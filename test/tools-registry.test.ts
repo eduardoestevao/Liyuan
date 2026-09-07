@@ -274,6 +274,7 @@ test("依赖缺失的工具不上清单（工具存在却恒回「不支持」�
 	})).map((t) => t.name).sort();
 	assert.deepEqual(full, [
 		"lorebook_list",
+		"lorebook_read",
 		"lorebook_search",
 		"lorebook_toggle",
 		"lorebook_write",

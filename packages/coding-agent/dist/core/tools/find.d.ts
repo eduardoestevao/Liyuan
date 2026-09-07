@@ -1,12 +1,19 @@
 import type { AgentTool } from "@liyuan/agent-core";
+import path from "path";
 import { type Static, Type } from "typebox";
 import type { ToolDefinition } from "../extensions/types.ts";
 import { type TruncationResult } from "./truncate.ts";
+/** Relativize a find result against the search root and normalize it to posix separators. */
+export declare function relativizeFindResultPath(resultPath: string, searchPath: string, pathModule?: path.PlatformPath): string;
 declare const findSchema: Type.TObject<{
     pattern: Type.TString;
     path: Type.TOptional<Type.TString>;
     limit: Type.TOptional<Type.TNumber>;
 }>;
+export declare const findToolSystemPromptContribution: {
+    readonly snippet: "Find files by glob pattern (respects .gitignore)";
+    readonly guidelines: readonly [];
+};
 export type FindToolInput = Static<typeof findSchema>;
 export interface FindToolDetails {
     truncation?: TruncationResult;

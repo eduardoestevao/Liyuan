@@ -31,17 +31,19 @@ export function combineAbortSignals(signals) {
         },
     };
 }
-
 /** Standard abort error used by provider streams. */
 export function createAbortError(message = "Request was aborted") {
     const err = new Error(message);
     err.name = "AbortError";
     return err;
 }
-
 /**
  * Race an async iterable against AbortSignal.
- * Forces Stop to tear down mid-SSE even when a proxy ignores HTTP cancellation.
+ *
+ * Why: many OpenAI-compatible proxies ignore request cancellation mid-SSE.
+ * Checking `signal.aborted` only between chunks still hangs if no chunk arrives.
+ * Racing each `iterator.next()` with abort forces the consumer to tear down
+ * immediately when the user hits Stop.
  */
 export async function* abortableAsyncIterable(source, signal) {
     if (!signal) {

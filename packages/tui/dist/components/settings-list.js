@@ -15,6 +15,7 @@ export class SettingsList {
     // Submenu state
     submenuComponent = null;
     submenuItemIndex = null;
+    navigateAfterClose = null;
     constructor(items, maxVisible, theme, onChange, onCancel, options = {}) {
         this.items = items;
         this.filteredItems = items;
@@ -32,6 +33,14 @@ export class SettingsList {
         const item = this.items.find((i) => i.id === id);
         if (item) {
             item.currentValue = newValue;
+        }
+    }
+    /** Move selection to the item with the given id (no-op if not found). */
+    selectItem(id) {
+        const items = this.searchEnabled ? this.filteredItems : this.items;
+        const index = items.findIndex((i) => i.id === id);
+        if (index !== -1) {
+            this.selectedIndex = index;
         }
     }
     invalidate() {
@@ -67,7 +76,7 @@ export class SettingsList {
         const startIndex = Math.max(0, Math.min(this.selectedIndex - Math.floor(this.maxVisible / 2), displayItems.length - this.maxVisible));
         const endIndex = Math.min(startIndex + this.maxVisible, displayItems.length);
         // Calculate max label width for alignment
-        const maxLabelWidth = Math.min(30, Math.max(...this.items.map((item) => visibleWidth(item.label))));
+        const maxLabelWidth = Math.min(36, Math.max(...this.items.map((item) => visibleWidth(item.label))));
         // Render visible items
         for (let i = startIndex; i < endIndex; i++) {
             const item = displayItems[i];
@@ -124,18 +133,15 @@ export class SettingsList {
                 return;
             this.selectedIndex = this.selectedIndex === displayItems.length - 1 ? 0 : this.selectedIndex + 1;
         }
-        else if (kb.matches(data, "tui.select.confirm") || data === " ") {
+        else if (kb.matches(data, "tui.select.confirm") ||
+            (data === " " && (!this.searchEnabled || this.searchInput?.getValue().length === 0))) {
             this.activateItem();
         }
         else if (kb.matches(data, "tui.select.cancel")) {
             this.onCancel();
         }
         else if (this.searchEnabled && this.searchInput) {
-            const sanitized = data.replace(/ /g, "");
-            if (!sanitized) {
-                return;
-            }
-            this.searchInput.handleInput(sanitized);
+            this.searchInput.handleInput(data);
             this.applyFilter(this.searchInput.getValue());
         }
     }
@@ -146,10 +152,13 @@ export class SettingsList {
         if (item.submenu) {
             // Open submenu, passing current value so it can pre-select correctly
             this.submenuItemIndex = this.selectedIndex;
-            this.submenuComponent = item.submenu(item.currentValue, (selectedValue) => {
+            this.submenuComponent = item.submenu(item.currentValue, (selectedValue, options) => {
                 if (selectedValue !== undefined) {
                     item.currentValue = selectedValue;
                     this.onChange(item.id, selectedValue);
+                }
+                if (options?.navigateTo) {
+                    this.navigateAfterClose = options.navigateTo;
                 }
                 this.closeSubmenu();
             });
@@ -165,8 +174,16 @@ export class SettingsList {
     }
     closeSubmenu() {
         this.submenuComponent = null;
-        // Restore selection to the item that opened the submenu
-        if (this.submenuItemIndex !== null) {
+        if (this.navigateAfterClose !== null) {
+            const id = this.navigateAfterClose;
+            this.navigateAfterClose = null;
+            this.submenuItemIndex = null;
+            this.selectItem(id);
+            // Open the target item's submenu automatically
+            this.activateItem();
+        }
+        else if (this.submenuItemIndex !== null) {
+            // Restore selection to the item that opened the submenu
             this.selectedIndex = this.submenuItemIndex;
             this.submenuItemIndex = null;
         }

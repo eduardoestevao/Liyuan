@@ -1,0 +1,1 @@
+{"version":3,"file":"unix.d.ts","sourceRoot":"","sources":["../src/unix.ts"],"names":[],"mappings":"AAEA,OAAO,KAAK,EAAiB,oBAAoB,EAAyB,MAAM,gBAAgB,CAAC;AAIjG,MAAM,WAAW,oBAAoB;IACpC,IAAI,EAAE,MAAM,CAAC;IACb,eAAe,CAAC,EAAE,MAAM,CAAC;CACzB;AAED,gHAAgH;AAChH,wBAAgB,0BAA0B,CAAC,OAAO,EAAE,oBAAoB,GAAG,oBAAoB,CAW9F"}

@@ -6,6 +6,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, w
 import { dirname, join } from "path";
 import { CONFIG_DIR_NAME, getAgentDir, getBinDir } from "./config.js";
 import { migrateKeybindingsConfig } from "./core/keybindings.js";
+import { stripBom } from "./utils/text.js";
 const MIGRATION_GUIDE_URL = "https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/CHANGELOG.md#extensions-migration";
 const EXTENSIONS_DOC_URL = "https://github.com/earendil-works/pi-mono/blob/main/packages/coding-agent/docs/extensions.md";
 /**
@@ -26,7 +27,7 @@ export function migrateAuthToAuthJson() {
     // Migrate oauth.json
     if (existsSync(oauthPath)) {
         try {
-            const oauth = JSON.parse(readFileSync(oauthPath, "utf-8"));
+            const oauth = JSON.parse(stripBom(readFileSync(oauthPath, "utf-8")));
             for (const [provider, cred] of Object.entries(oauth)) {
                 migrated[provider] = { type: "oauth", ...cred };
                 providers.push(provider);
@@ -41,7 +42,7 @@ export function migrateAuthToAuthJson() {
     if (existsSync(settingsPath)) {
         try {
             const content = readFileSync(settingsPath, "utf-8");
-            const settings = JSON.parse(content);
+            const settings = JSON.parse(stripBom(content));
             if (settings.apiKeys && typeof settings.apiKeys === "object") {
                 for (const [provider, key] of Object.entries(settings.apiKeys)) {
                     if (!migrated[provider] && typeof key === "string") {
@@ -140,7 +141,7 @@ function migrateKeybindingsConfigFile() {
     if (!existsSync(configPath))
         return;
     try {
-        const parsed = JSON.parse(readFileSync(configPath, "utf-8"));
+        const parsed = JSON.parse(stripBom(readFileSync(configPath, "utf-8")));
         if (typeof parsed !== "object" || parsed === null || Array.isArray(parsed)) {
             return;
         }

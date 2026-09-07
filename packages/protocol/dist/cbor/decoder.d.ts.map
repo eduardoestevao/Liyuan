@@ -1,0 +1,1 @@
+{"version":3,"file":"decoder.d.ts","sourceRoot":"","sources":["../../src/cbor/decoder.ts"],"names":[],"mappings":"AAAA,OAAO,EAEN,KAAK,WAAW,EAKhB,MAAM,cAAc,CAAC;AAwJtB,2EAA2E;AAC3E,wBAAgB,UAAU,CAAC,KAAK,EAAE,UAAU,EAAE,OAAO,CAAC,EAAE,WAAW,GAAG,OAAO,CAO5E"}

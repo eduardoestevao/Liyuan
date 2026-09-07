@@ -4,19 +4,38 @@
  * These wrappers only adapt tool execution so extension tools receive the runner context.
  * Tool call and tool result interception is handled by AgentSession via agent-core hooks.
  */
-import { wrapToolDefinition, wrapToolDefinitions } from "../tools/tool-definition-wrapper.js";
+import { wrapToolDefinition } from "../tools/tool-definition-wrapper.js";
 /**
  * Wrap a RegisteredTool into an AgentTool.
  * Uses the runner's createContext() for consistent context across tools and event handlers.
  */
 export function wrapRegisteredTool(registeredTool, runner) {
-    return wrapToolDefinition(registeredTool.definition, () => runner.createContext());
+    const tool = wrapToolDefinition(registeredTool.definition, () => runner.createContext());
+    const execute = tool.execute;
+    return {
+        ...tool,
+        execute: async (toolCallId, params, signal, onUpdate) => {
+            const activeBefore = runner.getActiveTools();
+            const result = await execute(toolCallId, params, signal, onUpdate);
+            const activeAfter = runner.getActiveTools();
+            if (!activeBefore.every((name) => activeAfter.includes(name)))
+                return result;
+            const beforeNames = new Set(activeBefore);
+            const addedToolNames = activeAfter.filter((name) => !beforeNames.has(name));
+            if (addedToolNames.length === 0)
+                return result;
+            return {
+                ...result,
+                addedToolNames: [...new Set([...(result.addedToolNames ?? []), ...addedToolNames])],
+            };
+        },
+    };
 }
 /**
  * Wrap all registered tools into AgentTools.
  * Uses the runner's createContext() for consistent context across tools and event handlers.
  */
 export function wrapRegisteredTools(registeredTools, runner) {
-    return wrapToolDefinitions(registeredTools.map((registeredTool) => registeredTool.definition), () => runner.createContext());
+    return registeredTools.map((tool) => wrapRegisteredTool(tool, runner));
 }
 //# sourceMappingURL=wrapper.js.map

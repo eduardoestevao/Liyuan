@@ -16,6 +16,7 @@ const RESERVED_KEYBINDINGS_FOR_EXTENSION_CONFLICTS = [
     "app.tools.expand",
     "app.thinking.toggle",
     "app.editor.external",
+    "app.message.copy",
     "app.message.followUp",
     "tui.input.submit",
     "tui.select.confirm",
@@ -126,6 +127,7 @@ export class ExtensionRunner {
     modelRegistry;
     errorListeners = new Set();
     getModel = () => undefined;
+    getScopedModels = () => [];
     isIdleFn = () => true;
     isProjectTrustedFn = () => true;
     getSignalFn = () => undefined;
@@ -145,6 +147,8 @@ export class ExtensionRunner {
     shortcutDiagnostics = [];
     commandDiagnostics = [];
     staleMessage;
+    uiPromptDepth = 0;
+    activeUIPrompt;
     constructor(extensions, runtime, cwd, sessionManager, modelRegistry) {
         this.extensions = extensions;
         this.runtime = runtime;
@@ -171,6 +175,7 @@ export class ExtensionRunner {
         this.runtime.setThinkingLevel = actions.setThinkingLevel;
         // Context actions (required)
         this.getModel = contextActions.getModel;
+        this.getScopedModels = contextActions.getScopedModels;
         this.isIdleFn = contextActions.isIdle;
         this.isProjectTrustedFn = contextActions.isProjectTrusted;
         this.getSignalFn = contextActions.getSignal;
@@ -201,6 +206,25 @@ export class ExtensionRunner {
             }
         }
         this.runtime.pendingProviderRegistrations = [];
+        for (const { provider, extensionPath } of this.runtime.pendingNativeProviderRegistrations) {
+            try {
+                if (providerActions?.registerNativeProvider) {
+                    providerActions.registerNativeProvider(provider);
+                }
+                else {
+                    this.modelRegistry.registerProvider(provider);
+                }
+            }
+            catch (err) {
+                this.emitError({
+                    extensionPath,
+                    event: "register_provider",
+                    error: err instanceof Error ? err.message : String(err),
+                    stack: err instanceof Error ? err.stack : undefined,
+                });
+            }
+        }
+        this.runtime.pendingNativeProviderRegistrations = [];
         // From this point on, provider registration/unregistration takes effect immediately
         // without requiring a /reload.
         this.runtime.registerProvider = (name, config) => {
@@ -209,6 +233,13 @@ export class ExtensionRunner {
                 return;
             }
             this.modelRegistry.registerProvider(name, config);
+        };
+        this.runtime.registerNativeProvider = (provider) => {
+            if (providerActions?.registerNativeProvider) {
+                providerActions.registerNativeProvider(provider);
+                return;
+            }
+            this.modelRegistry.registerProvider(provider);
         };
         this.runtime.unregisterProvider = (name) => {
             if (providerActions?.unregisterProvider) {
@@ -236,8 +267,50 @@ export class ExtensionRunner {
         this.reloadHandler = async () => { };
     }
     setUIContext(uiContext, mode = "print") {
-        this.uiContext = uiContext ?? noOpUIContext;
+        this.uiContext = uiContext ? this.wrapUIPromptContext(uiContext) : noOpUIContext;
         this.mode = mode;
+    }
+    wrapUIPromptContext(ui) {
+        return {
+            ...ui,
+            select: (title, options, opts) => this.withUIPrompt("select", title, () => ui.select(title, options, opts)),
+            confirm: (title, message, opts) => this.withUIPrompt("confirm", title, () => ui.confirm(title, message, opts)),
+            input: (title, placeholder, opts) => this.withUIPrompt("input", title, () => ui.input(title, placeholder, opts)),
+            editor: (title, prefill) => this.withUIPrompt("editor", title, () => ui.editor(title, prefill)),
+            custom: (factory, options) => this.withUIPrompt("custom", undefined, () => ui.custom(factory, options)),
+        };
+    }
+    withUIPrompt(kind, title, run) {
+        const outerPrompt = this.uiPromptDepth++ === 0;
+        if (outerPrompt) {
+            this.activeUIPrompt = { kind, title };
+            this.emitUIPromptEvent({ type: "ui_prompt_start", reason: "ui_prompt", kind, ...(title ? { title } : {}) });
+        }
+        const finish = () => {
+            if (--this.uiPromptDepth > 0)
+                return;
+            this.uiPromptDepth = 0;
+            const prompt = this.activeUIPrompt ?? { kind, title };
+            this.activeUIPrompt = undefined;
+            this.emitUIPromptEvent({
+                type: "ui_prompt_end",
+                reason: "ui_prompt",
+                kind: prompt.kind,
+                ...(prompt.title ? { title: prompt.title } : {}),
+            });
+        };
+        try {
+            return run().finally(finish);
+        }
+        catch (err) {
+            finish();
+            throw err;
+        }
+    }
+    emitUIPromptEvent(event) {
+        queueMicrotask(() => {
+            void this.emit(event);
+        });
     }
     getUIContext() {
         return this.uiContext;
@@ -358,6 +431,18 @@ export class ExtensionRunner {
         }
         return undefined;
     }
+    getMarkdownTransformers() {
+        return this.extensions.flatMap((ext) => (ext.markdownTransformer ? [ext.markdownTransformer] : []));
+    }
+    getEntryRenderer(customType) {
+        for (const ext of this.extensions) {
+            const renderer = ext.entryRenderers?.get(customType);
+            if (renderer) {
+                return renderer;
+            }
+        }
+        return undefined;
+    }
     resolveRegisteredCommands() {
         const commands = [];
         const counts = new Map();
@@ -387,6 +472,9 @@ export class ExtensionRunner {
             };
         });
     }
+    getModelRegistry() {
+        return this.modelRegistry;
+    }
     getRegisteredCommands() {
         this.commandDiagnostics = [];
         return this.resolveRegisteredCommands();
@@ -404,6 +492,10 @@ export class ExtensionRunner {
     shutdown() {
         this.shutdownHandler();
     }
+    getActiveTools() {
+        this.assertActive();
+        return this.runtime.getActiveTools();
+    }
     /**
      * Create an ExtensionContext for use in event handlers and tool execution.
      * Context values are resolved at call time, so changes via bindCore/bindUI are reflected.
@@ -411,6 +503,7 @@ export class ExtensionRunner {
     createContext() {
         const runner = this;
         const getModel = this.getModel;
+        const getScopedModels = this.getScopedModels;
         return {
             get ui() {
                 runner.assertActive();
@@ -439,6 +532,14 @@ export class ExtensionRunner {
             get model() {
                 runner.assertActive();
                 return getModel();
+            },
+            get scopedModels() {
+                runner.assertActive();
+                return getScopedModels();
+            },
+            get thinkingLevel() {
+                runner.assertActive();
+                return runner.runtime.getThinkingLevel();
             },
             isIdle: () => {
                 runner.assertActive();
@@ -554,6 +655,7 @@ export class ExtensionRunner {
         const ctx = this.createContext();
         let currentMessage = event.message;
         let modified = false;
+        let transient = false;
         for (const ext of this.extensions) {
             const handlers = ext.handlers.get("message_end");
             if (!handlers || handlers.length === 0)
@@ -562,6 +664,8 @@ export class ExtensionRunner {
                 try {
                     const currentEvent = { ...event, message: currentMessage };
                     const handlerResult = (await handler(currentEvent, ctx));
+                    if (handlerResult?.persist === false)
+                        transient = true;
                     if (!handlerResult?.message)
                         continue;
                     if (handlerResult.message.role !== currentMessage.role) {
@@ -587,7 +691,9 @@ export class ExtensionRunner {
                 }
             }
         }
-        return modified ? currentMessage : undefined;
+        return modified || transient
+            ? { ...(modified ? { message: currentMessage } : {}), ...(transient ? { persist: false } : {}) }
+            : undefined;
     }
     async emitToolResult(event) {
         const ctx = this.createContext();
@@ -614,6 +720,10 @@ export class ExtensionRunner {
                         currentEvent.isError = handlerResult.isError;
                         modified = true;
                     }
+                    if (handlerResult.usage !== undefined) {
+                        currentEvent.usage = handlerResult.usage;
+                        modified = true;
+                    }
                 }
                 catch (err) {
                     const message = err instanceof Error ? err.message : String(err);
@@ -634,6 +744,7 @@ export class ExtensionRunner {
             content: currentEvent.content,
             details: currentEvent.details,
             isError: currentEvent.isError,
+            usage: currentEvent.usage,
         };
     }
     async emitToolCall(event) {
@@ -742,6 +853,35 @@ export class ExtensionRunner {
             }
         }
         return currentPayload;
+    }
+    async emitBeforeProviderHeaders(headers) {
+        const ctx = this.createContext();
+        for (const ext of this.extensions) {
+            const handlers = ext.handlers.get("before_provider_headers");
+            if (!handlers || handlers.length === 0)
+                continue;
+            for (const handler of handlers) {
+                try {
+                    // Handlers mutate `headers` in place; the return value is ignored.
+                    const event = {
+                        type: "before_provider_headers",
+                        headers,
+                    };
+                    await handler(event, ctx);
+                }
+                catch (err) {
+                    const message = err instanceof Error ? err.message : String(err);
+                    const stack = err instanceof Error ? err.stack : undefined;
+                    this.emitError({
+                        extensionPath: ext.path,
+                        event: "before_provider_headers",
+                        error: message,
+                        stack,
+                    });
+                }
+            }
+        }
+        return headers;
     }
     async emitBeforeAgentStart(prompt, images, systemPrompt, systemPromptOptions) {
         let currentSystemPrompt = systemPrompt;

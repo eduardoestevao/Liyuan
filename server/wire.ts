@@ -242,6 +242,8 @@ export type ServerFrame =
 			charName: string;
 			userName: string;
 			messages: WireMsg[];
+			workspace?: DraftView;
+			streaming?: boolean;
 			state: WorldState | null;
 			stats: WireStats | null;
 			/** agent 自建面板（柱 2）：当前活跃面板全量（页签序） */
@@ -270,6 +272,8 @@ export type ServerFrame =
 	| { type: "delta"; kind: "text" | "thinking"; delta: string; draft?: boolean; reset?: boolean }
 	/** 稿件分段重同步（修复/重交后）：前端把屏上全部稿段原位替换为 segments（按空行切段） */
 	| { type: "draft_resync"; segments: string[] }
+	| { type: "draft_workspace"; workspace: DraftView; streaming: boolean }
+	| { type: "draft_history"; id: string; revisions: DraftRevision[] }
 	/** 丢弃当前流式半成品（中间 tool 轮被过滤后，避免计划旁白叠进下一轮 / 误落本地气泡） */
 	| { type: "stream"; state: "clear" }
 	| { type: "agent"; state: "start" | "end" }
@@ -323,6 +327,8 @@ export interface AssistantSessionInfo {
 
 /** Client → Server 帧 */
 export type ClientFrame =
+	| { type: "draft_history"; id: string }
+	| { type: "draft_restore"; id: string; version: number; expectedVersion: number }
 	| { type: "prompt"; text: string }
 	| { type: "abort" }
 	/**
@@ -501,7 +507,8 @@ export function toWireMsg(m: unknown, names: WireNames, opts?: ToWireOpts): Wire
 			: { channel: "user", name: names.userName, text };
 	}
 	if (msg.role === "assistant") {
-		const aborted = msg.stopReason === "aborted";
+		const draftPhase = (msg.details as { rpDraft?: { phase?: string } } | undefined)?.rpDraft?.phase;
+		const aborted = draftPhase === "stopped" || draftPhase === "error" || (!draftPhase && msg.stopReason === "aborted");
 		const channel: WireChannel = opts?.backstage ? "backstage" : "narrative";
 		const modelThinking = thinkingOf(msg.content).trim();
 		// 正常中间 tool 轮：跳过（防叠泡）；**用户中断**的半截须上屏，即便夹着 toolCall
@@ -850,3 +857,5 @@ export function summarizeToolResult(result: unknown, maxChars = 200): string {
 	}
 	return "";
 }
+import type { TurnWorkspace, DraftRevision } from "../src/stage/workspace.ts";
+export type DraftView = Omit<TurnWorkspace, "revisions" | "mediaDeliveries"> & { revisions: Omit<DraftRevision, "text">[] };

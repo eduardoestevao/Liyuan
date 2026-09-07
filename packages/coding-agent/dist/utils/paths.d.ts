@@ -17,12 +17,15 @@ export interface PathInputOptions {
  * entries.
  */
 export declare function canonicalizePath(path: string): string;
+export declare function getFileRevision(path: string): string | undefined;
 /**
  * Returns true if the value is NOT a package source (npm:, git:, etc.)
  * or a remote URL protocol. Bare names, relative paths, and file: URLs
  * are considered local.
  */
 export declare function isLocalPath(value: string): boolean;
+/** Convert Git Bash, MSYS, Cygwin, and WSL drive paths to a form native Windows APIs accept. */
+export declare function normalizeWindowsShellPath(filePath: string): string;
 export declare function normalizePath(input: string, options?: PathInputOptions): string;
 export declare function resolvePath(input: string, baseDir?: string, options?: PathInputOptions): string;
 export declare function getCwdRelativePath(filePath: string, cwd: string): string | undefined;

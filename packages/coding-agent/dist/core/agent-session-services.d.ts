@@ -1,8 +1,7 @@
 import type { ThinkingLevel } from "@liyuan/agent-core";
 import type { Model } from "@liyuan/ai";
-import { AuthStorage } from "./auth-storage.ts";
 import type { SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { ModelRegistry } from "./model-registry.ts";
+import { ModelRuntime } from "./model-runtime.ts";
 import { type DefaultResourceLoaderOptions, type ResourceLoader, type ResourceLoaderReloadOptions } from "./resource-loader.ts";
 import { type CreateAgentSessionOptions, type CreateAgentSessionResult } from "./sdk.ts";
 import type { SessionManager } from "./session-manager.ts";
@@ -28,9 +27,9 @@ export interface AgentSessionRuntimeDiagnostic {
 export interface CreateAgentSessionServicesOptions {
     cwd: string;
     agentDir?: string;
-    authStorage?: AuthStorage;
     settingsManager?: SettingsManager;
-    modelRegistry?: ModelRegistry;
+    modelRuntime?: ModelRuntime;
+    modelRuntimeSignal?: AbortSignal;
     extensionFlagValues?: Map<string, boolean | string>;
     resourceLoaderOptions?: Omit<DefaultResourceLoaderOptions, "cwd" | "agentDir" | "settingsManager">;
     resourceLoaderReloadOptions?: ResourceLoaderReloadOptions;
@@ -65,9 +64,8 @@ export interface CreateAgentSessionFromServicesOptions {
 export interface AgentSessionServices {
     cwd: string;
     agentDir: string;
-    authStorage: AuthStorage;
+    modelRuntime: ModelRuntime;
     settingsManager: SettingsManager;
-    modelRegistry: ModelRegistry;
     resourceLoader: ResourceLoader;
     diagnostics: AgentSessionRuntimeDiagnostic[];
 }

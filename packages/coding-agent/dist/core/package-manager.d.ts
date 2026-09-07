@@ -115,6 +115,7 @@ export declare class DefaultPackageManager implements PackageManager {
     private installNpmBatch;
     checkForAvailableUpdates(): Promise<PackageUpdate[]>;
     private resolvePackageSources;
+    private findAutoloadDeltaBase;
     private resolveLocalExtensionSource;
     private installParsedSource;
     private getPackageSourceString;
@@ -144,7 +145,8 @@ export declare class DefaultPackageManager implements PackageManager {
     private getPackageIdentity;
     /**
      * Dedupe packages: if same package identity appears in both global and project,
-     * keep only the project one (project wins).
+     * keep only the project one (project wins). A project entry with autoload=false
+     * is a delta over the global entry, so both are kept (delta first).
      */
     private dedupePackages;
     private parseNpmSpec;
@@ -159,6 +161,10 @@ export declare class DefaultPackageManager implements PackageManager {
     private uninstallNpm;
     private installGit;
     private updateGit;
+    private hasMissingGitDependencies;
+    private repairMissingGitDependencies;
+    private getGitUpdateMarkerPath;
+    private cleanAndInstallGitDependencies;
     private ensureGitRef;
     private refreshTemporaryGitSource;
     private removeGit;
@@ -181,13 +187,13 @@ export declare class DefaultPackageManager implements PackageManager {
     private collectPackageResources;
     private collectDefaultResources;
     private applyPackageFilter;
+    private applyPackageDeltaFilter;
     /**
      * Collect all files from a package for a resource type, applying manifest patterns.
      * Returns { allFiles, enabledByManifest } where enabledByManifest is the set of files
      * that pass the manifest's own patterns.
      */
     private collectManifestFiles;
-    private readPiManifest;
     private addManifestEntries;
     private collectFilesFromManifestEntries;
     private resolveLocalEntries;

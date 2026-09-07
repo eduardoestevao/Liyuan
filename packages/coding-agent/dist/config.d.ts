@@ -25,9 +25,10 @@ export declare function getUpdateInstruction(packageName: string): string;
 /**
  * Get the base directory for resolving package assets (themes, package.json, README.md, CHANGELOG.md).
  * - For Bun binary: returns the directory containing the executable
- * - For Node.js (dist/): returns __dirname (the dist/ directory)
- * - For tsx (src/): returns parent directory (the package root)
+ * - For Node.js and tsx: returns the package root containing package.json
+ * - Ignores Bun binary metadata copied into dist/ when the package root is available
  */
+export declare function findNodePackageDir(startDir: string): string;
 export declare function getPackageDir(): string;
 /**
  * Get path to built-in themes directory (shipped with package)
@@ -70,7 +71,7 @@ export declare const VERSION: string;
 export declare const ENV_AGENT_DIR: string;
 export declare const ENV_SESSION_DIR: string;
 export declare function expandTildePath(path: string): string;
-/** Get the share viewer URL for a gist ID */
+/** Get the share viewer URL for a gist ID. */
 export declare function getShareViewerUrl(gistId: string): string;
 /** Get the agent config directory (e.g., ~/.pi/agent/) */
 export declare function getAgentDir(): string;

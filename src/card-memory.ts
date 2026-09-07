@@ -26,7 +26,7 @@
  * 纯函数 ＋ 注入依赖，零 pi 依赖、可单测。
  */
 
-import { createHash } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, join } from "node:path";
 
@@ -40,6 +40,7 @@ import {
 	cardMemoryDirOf,
 } from "./paths.ts";
 import { rebuildHistory, stateFromBranch, type BranchEntryLike } from "./stage/assemble.ts";
+import { applyDraftRevisions } from "./stage/draft-projection.ts";
 import { formatState } from "./state.ts";
 
 // ---------------- 预算（第零步基线给的数，见 _baseline0/BASELINE-无预设.md） ----------------
@@ -70,6 +71,13 @@ export interface MemoryManifest {
 	recaps: Record<string, RecapRecord>;
 	/** 上次成功合并的时间 */
 	mergedAt?: string;
+	manual?: {
+		protectedRefs: string[];
+		forgottenChats: string[];
+		supersededRecaps: Record<string, string>;
+		aggregatePinned: boolean;
+		epoch: number;
+	};
 }
 
 const emptyManifest = (): MemoryManifest => ({ version: 1, recaps: {} });
@@ -95,7 +103,7 @@ export function loadManifest(cardDir: string): MemoryManifest {
 	}
 	const m = (raw && typeof raw === "object" ? raw : null) as Partial<MemoryManifest> | null;
 	if (!m || m.version !== 1 || !m.recaps || typeof m.recaps !== "object") return emptyManifest();
-	return { version: 1, recaps: { ...m.recaps }, ...(m.mergedAt ? { mergedAt: m.mergedAt } : {}) };
+	return { version: 1, recaps: { ...m.recaps }, ...(m.mergedAt ? { mergedAt: m.mergedAt } : {}), ...(m.manual ? { manual: m.manual } : {}) };
 }
 
 export function saveManifest(cardDir: string, manifest: MemoryManifest): void {
@@ -106,7 +114,7 @@ export function saveManifest(cardDir: string, manifest: MemoryManifest): void {
 
 /** 常驻摘要每拍都有人读，同步又在后台写——写必须原子（临时文件＋改名），不能让人读到半份 */
 function writeAtomic(file: string, content: string): void {
-	const tmp = `${file}.tmp`;
+	const tmp = `${file}.${randomUUID()}.tmp`;
 	writeFileSync(tmp, content, "utf8");
 	renameSync(tmp, file);
 }
@@ -212,8 +220,8 @@ export function collectChatEvidence(
 		const { history, summary } = rebuildHistory(branch);
 		const userBeats = history.filter((m) => m.role === "user").length;
 		if (userBeats === 0 && !summary) continue;
-		// 本局拍数按分支上全部用户消息数（被前情摘要覆盖的早期拍也是这一局的拍）
-		beats += branch.filter((e) => e.type === "message" && e.message?.role === "user").length;
+		// 包含已压缩的早期剧情拍；完成的纯改稿请求不另算剧情拍。
+		beats += applyDraftRevisions(branch, { omitEditRequests: true }).filter((e) => e.type === "message" && e.message?.role === "user").length;
 		lastBranch = branch;
 		const lines: string[] = [];
 		if (summary) lines.push(`【前情提要】\n${summary}`);
@@ -304,6 +312,7 @@ export function diffRecaps(cardDir: string, manifest: MemoryManifest, nameOf: (c
 	if (existsSync(p.recapsDir)) {
 		for (const f of readdirSync(p.recapsDir).sort()) {
 			if (!f.endsWith(".md")) continue;
+			if (manifest.manual?.forgottenChats.includes(basename(f, ".md"))) continue;
 			try {
 				onDisk.set(basename(f, ".md"), readFileSync(join(p.recapsDir, f), "utf8"));
 			} catch {
@@ -463,6 +472,8 @@ export async function syncCardMemory(deps: CardMemoryDeps, input: CardMemorySync
 
 	// ---- Phase 1：内容变了的局逐个复盘 ----
 	for (const chat of chats) {
+		manifest = loadManifest(cardDir);
+		if (manifest.manual?.forgottenChats.includes(chat.id) || manifest.manual?.protectedRefs.includes(`card:recap:${chat.id}`)) continue;
 		const mark = sourceMarkOf(chat);
 		if (!mark) continue; // 没有会话文件的空子项目
 		if (manifest.recaps[chat.id]?.sourceMark === mark) continue;
@@ -481,7 +492,12 @@ export async function syncCardMemory(deps: CardMemoryDeps, input: CardMemorySync
 		}
 		deps.onActivity?.(`正在复盘「${nameOf(chat.id)}」（${evidence.beats} 拍 · ${evidence.transcript.length} 字）…`);
 		const prompt = buildRecapPrompt({ evidence, chatName: nameOf(chat.id), previousRecap, language, userName, charName });
+		const before = cardMemoryInputStamp(cardDir);
 		const resp = await deps.sideText(prompt.systemPrompt, prompt.userText, 4096);
+		if (cardMemoryInputStamp(cardDir) !== before) {
+			log(`复盘「${nameOf(chat.id)}」期间记忆被修改，本次结果未覆盖文件`);
+			outcome.failed.push(chat.id); continue;
+		}
 		if (typeof resp !== "string" || !resp.trim()) {
 			const why = typeof resp === "string" ? "复盘为空" : resp.error;
 			log(`复盘「${nameOf(chat.id)}」失败：${why}`);
@@ -498,6 +514,7 @@ export async function syncCardMemory(deps: CardMemoryDeps, input: CardMemorySync
 
 	// ---- Phase 2：复盘文件 vs 上次合并 → 增/改/删 ----
 	manifest = loadManifest(cardDir); // 用户可能在此期间手动删了复盘
+	if (manifest.manual?.aggregatePinned) return outcome;
 	const diff = diffRecaps(cardDir, manifest, nameOf);
 	if (diff.changed.length === 0 && diff.deleted.length === 0) {
 		outcome.merged = "no-change";
@@ -509,7 +526,12 @@ export async function syncCardMemory(deps: CardMemoryDeps, input: CardMemorySync
 		`正在合并记忆（${diff.changed.length} 局有更新${diff.deleted.length ? `，遗忘 ${diff.deleted.length} 局` : ""}）…`,
 	);
 	const prompt = buildConsolidatePrompt({ diff, handbook, resident, language, userName, charName });
+	const before = cardMemoryInputStamp(cardDir);
 	const resp = await deps.sideText(prompt.systemPrompt, prompt.userText, 8192);
+	if (cardMemoryInputStamp(cardDir) !== before) {
+		log("合并期间来源或手工记忆已变，本次结果未覆盖文件");
+		outcome.merged = "skipped"; return outcome;
+	}
 	if (typeof resp !== "string") {
 		log(`合并失败：${resp.error}`);
 		outcome.merged = "failed";
@@ -553,10 +575,33 @@ function readOptional(file: string): string | undefined {
 	}
 }
 
+/** Detect manual edits/deletions and competing syncs across either awaited generation. */
+export function cardMemoryInputStamp(cardDir: string): string {
+	const p = memoryPaths(cardDir);
+	const paths = [p.manifest, p.handbook, p.resident];
+	if (existsSync(p.recapsDir)) for (const name of readdirSync(p.recapsDir).filter((s) => s.endsWith(".md")).sort()) paths.push(join(p.recapsDir, name));
+	return sha1(paths.map((path) => {
+		try { return path + "\0" + readFileSync(path, "utf8"); } catch { return path + "\0<missing>"; }
+	}).join("\0"));
+}
+
 /** 遗忘一局（删它的复盘）；真正从手册/常驻摘要里清掉发生在下一次合并 */
 export function forgetChatRecap(cardDir: string, chatId: string): boolean {
-	const f = memoryPaths(cardDir).recapOf(chatId);
+	if (!/^[a-zA-Z0-9_-]+$/.test(chatId)) throw new Error("非法局标识。");
+	const p = memoryPaths(cardDir), f = p.recapOf(chatId);
 	if (!existsSync(f)) return false;
+	const manifest = loadManifest(cardDir);
+	const control = manifest.manual ??= { protectedRefs: [], forgottenChats: [], supersededRecaps: {}, aggregatePinned: false, epoch: 0 };
+	if (!control.forgottenChats.includes(chatId)) control.forgottenChats.push(chatId);
+	control.epoch++;
+	for (const r of Object.values(manifest.recaps)) delete r.mergedHash;
+	saveManifest(cardDir, manifest);
 	rmSync(f, { force: true });
+	for (const [key, file] of [["card:handbook", p.handbook], ["card:resident", p.resident]]) {
+		if (!control.protectedRefs.includes(key) && existsSync(file)) {
+			const backupDir = join(p.root, ".history"); mkdirSync(backupDir, { recursive: true });
+			renameSync(file, join(backupDir, `${randomUUID()}-${basename(file)}`));
+		}
+	}
 	return true;
 }

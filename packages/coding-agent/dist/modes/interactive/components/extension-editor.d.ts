@@ -16,7 +16,6 @@ export declare class ExtensionEditorComponent extends Container implements Focus
     set focused(value: boolean);
     constructor(tui: TUI, keybindings: KeybindingsManager, title: string, prefill: string | undefined, onSubmit: (value: string) => void, onCancel: () => void, options?: EditorOptions, externalEditorCommand?: string);
     handleInput(keyData: string): void;
-    private getExternalEditorCommand;
-    private openExternalEditor;
+    private handleOpenExternalEditor;
 }
 //# sourceMappingURL=extension-editor.d.ts.map

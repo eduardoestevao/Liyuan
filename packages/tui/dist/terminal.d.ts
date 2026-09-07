@@ -6,6 +6,7 @@ export type KeyboardProtocolNegotiationSequence = {
 };
 export declare function parseKeyboardProtocolNegotiationSequence(sequence: string): KeyboardProtocolNegotiationSequence | undefined;
 export declare function isAppleTerminalSession(): boolean;
+export declare function normalizeNativeShiftEnterInput(data: string, shouldDetectNativeShiftEnter: boolean, isShiftPressed: boolean): string;
 export declare function normalizeAppleTerminalInput(data: string, isAppleTerminal: boolean, isShiftPressed: boolean): string;
 /**
  * Minimal terminal interface for TUI
@@ -33,6 +34,12 @@ export interface Terminal {
     setTitle(title: string): void;
     setProgress(active: boolean): void;
 }
+/**
+ * Resolve how long to wait for the rest of an escape sequence before
+ * dispatching a lone ESC as the Escape key. Legacy Alt+key input is ESC plus
+ * another byte, so high-latency transports need a longer reassembly window.
+ */
+export declare function resolveEscapeTimeoutMs(env?: NodeJS.ProcessEnv): number;
 /**
  * Real terminal using process.stdin/stdout
  */

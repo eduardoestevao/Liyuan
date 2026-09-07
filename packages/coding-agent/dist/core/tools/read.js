@@ -9,6 +9,7 @@ import { getLanguageFromPath, highlightCode } from "../../modes/interactive/them
 import { processImage } from "../../utils/image-process.js";
 import { detectSupportedImageMimeTypeFromFile } from "../../utils/mime.js";
 import { formatPathRelativeToCwdOrAbsolute } from "../../utils/paths.js";
+import { getExperimentalToolSampling } from "../experimental.js";
 import { resolveReadPathAsync, resolveToCwd } from "./path-utils.js";
 import { getTextOutput, renderToolPath, replaceTabs, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
@@ -18,7 +19,11 @@ const readSchema = Type.Object({
     offset: Type.Optional(Type.Number({ description: "Line number to start reading from (1-indexed)" })),
     limit: Type.Optional(Type.Number({ description: "Maximum number of lines to read" })),
 });
-const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
+export const readToolSystemPromptContribution = {
+    snippet: "Read file contents",
+    guidelines: ["Use read to examine files instead of cat or sed."],
+};
+const COMPACT_RESOURCE_FILE_NAMES = new Set(["AGENTS.override.md", "AGENTS.md", "AGENTS.MD", "CLAUDE.md", "CLAUDE.MD"]);
 const defaultReadOperations = {
     readFile: (path) => fsReadFile(path),
     access: (path) => fsAccess(path, constants.R_OK),
@@ -103,7 +108,7 @@ function formatReadResult(args, result, options, theme, showImages, _cwd, isErro
     }
     const rawPath = str(args?.file_path ?? args?.path);
     const output = getTextOutput(result, showImages);
-    const lang = rawPath ? getLanguageFromPath(rawPath) : undefined;
+    const lang = !isError && rawPath ? getLanguageFromPath(rawPath) : undefined;
     const renderedLines = lang ? highlightCode(replaceTabs(output), lang) : output.split("\n");
     const lines = trimTrailingEmptyLines(renderedLines);
     const maxLines = options.expanded ? lines.length : 10;
@@ -134,9 +139,10 @@ export function createReadToolDefinition(cwd, options) {
         name: "read",
         label: "read",
         description: `Read the contents of a file. Supports text files and images (jpg, png, gif, webp, bmp). Images are sent as attachments. For text files, output is truncated to ${DEFAULT_MAX_LINES} lines or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first). Use offset/limit for large files. When you need the full file, continue with offset until complete.`,
-        promptSnippet: "Read file contents",
-        promptGuidelines: ["Use read to examine files instead of cat or sed."],
+        promptSnippet: readToolSystemPromptContribution.snippet,
+        promptGuidelines: [...readToolSystemPromptContribution.guidelines],
         parameters: readSchema,
+        constrainedSampling: getExperimentalToolSampling(),
         async execute(_toolCallId, { path, offset, limit }, signal, _onUpdate, ctx) {
             return new Promise((resolve, reject) => {
                 if (signal?.aborted) {

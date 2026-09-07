@@ -1,7 +1,9 @@
 #!/usr/bin/env node
+import { registerBunOAuthFlows } from "@liyuan/ai/bun-oauth";
 import { APP_NAME } from "../config.js";
 process.title = APP_NAME;
 process.emitWarning = (() => { });
+registerBunOAuthFlows();
 import { restoreSandboxEnv } from "./restore-sandbox-env.js";
 restoreSandboxEnv();
 await import("./register-bedrock.js");

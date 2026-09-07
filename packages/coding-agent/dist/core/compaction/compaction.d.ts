@@ -5,7 +5,8 @@
  * and after compaction the session is reloaded.
  */
 import type { AgentMessage, StreamFn, ThinkingLevel } from "@liyuan/agent-core";
-import type { Model, Usage } from "@liyuan/ai/compat";
+import { type RetryCallbacks, type RetryPolicy } from "@liyuan/ai";
+import type { AssistantMessage, Context, Model, SimpleStreamOptions, Usage } from "@liyuan/ai/compat";
 import { type SessionEntry } from "../session-manager.ts";
 import { type FileOperations } from "./utils.ts";
 /** Details stored in CompactionEntry.details for file tracking */
@@ -19,6 +20,8 @@ export interface CompactionResult<T = unknown> {
     firstKeptEntryId: string;
     tokensBefore: number;
     estimatedTokensAfter?: number;
+    /** Usage from the LLM call(s) that generated this summary, if available */
+    usage?: Usage;
     /** Extension-specific data (e.g., ArtifactIndex, version markers for structured compaction) */
     details?: T;
 }
@@ -29,8 +32,11 @@ export interface CompactionSettings {
 }
 export declare const DEFAULT_COMPACTION_SETTINGS: CompactionSettings;
 /**
- * Calculate total context tokens from usage.
- * Uses the native totalTokens field when available, falls back to computing from components.
+ * Context-window occupancy from a turn's usage (prompt side only).
+ *
+ * Must NOT include completion `output`: that does not sit in the next prompt's
+ * window the same way, and `usage.totalTokens` is usually prompt+completion.
+ * Prefer input + cacheRead + cacheWrite (= provider prompt_tokens when split).
  */
 export declare function calculateContextTokens(usage: Usage): number;
 /**
@@ -58,9 +64,8 @@ export declare function shouldCompact(contextTokens: number, contextWindow: numb
  */
 export declare function estimateTokens(message: AgentMessage): number;
 /**
- * Find the user message (or bashExecution) that starts the turn containing the given entry index.
+ * Find the context-visible user-role message that starts the turn containing the given entry index.
  * Returns -1 if no turn start found before the index.
- * BashExecutionMessage is treated like a user message for turn boundaries.
  */
 export declare function findTurnStartIndex(entries: SessionEntry[], entryIndex: number, startIndex: number): number;
 export interface CutPointResult {
@@ -89,10 +94,28 @@ export interface CutPointResult {
  */
 export declare function findCutPoint(entries: SessionEntry[], startIndex: number, endIndex: number, keepRecentTokens: number): CutPointResult;
 /**
+ * Returns an error message when a summarization response cannot safely be persisted.
+ * A length stop contains partial text and must not become a session checkpoint.
+ */
+export declare function getSummarizationFailure(response: AssistantMessage, label: string): string | undefined;
+/**
+ * Shared choke point for every compaction/branch-summary summarization call. Wraps the
+ * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
+ * `terminated`, socket close) honor the configured retry policy instead of failing
+ * the whole compaction on the first attempt. Deterministic errors and aborts return
+ * immediately (see {@link retryAssistantCall}).
+ */
+export declare function completeSummarization(model: Model<any>, context: Context, options: SimpleStreamOptions, streamFn?: StreamFn, retry?: RetryPolicy, callbacks?: RetryCallbacks): Promise<AssistantMessage>;
+/**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
  */
-export declare function generateSummary(currentMessages: AgentMessage[], model: Model<any>, reserveTokens: number, apiKey: string | undefined, headers?: Record<string, string>, signal?: AbortSignal, customInstructions?: string, previousSummary?: string, thinkingLevel?: ThinkingLevel, streamFn?: StreamFn, env?: Record<string, string>): Promise<string>;
+export declare function generateSummary(currentMessages: AgentMessage[], model: Model<any>, reserveTokens: number, apiKey: string | undefined, headers?: Record<string, string>, signal?: AbortSignal, customInstructions?: string, previousSummary?: string, thinkingLevel?: ThinkingLevel, streamFn?: StreamFn, env?: Record<string, string>, retry?: RetryPolicy, callbacks?: RetryCallbacks, sessionId?: string): Promise<string>;
+/** Generate or update a conversation summary and return its provider usage. */
+export declare function generateSummaryWithUsage(currentMessages: AgentMessage[], model: Model<any>, reserveTokens: number, apiKey: string | undefined, headers?: Record<string, string>, signal?: AbortSignal, customInstructions?: string, previousSummary?: string, thinkingLevel?: ThinkingLevel, streamFn?: StreamFn, env?: Record<string, string>, retry?: RetryPolicy, callbacks?: RetryCallbacks, sessionId?: string): Promise<{
+    text: string;
+    usage: Usage;
+}>;
 export interface CompactionPreparation {
     /** UUID of first entry to keep */
     firstKeptEntryId: string;
@@ -117,6 +140,7 @@ export declare function prepareCompaction(pathEntries: SessionEntry[], settings:
  *
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
+ * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
  */
-export declare function compact(preparation: CompactionPreparation, model: Model<any>, apiKey: string | undefined, headers?: Record<string, string>, customInstructions?: string, signal?: AbortSignal, thinkingLevel?: ThinkingLevel, streamFn?: StreamFn, env?: Record<string, string>): Promise<CompactionResult>;
+export declare function compact(preparation: CompactionPreparation, model: Model<any>, apiKey: string | undefined, headers?: Record<string, string>, customInstructions?: string, signal?: AbortSignal, thinkingLevel?: ThinkingLevel, streamFn?: StreamFn, env?: Record<string, string>, retry?: RetryPolicy, callbacks?: RetryCallbacks, sessionId?: string): Promise<CompactionResult>;
 //# sourceMappingURL=compaction.d.ts.map

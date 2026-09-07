@@ -52,6 +52,7 @@ export interface ToolResult {
 	activity?: string;
 	/** 结构化副信道（前端渲染/诊断用；模型看不到） */
 	details?: unknown;
+	isError?: boolean;
 }
 
 /**

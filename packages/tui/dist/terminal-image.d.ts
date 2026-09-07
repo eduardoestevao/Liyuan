@@ -26,6 +26,8 @@ export declare function setCellDimensions(dims: CellDimensions): void;
 export declare function detectCapabilities(tmuxForwardsHyperlink?: () => boolean): TerminalCapabilities;
 export declare function getCapabilities(): TerminalCapabilities;
 export declare function resetCapabilitiesCache(): void;
+/** Override selected auto-detected capabilities. */
+export declare function setCapabilityOverrides(overrides: Partial<TerminalCapabilities>): void;
 /** Override the cached capabilities. Useful in tests to exercise both code paths. */
 export declare function setCapabilities(caps: TerminalCapabilities): void;
 export declare function isImageLine(line: string): boolean;
@@ -52,6 +54,8 @@ export declare function deleteKittyImage(imageId: number): string;
  * Uses uppercase 'A' to also free the image data.
  */
 export declare function deleteAllKittyImages(): string;
+/** Delete all visible Kitty placements while retaining their uploaded image data. */
+export declare function deleteAllKittyPlacements(): string;
 export declare function encodeITerm2(base64Data: string, options?: {
     width?: number | string;
     height?: number | string;
@@ -63,6 +67,24 @@ export interface ImageCellSize {
     columns: number;
     rows: number;
 }
+export interface KittyImageMetadata extends ImageCellSize {
+    imageId: number;
+    widthPx: number;
+    heightPx: number;
+}
+export interface KittyImagePlacement {
+    imageId: number;
+    transmissionGeneration: number;
+    transmissionBytes: number;
+    estimatedDecodedBytes: number;
+    sequence: string;
+    replacementLine: string;
+}
+export declare function registerKittyImageMetadata(metadata: KittyImageMetadata): void;
+export declare function getKittyImageMetadata(line: string): KittyImageMetadata | undefined;
+/** Build a placement-only command for an image line emitted by {@link renderImage}. */
+export declare function getKittyImagePlacement(line: string): KittyImagePlacement | undefined;
+export declare function cropKittyImageLine(line: string, hiddenRows: number, visibleRows: number): string;
 export declare function calculateImageCellSize(imageDimensions: ImageDimensions, maxWidthCells: number, maxHeightCells?: number, cellDimensions?: CellDimensions): ImageCellSize;
 export declare function calculateImageRows(imageDimensions: ImageDimensions, targetWidthCells: number, cellDimensions?: CellDimensions): number;
 export declare function getPngDimensions(base64Data: string): ImageDimensions | null;
@@ -72,6 +94,7 @@ export declare function getWebpDimensions(base64Data: string): ImageDimensions |
 export declare function getImageDimensions(base64Data: string, mimeType: string): ImageDimensions | null;
 export declare function renderImage(base64Data: string, imageDimensions: ImageDimensions, options?: ImageRenderOptions): {
     sequence: string;
+    columns: number;
     rows: number;
     imageId?: number;
 } | null;
@@ -86,5 +109,10 @@ export declare function renderImage(base64Data: string, imageDimensions: ImageDi
  * @param url - The URL to link to
  */
 export declare function hyperlink(text: string, url: string): string;
+/**
+ * Text fallback when the terminal cannot render inline images.
+ * Absolute paths are shown shortened (~/...) and, when OSC 8 hyperlinks are
+ * available, linked to file:// so the full path remains openable.
+ */
 export declare function imageFallback(mimeType: string, dimensions?: ImageDimensions, filename?: string): string;
 //# sourceMappingURL=terminal-image.d.ts.map

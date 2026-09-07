@@ -4,6 +4,7 @@ import { dirname } from "path";
 import { Type } from "typebox";
 import { keyHint } from "../../modes/interactive/components/keybinding-hints.js";
 import { getLanguageFromPath, highlightCode } from "../../modes/interactive/theme/theme.js";
+import { getExperimentalToolSampling } from "../experimental.js";
 import { withFileMutationQueue } from "./file-mutation-queue.js";
 import { resolveToCwd } from "./path-utils.js";
 import { normalizeDisplayText, renderToolPath, replaceTabs, str } from "./render-utils.js";
@@ -12,6 +13,10 @@ const writeSchema = Type.Object({
     path: Type.String({ description: "Path to the file to write (relative or absolute)" }),
     content: Type.String({ description: "Content to write to the file" }),
 });
+export const writeToolSystemPromptContribution = {
+    snippet: "Create or overwrite files",
+    guidelines: ["Use write only for new files or complete rewrites."],
+};
 const defaultWriteOperations = {
     writeFile: (path, content) => fsWriteFile(path, content, "utf-8"),
     mkdir: (dir) => fsMkdir(dir, { recursive: true }).then(() => { }),
@@ -134,9 +139,10 @@ export function createWriteToolDefinition(cwd, options) {
         name: "write",
         label: "write",
         description: "Write content to a file. Creates the file if it doesn't exist, overwrites if it does. Automatically creates parent directories.",
-        promptSnippet: "Create or overwrite files",
-        promptGuidelines: ["Use write only for new files or complete rewrites."],
+        promptSnippet: writeToolSystemPromptContribution.snippet,
+        promptGuidelines: [...writeToolSystemPromptContribution.guidelines],
         parameters: writeSchema,
+        constrainedSampling: getExperimentalToolSampling(),
         async execute(_toolCallId, { path, content }, signal, _onUpdate, _ctx) {
             const absolutePath = resolveToCwd(path, cwd);
             const dir = dirname(absolutePath);

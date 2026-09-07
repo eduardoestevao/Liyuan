@@ -12,6 +12,7 @@ export interface AppKeybindings {
     "app.thinking.toggle": true;
     "app.session.toggleNamedFilter": true;
     "app.editor.external": true;
+    "app.message.copy": true;
     "app.message.followUp": true;
     "app.message.dequeue": true;
     "app.clipboard.pasteImage": true;
@@ -43,134 +44,27 @@ export interface AppKeybindings {
     "app.tree.filter.cycleBackward": true;
 }
 export type AppKeybinding = keyof AppKeybindings;
+export declare function useWindowsKeybindings(platform?: NodeJS.Platform, env?: NodeJS.ProcessEnv): boolean;
 declare module "@liyuan/tui" {
     interface Keybindings extends AppKeybindings {
     }
 }
 export declare const KEYBINDINGS: {
-    readonly "tui.editor.cursorUp": {
-        readonly defaultKeys: "up";
-        readonly description: "Move cursor up";
-    };
-    readonly "tui.editor.cursorDown": {
-        readonly defaultKeys: "down";
-        readonly description: "Move cursor down";
-    };
-    readonly "tui.editor.cursorLeft": {
-        readonly defaultKeys: ["left", "ctrl+b"];
-        readonly description: "Move cursor left";
-    };
-    readonly "tui.editor.cursorRight": {
-        readonly defaultKeys: ["right", "ctrl+f"];
-        readonly description: "Move cursor right";
-    };
-    readonly "tui.editor.cursorWordLeft": {
-        readonly defaultKeys: ["alt+left", "ctrl+left", "alt+b"];
-        readonly description: "Move cursor word left";
-    };
-    readonly "tui.editor.cursorWordRight": {
-        readonly defaultKeys: ["alt+right", "ctrl+right", "alt+f"];
-        readonly description: "Move cursor word right";
-    };
-    readonly "tui.editor.cursorLineStart": {
-        readonly defaultKeys: ["home", "ctrl+a"];
-        readonly description: "Move to line start";
-    };
-    readonly "tui.editor.cursorLineEnd": {
-        readonly defaultKeys: ["end", "ctrl+e"];
-        readonly description: "Move to line end";
-    };
-    readonly "tui.editor.jumpForward": {
-        readonly defaultKeys: "ctrl+]";
-        readonly description: "Jump forward to character";
-    };
-    readonly "tui.editor.jumpBackward": {
-        readonly defaultKeys: "ctrl+alt+]";
-        readonly description: "Jump backward to character";
-    };
-    readonly "tui.editor.pageUp": {
-        readonly defaultKeys: "pageUp";
-        readonly description: "Page up";
-    };
-    readonly "tui.editor.pageDown": {
-        readonly defaultKeys: "pageDown";
-        readonly description: "Page down";
-    };
-    readonly "tui.editor.deleteCharBackward": {
-        readonly defaultKeys: "backspace";
-        readonly description: "Delete character backward";
-    };
-    readonly "tui.editor.deleteCharForward": {
-        readonly defaultKeys: ["delete", "ctrl+d"];
-        readonly description: "Delete character forward";
-    };
-    readonly "tui.editor.deleteWordBackward": {
-        readonly defaultKeys: ["ctrl+w", "alt+backspace"];
-        readonly description: "Delete word backward";
-    };
-    readonly "tui.editor.deleteWordForward": {
-        readonly defaultKeys: ["alt+d", "alt+delete"];
-        readonly description: "Delete word forward";
-    };
-    readonly "tui.editor.deleteToLineStart": {
-        readonly defaultKeys: "ctrl+u";
-        readonly description: "Delete to line start";
-    };
-    readonly "tui.editor.deleteToLineEnd": {
-        readonly defaultKeys: "ctrl+k";
-        readonly description: "Delete to line end";
-    };
-    readonly "tui.editor.yank": {
-        readonly defaultKeys: "ctrl+y";
-        readonly description: "Yank";
-    };
-    readonly "tui.editor.yankPop": {
-        readonly defaultKeys: "alt+y";
-        readonly description: "Yank pop";
-    };
     readonly "tui.editor.undo": {
-        readonly defaultKeys: "ctrl+-";
+        readonly defaultKeys: "alt+z" | "ctrl+z" | "ctrl+-";
         readonly description: "Undo";
     };
-    readonly "tui.input.newLine": {
-        readonly defaultKeys: ["shift+enter", "ctrl+j"];
-        readonly description: "Insert newline";
+    readonly "tui.altScreen.previousPrompt": {
+        readonly defaultKeys: "ctrl+up" | ("ctrl+up" | "ctrl+shift+up")[];
+        readonly description: "Jump to previous semantic prompt";
     };
-    readonly "tui.input.submit": {
-        readonly defaultKeys: "enter";
-        readonly description: "Submit input";
+    readonly "tui.altScreen.nextPrompt": {
+        readonly defaultKeys: "ctrl+down" | ("ctrl+down" | "ctrl+shift+down")[];
+        readonly description: "Jump to next semantic prompt";
     };
-    readonly "tui.input.tab": {
-        readonly defaultKeys: "tab";
-        readonly description: "Tab / autocomplete";
-    };
-    readonly "tui.input.copy": {
-        readonly defaultKeys: "ctrl+c";
-        readonly description: "Copy selection";
-    };
-    readonly "tui.select.up": {
-        readonly defaultKeys: "up";
-        readonly description: "Move selection up";
-    };
-    readonly "tui.select.down": {
-        readonly defaultKeys: "down";
-        readonly description: "Move selection down";
-    };
-    readonly "tui.select.pageUp": {
-        readonly defaultKeys: "pageUp";
-        readonly description: "Selection page up";
-    };
-    readonly "tui.select.pageDown": {
-        readonly defaultKeys: "pageDown";
-        readonly description: "Selection page down";
-    };
-    readonly "tui.select.confirm": {
-        readonly defaultKeys: "enter";
-        readonly description: "Confirm selection";
-    };
-    readonly "tui.select.cancel": {
-        readonly defaultKeys: ["escape", "ctrl+c"];
-        readonly description: "Cancel selection";
+    readonly "tui.altScreen.search": {
+        readonly defaultKeys: "ctrl+f" | "ctrl+shift+f";
+        readonly description: "Search the primary scroll view";
     };
     readonly "app.interrupt": {
         readonly defaultKeys: "escape";
@@ -185,7 +79,7 @@ export declare const KEYBINDINGS: {
         readonly description: "Exit when editor is empty";
     };
     readonly "app.suspend": {
-        readonly defaultKeys: "ctrl+z" | never[];
+        readonly defaultKeys: never[] | "ctrl+z";
         readonly description: "Suspend to background";
     };
     readonly "app.thinking.cycle": {
@@ -197,7 +91,7 @@ export declare const KEYBINDINGS: {
         readonly description: "Cycle to next model";
     };
     readonly "app.model.cycleBackward": {
-        readonly defaultKeys: "shift+ctrl+p";
+        readonly defaultKeys: "alt+p" | "shift+ctrl+p";
         readonly description: "Cycle to previous model";
     };
     readonly "app.model.select": {
@@ -220,17 +114,21 @@ export declare const KEYBINDINGS: {
         readonly defaultKeys: "ctrl+g";
         readonly description: "Open external editor";
     };
+    readonly "app.message.copy": {
+        readonly defaultKeys: "ctrl+x";
+        readonly description: "Copy message to clipboard";
+    };
     readonly "app.message.followUp": {
-        readonly defaultKeys: "alt+enter";
+        readonly defaultKeys: "alt+enter" | "ctrl+q";
         readonly description: "Queue follow-up message";
     };
     readonly "app.message.dequeue": {
-        readonly defaultKeys: "alt+up";
+        readonly defaultKeys: "alt+q" | "alt+up";
         readonly description: "Restore queued messages";
     };
     readonly "app.clipboard.pasteImage": {
         readonly defaultKeys: "alt+v" | "ctrl+v";
-        readonly description: "Paste image from clipboard";
+        readonly description: "Paste image from clipboard (text fallback)";
     };
     readonly "app.session.new": {
         readonly defaultKeys: [];
@@ -249,11 +147,11 @@ export declare const KEYBINDINGS: {
         readonly description: "Resume a session";
     };
     readonly "app.tree.foldOrUp": {
-        readonly defaultKeys: ["ctrl+left", "alt+left"];
+        readonly defaultKeys: ("alt+left" | "ctrl+left")[];
         readonly description: "Fold tree branch or move up";
     };
     readonly "app.tree.unfoldOrDown": {
-        readonly defaultKeys: ["ctrl+right", "alt+right"];
+        readonly defaultKeys: ("alt+right" | "ctrl+right")[];
         readonly description: "Unfold tree branch or move down";
     };
     readonly "app.tree.editLabel": {
@@ -335,6 +233,178 @@ export declare const KEYBINDINGS: {
     readonly "app.tree.filter.cycleBackward": {
         readonly defaultKeys: "shift+ctrl+o";
         readonly description: "Tree filter: cycle backward";
+    };
+    readonly "tui.editor.cursorUp": {
+        readonly defaultKeys: "up";
+        readonly description: "Move cursor up";
+    };
+    readonly "tui.editor.cursorDown": {
+        readonly defaultKeys: "down";
+        readonly description: "Move cursor down";
+    };
+    readonly "tui.editor.historyPrevious": {
+        readonly defaultKeys: [];
+        readonly description: "Select previous prompt history entry";
+    };
+    readonly "tui.editor.historyNext": {
+        readonly defaultKeys: [];
+        readonly description: "Select next prompt history entry";
+    };
+    readonly "tui.editor.cursorLeft": {
+        readonly defaultKeys: ["left", "ctrl+b"];
+        readonly description: "Move cursor left";
+    };
+    readonly "tui.editor.cursorRight": {
+        readonly defaultKeys: ["right", "ctrl+f"];
+        readonly description: "Move cursor right";
+    };
+    readonly "tui.editor.cursorWordLeft": {
+        readonly defaultKeys: ["alt+left", "ctrl+left", "alt+b"];
+        readonly description: "Move cursor word left";
+    };
+    readonly "tui.editor.cursorWordRight": {
+        readonly defaultKeys: ["alt+right", "ctrl+right", "alt+f"];
+        readonly description: "Move cursor word right";
+    };
+    readonly "tui.editor.cursorLineStart": {
+        readonly defaultKeys: ["home", "ctrl+home", "ctrl+a"];
+        readonly description: "Move to line start";
+    };
+    readonly "tui.editor.cursorLineEnd": {
+        readonly defaultKeys: ["end", "ctrl+end", "ctrl+e"];
+        readonly description: "Move to line end";
+    };
+    readonly "tui.editor.jumpForward": {
+        readonly defaultKeys: "ctrl+]";
+        readonly description: "Jump forward to character";
+    };
+    readonly "tui.editor.jumpBackward": {
+        readonly defaultKeys: "ctrl+alt+]";
+        readonly description: "Jump backward to character";
+    };
+    readonly "tui.editor.pageUp": {
+        readonly defaultKeys: ["pageUp", "ctrl+pageUp"];
+        readonly description: "Page up";
+    };
+    readonly "tui.editor.pageDown": {
+        readonly defaultKeys: ["pageDown", "ctrl+pageDown"];
+        readonly description: "Page down";
+    };
+    readonly "tui.editor.deleteCharBackward": {
+        readonly defaultKeys: "backspace";
+        readonly description: "Delete character backward";
+    };
+    readonly "tui.editor.deleteCharForward": {
+        readonly defaultKeys: ["delete", "ctrl+d"];
+        readonly description: "Delete character forward";
+    };
+    readonly "tui.editor.deleteWordBackward": {
+        readonly defaultKeys: ["ctrl+w", "alt+backspace"];
+        readonly description: "Delete word backward";
+    };
+    readonly "tui.editor.deleteWordForward": {
+        readonly defaultKeys: ["alt+d", "alt+delete"];
+        readonly description: "Delete word forward";
+    };
+    readonly "tui.editor.deleteToLineStart": {
+        readonly defaultKeys: "ctrl+u";
+        readonly description: "Delete to line start";
+    };
+    readonly "tui.editor.deleteToLineEnd": {
+        readonly defaultKeys: "ctrl+k";
+        readonly description: "Delete to line end";
+    };
+    readonly "tui.editor.yank": {
+        readonly defaultKeys: "ctrl+y";
+        readonly description: "Yank";
+    };
+    readonly "tui.editor.yankPop": {
+        readonly defaultKeys: "alt+y";
+        readonly description: "Yank pop";
+    };
+    readonly "tui.input.newLine": {
+        readonly defaultKeys: ["shift+enter", "ctrl+j"];
+        readonly description: "Insert newline";
+    };
+    readonly "tui.input.submit": {
+        readonly defaultKeys: "enter";
+        readonly description: "Submit input";
+    };
+    readonly "tui.input.tab": {
+        readonly defaultKeys: "tab";
+        readonly description: "Tab / autocomplete";
+    };
+    readonly "tui.input.copy": {
+        readonly defaultKeys: "ctrl+c";
+        readonly description: "Copy selection";
+    };
+    readonly "tui.select.up": {
+        readonly defaultKeys: "up";
+        readonly description: "Move selection up";
+    };
+    readonly "tui.select.down": {
+        readonly defaultKeys: "down";
+        readonly description: "Move selection down";
+    };
+    readonly "tui.select.pageUp": {
+        readonly defaultKeys: "pageUp";
+        readonly description: "Selection page up";
+    };
+    readonly "tui.select.pageDown": {
+        readonly defaultKeys: "pageDown";
+        readonly description: "Selection page down";
+    };
+    readonly "tui.select.confirm": {
+        readonly defaultKeys: "enter";
+        readonly description: "Confirm selection";
+    };
+    readonly "tui.select.cancel": {
+        readonly defaultKeys: ["escape", "ctrl+c"];
+        readonly description: "Cancel selection";
+    };
+    readonly "tui.altScreen.pageUp": {
+        readonly defaultKeys: "pageUp";
+        readonly description: "Scroll viewport up one page";
+    };
+    readonly "tui.altScreen.pageDown": {
+        readonly defaultKeys: "pageDown";
+        readonly description: "Scroll viewport down one page";
+    };
+    readonly "tui.altScreen.halfPageUp": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport up half a page";
+    };
+    readonly "tui.altScreen.halfPageDown": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport down half a page";
+    };
+    readonly "tui.altScreen.lineUp": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport up one line";
+    };
+    readonly "tui.altScreen.lineDown": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport down one line";
+    };
+    readonly "tui.altScreen.searchNext": {
+        readonly defaultKeys: ["enter", "ctrl+g"];
+        readonly description: "Select the next search match";
+    };
+    readonly "tui.altScreen.searchPrevious": {
+        readonly defaultKeys: ["shift+enter", "ctrl+shift+g"];
+        readonly description: "Select the previous search match";
+    };
+    readonly "tui.altScreen.searchClose": {
+        readonly defaultKeys: "escape";
+        readonly description: "Close transcript search";
+    };
+    readonly "tui.altScreen.top": {
+        readonly defaultKeys: "home";
+        readonly description: "Scroll viewport to top";
+    };
+    readonly "tui.altScreen.bottom": {
+        readonly defaultKeys: "end";
+        readonly description: "Scroll viewport to bottom";
     };
 };
 export declare function migrateKeybindingsConfig(rawConfig: Record<string, unknown>): {

@@ -97,7 +97,7 @@ function buildCompletionValue(path, options) {
     return `${openQuote}${path}${closeQuote}`;
 }
 // Use fd to walk directory tree (fast, respects .gitignore)
-async function walkDirectoryWithFd(baseDir, fdPath, query, maxResults, signal) {
+async function walkDirectoryWithFd(baseDir, fdPath, query, maxResults, signal, maxDepth) {
     const args = [
         "--base-directory",
         baseDir,
@@ -116,6 +116,9 @@ async function walkDirectoryWithFd(baseDir, fdPath, query, maxResults, signal) {
         "--exclude",
         ".git/**",
     ];
+    if (maxDepth !== undefined) {
+        args.push("--max-depth", String(maxDepth));
+    }
     if (toDisplayPath(query).includes("/")) {
         args.push("--full-path");
     }
@@ -572,6 +575,12 @@ export class CombinedAutocompleteProvider {
             score += 10;
         return score;
     }
+    async getBaseDirSuggestions(baseDir, query, signal) {
+        if (!this.fdPath || signal.aborted) {
+            return [];
+        }
+        return await walkDirectoryWithFd(baseDir, this.fdPath, query, 100, signal, 1);
+    }
     // Fuzzy file search using fd (fast, respects .gitignore)
     async getFuzzyFileSuggestions(query, options) {
         if (!this.fdPath || options.signal.aborted) {
@@ -581,7 +590,18 @@ export class CombinedAutocompleteProvider {
             const scopedQuery = this.resolveScopedFuzzyQuery(query);
             const fdBaseDir = scopedQuery?.baseDir ?? this.basePath;
             const fdQuery = scopedQuery?.query ?? query;
-            const entries = await walkDirectoryWithFd(fdBaseDir, this.fdPath, fdQuery, 100, options.signal);
+            const baseDirEntries = await this.getBaseDirSuggestions(fdBaseDir, fdQuery, options.signal);
+            const recursiveEntries = await walkDirectoryWithFd(fdBaseDir, this.fdPath, fdQuery, 100, options.signal);
+            const seenPaths = new Set(baseDirEntries.map((entry) => entry.path));
+            const entries = [
+                ...baseDirEntries,
+                ...recursiveEntries.filter((entry) => {
+                    if (seenPaths.has(entry.path))
+                        return false;
+                    seenPaths.add(entry.path);
+                    return true;
+                }),
+            ];
             if (options.signal.aborted) {
                 return [];
             }
@@ -591,7 +611,20 @@ export class CombinedAutocompleteProvider {
                 score: fdQuery ? this.scoreEntry(entry.path, fdQuery, entry.isDirectory) : 1,
             }))
                 .filter((entry) => entry.score > 0);
-            scoredEntries.sort((a, b) => b.score - a.score);
+            scoredEntries.sort((a, b) => {
+                const scoreDiff = b.score - a.score;
+                if (scoreDiff !== 0)
+                    return scoreDiff;
+                const aDepth = toDisplayPath(a.path).split("/").filter(Boolean).length;
+                const bDepth = toDisplayPath(b.path).split("/").filter(Boolean).length;
+                const depthDiff = aDepth - bDepth;
+                if (depthDiff !== 0)
+                    return depthDiff;
+                const lengthDiff = a.path.length - b.path.length;
+                if (lengthDiff !== 0)
+                    return lengthDiff;
+                return a.path.localeCompare(b.path);
+            });
             const topEntries = scoredEntries.slice(0, 20);
             const suggestions = [];
             for (const { path: entryPath, isDirectory } of topEntries) {

@@ -3,6 +3,7 @@
 	"compilerOptions": {
 		"outDir": "./dist",
 		"paths": {
+			"@liyuan/telemetry": ["../telemetry/dist/index.d.ts"],
 			"@liyuan/ai": ["../ai/dist/index.d.ts"],
 			"@liyuan/ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"]
 		},

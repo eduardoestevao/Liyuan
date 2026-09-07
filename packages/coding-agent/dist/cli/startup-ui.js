@@ -1,4 +1,4 @@
-import { ProcessTerminal, setKeybindings, TUI } from "@liyuan/tui";
+import { ProcessTerminal, setCapabilityOverrides, setKeybindings, TuiMainScreen, } from "@liyuan/tui";
 import { existsSync } from "fs";
 import { APP_NAME, CONFIG_DIR_NAME, ENV_AGENT_DIR, getAgentDir, getSettingsPath, PACKAGE_NAME } from "../config.js";
 import { areExperimentalFeaturesEnabled } from "../core/experimental.js";
@@ -52,11 +52,12 @@ async function loadStartupThemes(settingsManager) {
     return loadThemes(resolvedPaths.themes);
 }
 export async function createStartupTui(settingsManager) {
+    setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
     setRegisteredThemes(await loadStartupThemes(settingsManager));
     const terminalTheme = detectTerminalBackgroundFromEnv().theme;
     initTheme(resolveThemeSetting(settingsManager.getThemeSetting(), terminalTheme) ?? terminalTheme);
     setKeybindings(KeybindingsManager.create());
-    const ui = new TUI(new ProcessTerminal(), settingsManager.getShowHardwareCursor());
+    const ui = new TuiMainScreen(new ProcessTerminal(), settingsManager.getShowHardwareCursor(), getAgentDir());
     ui.setClearOnShrink(settingsManager.getClearOnShrink());
     return ui;
 }

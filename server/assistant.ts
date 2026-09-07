@@ -30,7 +30,9 @@ import { Type } from "typebox";
 
 import { loreTools, type LoreDeps } from "../src/tools/lore.ts";
 import { memoryTools, type MemoryDeps } from "../src/tools/memory.ts";
-import { memoryDeleteChunk, memoryListChunks, memoryManualAdd, memorySearch } from "../src/memory/index.ts";
+import { memoryDeleteChunk, memoryListChunks, memoryManualAdd, memorySearchReport, memoryReadChunk } from "../src/memory/index.ts";
+import { cardDirOfChatDir } from "../src/cardspace.ts";
+import { changeCardMemory, listCardMemory, readCardMemory, searchCardMemory } from "../src/card-memory-tools.ts";
 import { cardTools, type CardDeps } from "../src/tools/card.ts";
 import { personaTools, type PersonaDeps } from "../src/tools/persona.ts";
 import { stageSkillTools, type StageSkillDeps } from "../src/tools/skill.ts";
@@ -129,6 +131,7 @@ export interface StoryBridge {
 	 * 必须给路径而非卡名：scopeId 按路径 hash（src/memory/config.ts:36）。
 	 */
 	memoryScope(): { sessionId: string; card?: string; chatDir?: string };
+	memoryBranchIds?(): ReadonlySet<string>;
 		/**
 		 * 世界线存档表（M-D5）：从当前剧情会话树抽存档点、组装视图、**摊平成表**。
 		 * 摊平归 src/worldline.ts 一份（`flattenWorldlineSaves`）——此前这里手抄的那份
@@ -623,7 +626,7 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 						if (entry) void bridge.refreshStoryMaterials();
 						return entry;
 					}
-					const entry = appendOverlayEntry(overlayPathFor(cwd, bridge.cardName(), currentCard().path), input);
+						const entry = appendOverlayEntry(overlayPathFor(cwd, bridge.cardName(), loadConfig(cwd).card), input);
 					if (entry) void bridge.refreshStoryMaterials();
 					return entry;
 				},
@@ -680,22 +683,40 @@ function createStagehandTools(cwd: string, bridge: StoryBridge, hooks: Stagehand
 	// 助手是诊断面，用户问「你记得什么/把那条记忆删了」时，问的是剧情那边的库，不是助手自己的会话。
 	// 与世界书族同样不挂门禁（助手每次调用都由用户当面驱动）。
 	const memoryScopeOf = (): { sessionId: string; card?: string } => bridge.memoryScope();
+	const memoryCardDir = () => { const chat = bridge.memoryScope().chatDir; return chat ? cardDirOfChatDir(chat) : null; };
+	const memoryBranchIds = () => bridge.memoryBranchIds?.() ?? new Set<string>();
 	tools.push(
 		...assistantToolDefs<MemoryDeps>(
 			memoryTools,
 			{
-				searchMemory: async (query) => {
-					const sc = memoryScopeOf();
-					const [narrative, external] = await Promise.all([
-						memorySearch(cwd, sc, "narrative", query).catch(() => []),
-						memorySearch(cwd, sc, "external", query).catch(() => []),
-					]);
-					return [...narrative, ...external].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 6);
-				},
+					searchMemory: async (query) => {
+						const sc = memoryScopeOf();
+						const result = await memorySearchReport(cwd, sc, query, memoryBranchIds());
+						const cardDir = memoryCardDir();
+						if (cardDir) { result.hits.push(...searchCardMemory(cardDir, query)); result.sources.push({ scope: "card", status: "ok" }); }
+						return result;
+					},
+					readMemory: (ref) => {
+						const cardDir = memoryCardDir();
+						return ref.startsWith("card:") ? cardDir ? readCardMemory(cardDir, ref) : undefined : memoryReadChunk(cwd, memoryScopeOf(), ref, memoryBranchIds());
+					},
+					updateMemory: (ref, version, content) => {
+						const cardDir = memoryCardDir();
+						if (!cardDir) throw new Error("当前没有卡级记忆目录。");
+						return changeCardMemory(cardDir, ref, version, content)!;
+					},
 				addMemory: (input) =>
 					memoryManualAdd(cwd, memoryScopeOf(), input.text, { ...(input.title ? { title: input.title } : {}) }),
-				listMemory: (storeId) => memoryListChunks(cwd, memoryScopeOf(), storeId),
-				deleteMemory: (storeId, id) => memoryDeleteChunk(cwd, memoryScopeOf(), storeId, id),
+					listMemory: (storeId) => {
+						const cardDir = memoryCardDir();
+						return storeId === "card" ? cardDir ? listCardMemory(cardDir).map((d) => ({ ...d, id: d.ref })) : [] : memoryListChunks(cwd, memoryScopeOf(), storeId, memoryBranchIds());
+					},
+					deleteMemory: (storeId, id, version) => {
+						if (storeId !== "card") return memoryDeleteChunk(cwd, memoryScopeOf(), storeId, id);
+						const cardDir = memoryCardDir();
+						if (!cardDir) return false;
+						changeCardMemory(cardDir, id, version ?? ""); return true;
+					},
 			},
 			loadConfig(cwd).language,
 		),
@@ -707,7 +728,7 @@ tools.push(
 		cardTools,
 		{
 			readCard: () => {
-				const { path } = currentCard();
+					const path = currentCardPath(cwd, loadConfig(cwd));
 				if (!path) return null;
 				const c = loadCardFile(path);
 				return {
@@ -838,14 +859,16 @@ tools.push(
 		stageSkillTools,
 		{
 			listStageSkills: () =>
-				scanSkillFiles(cwd).map((s) => ({
+				scanSkillFiles(cwd, true).map((s) => ({
 					dir: s.dir ?? s.name,
+					scope: s.scope,
+					shadowed: s.shadowed,
 					name: s.name,
 					description: s.description,
 					body: s.body,
 				})),
 			saveStageSkill: (input) => saveStageSkillFile(cwd, input),
-			deleteStageSkill: (dir) => deleteStageSkillDir(cwd, dir),
+			deleteStageSkill: (dir, scope) => deleteStageSkillDir(cwd, dir, scope),
 		},
 		loadConfig(cwd).language,
 	),
@@ -1272,13 +1295,13 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 
 	/** 手动应用模型：auth 校验 + 状态 + 会话树记录 + 思考档重夹（绕开 settings 副作用） */
 	const applyModelTo = (s: AgentSession, sel: AssistantModelSel, quiet = false): boolean => {
-		const m = s.modelRegistry.find(sel.provider, sel.id);
+		const m = s.modelRuntime.getModel(sel.provider, sel.id);
 		if (!m) {
 			if (!quiet) throw new Error(`模型不存在：${sel.provider}/${sel.id}`);
 			onError(`助手模型 ${sel.provider}/${sel.id} 不在可用清单，暂用默认模型`);
 			return false;
 		}
-		if (!s.modelRegistry.hasConfiguredAuth(m)) {
+		if (!s.modelRuntime.hasConfiguredAuth(m.provider)) {
 			if (!quiet) throw new Error(`模型 ${sel.provider}/${sel.id} 没有可用的 API key`);
 			onError(`助手模型 ${sel.provider}/${sel.id} 缺少 API key，暂用默认模型`);
 			return false;

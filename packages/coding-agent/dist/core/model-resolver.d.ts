@@ -2,8 +2,8 @@
  * Model resolution, scoping, and initial selection
  */
 import type { ThinkingLevel } from "@liyuan/agent-core";
-import { type Api, type KnownProvider, type Model } from "@liyuan/ai";
-import type { ModelRegistry } from "./model-registry.ts";
+import { type Api, type AuthOperationOptions, type KnownProvider, type Model } from "@liyuan/ai";
+import type { ModelRuntime } from "./model-runtime.ts";
 /** Default model IDs for each known provider */
 export declare const defaultModelPerProvider: Record<KnownProvider, string>;
 export interface ScopedModel {
@@ -50,7 +50,19 @@ export declare function parseModelPattern(pattern: string, availableModels: Mode
  * The algorithm tries to match the full pattern first, then progressively
  * strips colon-suffixes to find a match.
  */
-export declare function resolveModelScope(patterns: string[], modelRegistry: ModelRegistry): Promise<ScopedModel[]>;
+export interface ModelScopeDiagnostic {
+    type: "warning";
+    code: "no-match" | "invalid-thinking-level";
+    message: string;
+    pattern: string;
+}
+export interface ResolveModelScopeResult {
+    scopedModels: ScopedModel[];
+    diagnostics: ModelScopeDiagnostic[];
+}
+export declare function resolveModelScopeFromModels(patterns: string[], models: readonly Model<Api>[]): ResolveModelScopeResult;
+export declare function resolveModelScopeWithDiagnostics(patterns: string[], modelRuntime: ModelRuntime, options?: AuthOperationOptions): Promise<ResolveModelScopeResult>;
+export declare function resolveModelScope(patterns: string[], modelRuntime: ModelRuntime, options?: AuthOperationOptions): Promise<ScopedModel[]>;
 export interface ResolveCliModelResult {
     model: Model<Api> | undefined;
     thinkingLevel?: ThinkingLevel;
@@ -76,7 +88,7 @@ export declare function resolveCliModel(options: {
     cliProvider?: string;
     cliModel?: string;
     cliThinking?: ThinkingLevel;
-    modelRegistry: ModelRegistry;
+    modelRuntime: ModelRuntime;
 }): ResolveCliModelResult;
 export interface InitialModelResult {
     model: Model<Api> | undefined;
@@ -99,12 +111,13 @@ export declare function findInitialModel(options: {
     defaultProvider?: string;
     defaultModelId?: string;
     defaultThinkingLevel?: ThinkingLevel;
-    modelRegistry: ModelRegistry;
+    modelThinkingLevels?: Record<string, ThinkingLevel>;
+    modelRuntime: ModelRuntime;
 }): Promise<InitialModelResult>;
 /**
  * Restore model from session, with fallback to available models
  */
-export declare function restoreModelFromSession(savedProvider: string, savedModelId: string, currentModel: Model<Api> | undefined, shouldPrintMessages: boolean, modelRegistry: ModelRegistry): Promise<{
+export declare function restoreModelFromSession(savedProvider: string, savedModelId: string, currentModel: Model<Api> | undefined, shouldPrintMessages: boolean, modelRuntime: ModelRuntime): Promise<{
     model: Model<Api> | undefined;
     fallbackMessage: string | undefined;
 }>;

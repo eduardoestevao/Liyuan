@@ -13,7 +13,7 @@
  */
 
 import type { AgentMessage } from "@liyuan/agent-core";
-import { complete, type Message } from "@liyuan/ai/compat";
+import { type Message, uuidv7 } from "@liyuan/ai";
 import type { ExtensionAPI, SessionEntry } from "@liyuan/agent-runtime";
 import { BorderedLoader, convertToLlm, serializeConversation } from "@liyuan/agent-runtime";
 
@@ -117,11 +117,6 @@ export default function (pi: ExtensionAPI) {
 				loader.onAbort = () => done(null);
 
 				const doGenerate = async () => {
-					const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model!);
-					if (!auth.ok || !auth.apiKey) {
-						throw new Error(auth.ok ? `No API key for ${ctx.model!.provider}` : auth.error);
-					}
-
 					const userMessage: Message = {
 						role: "user",
 						content: [
@@ -133,10 +128,14 @@ export default function (pi: ExtensionAPI) {
 						timestamp: Date.now(),
 					};
 
-					const response = await complete(
+					const response = await ctx.modelRegistry.complete(
 						ctx.model!,
 						{ systemPrompt: SYSTEM_PROMPT, messages: [userMessage] },
-						{ apiKey: auth.apiKey, headers: auth.headers, env: auth.env, signal: loader.signal },
+						{
+							signal: loader.signal,
+							cacheRetention: "none",
+							sessionId: uuidv7(),
+						},
 					);
 
 					if (response.stopReason === "aborted") {

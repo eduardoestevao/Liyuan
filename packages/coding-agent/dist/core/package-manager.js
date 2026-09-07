@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { chmodSync, existsSync, globSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync, } from "node:fs";
 import { homedir } from "node:os";
 function getEnv() {
     if (process.platform !== "linux" || Object.keys(process.env).length > 0) {
@@ -21,15 +21,16 @@ function getEnv() {
     }
 }
 import { basename, dirname, join, relative, resolve, sep } from "node:path";
-import { globSync } from "glob";
 import ignore from "ignore";
 import { minimatch } from "minimatch";
-import { maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
+import { gt, maxSatisfying, rcompare, satisfies, valid, validRange } from "semver";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { spawnProcess, spawnProcessSync } from "../utils/child-process.js";
 import { parseGitUrl } from "../utils/git.js";
 import { canonicalizePath, isLocalPath, markPathIgnoredByCloudSync, resolvePath } from "../utils/paths.js";
+import { stripBom } from "../utils/text.js";
 import { isStdoutTakenOver } from "./output-guard.js";
+import { readPiManifest } from "./pi-manifest.js";
 const NETWORK_TIMEOUT_MS = 10000;
 const UPDATE_CHECK_CONCURRENCY = 4;
 const GIT_UPDATE_CONCURRENCY = 4;
@@ -132,6 +133,15 @@ function isOverridePattern(s) {
 }
 function hasGlobPattern(s) {
     return s.includes("*") || s.includes("?");
+}
+/** Glob entries discover visible paths; exact entries can target dot paths or symlinked trees. */
+function expandPackageGlob(pattern, root) {
+    return globSync(pattern, { cwd: root })
+        .map((match) => resolve(root, match))
+        .filter((path) => relative(root, path)
+        .split(sep)
+        .every((segment) => segment === ".." || !segment.startsWith(".")))
+        .sort((a, b) => (a < b ? -1 : a > b ? 1 : 0));
 }
 function splitPatterns(entries) {
     const plain = [];
@@ -238,7 +248,11 @@ function collectSkillEntries(dir, mode, ignoreMatcher, rootDir) {
                 }
             }
             const relPath = toPosixPath(relative(root, fullPath));
-            if (mode === "pi" && dir === root && isFile && entry.name.endsWith(".md") && !ig.ignores(relPath)) {
+            const shouldIncludeMarkdownFile = isFile &&
+                entry.name.endsWith(".md") &&
+                !ig.ignores(relPath) &&
+                ((mode === "pi" && dir === root) || (mode === "agents" && dir !== root));
+            if (shouldIncludeMarkdownFile) {
                 entries.push(fullPath);
                 continue;
             }
@@ -360,20 +374,10 @@ function collectAutoThemeEntries(dir) {
     }
     return entries;
 }
-function readPiManifestFile(packageJsonPath) {
-    try {
-        const content = readFileSync(packageJsonPath, "utf-8");
-        const pkg = JSON.parse(content);
-        return pkg.pi ?? null;
-    }
-    catch {
-        return null;
-    }
-}
 function resolveExtensionEntries(dir) {
     const packageJsonPath = join(dir, "package.json");
     if (existsSync(packageJsonPath)) {
-        const manifest = readPiManifestFile(packageJsonPath);
+        const manifest = readPiManifest(packageJsonPath);
         if (manifest?.extensions?.length) {
             const entries = [];
             for (const extPath of manifest.extensions) {
@@ -581,6 +585,20 @@ function applyPatterns(allPaths, patterns, baseDir) {
         result = result.filter((filePath) => !matchesAnyExactPattern(filePath, forceExcludes, baseDir));
     }
     return new Set(result);
+}
+function applyAutoloadDisabledPatterns(allPaths, patterns, baseDir) {
+    const result = new Map();
+    for (const pattern of patterns) {
+        const target = pattern.slice(pattern.startsWith("+") || pattern.startsWith("-") || pattern.startsWith("!") ? 1 : 0);
+        const enabled = !pattern.startsWith("-") && !pattern.startsWith("!");
+        const exact = pattern.startsWith("+") || pattern.startsWith("-");
+        for (const filePath of allPaths) {
+            if (exact ? matchesAnyExactPattern(filePath, [target], baseDir) : matchesAnyPattern(filePath, [target], baseDir)) {
+                result.set(filePath, enabled);
+            }
+        }
+    }
+    return result;
 }
 export class DefaultPackageManager {
     cwd;
@@ -881,7 +899,7 @@ export class DefaultPackageManager {
         }
         try {
             const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
-            return targetVersion !== installedVersion;
+            return gt(targetVersion, installedVersion);
         }
         catch {
             // Preserve existing update behavior when version lookup fails.
@@ -964,56 +982,66 @@ export class DefaultPackageManager {
         for (const { pkg, scope } of sources) {
             const sourceStr = typeof pkg === "string" ? pkg : pkg.source;
             const filter = typeof pkg === "object" ? pkg : undefined;
-            const parsed = this.parseSource(sourceStr);
+            const deltaBase = this.findAutoloadDeltaBase(pkg, scope, sources);
+            const resolvedSource = deltaBase?.source ?? sourceStr;
+            const resolvedScope = deltaBase?.scope ?? scope;
+            const parsed = this.parseSource(resolvedSource);
             const metadata = { source: sourceStr, scope, origin: "package" };
             if (parsed.type === "local") {
-                const baseDir = this.getBaseDirForScope(scope);
+                const baseDir = this.getBaseDirForScope(resolvedScope);
                 this.resolveLocalExtensionSource(parsed, accumulator, filter, metadata, baseDir);
                 continue;
             }
             const installMissing = async () => {
-                if (isOfflineModeEnabled()) {
+                if (isOfflineModeEnabled())
                     return false;
-                }
                 if (!onMissing) {
-                    await this.installParsedSource(parsed, scope);
+                    await this.installParsedSource(parsed, resolvedScope);
                     return true;
                 }
-                const action = await onMissing(sourceStr);
+                const action = await onMissing(resolvedSource);
                 if (action === "skip")
                     return false;
                 if (action === "error")
-                    throw new Error(`Missing source: ${sourceStr}`);
-                await this.installParsedSource(parsed, scope);
+                    throw new Error(`Missing source: ${resolvedSource}`);
+                await this.installParsedSource(parsed, resolvedScope);
                 return true;
             };
             if (parsed.type === "npm") {
-                let installedPath = this.getNpmInstallPath(parsed, scope);
+                let installedPath = this.getNpmInstallPath(parsed, resolvedScope);
                 const needsInstall = !existsSync(installedPath) || !(await this.installedNpmMatchesConfiguredVersion(parsed, installedPath));
                 if (needsInstall) {
                     const installed = await installMissing();
                     if (!installed)
                         continue;
-                    installedPath = this.getNpmInstallPath(parsed, scope);
+                    installedPath = this.getNpmInstallPath(parsed, resolvedScope);
                 }
                 metadata.baseDir = installedPath;
                 this.collectPackageResources(installedPath, accumulator, filter, metadata);
                 continue;
             }
             if (parsed.type === "git") {
-                const installedPath = this.getGitInstallPath(parsed, scope);
+                const installedPath = this.getGitInstallPath(parsed, resolvedScope);
                 if (!existsSync(installedPath)) {
                     const installed = await installMissing();
                     if (!installed)
                         continue;
                 }
-                else if (scope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
-                    await this.refreshTemporaryGitSource(parsed, sourceStr);
+                else if (resolvedScope === "temporary" && !parsed.pinned && !isOfflineModeEnabled()) {
+                    await this.refreshTemporaryGitSource(parsed, resolvedSource);
                 }
                 metadata.baseDir = installedPath;
                 this.collectPackageResources(installedPath, accumulator, filter, metadata);
             }
         }
+    }
+    findAutoloadDeltaBase(pkg, scope, sources) {
+        if (scope !== "project" || typeof pkg !== "object" || pkg.autoload !== false)
+            return undefined;
+        const identity = this.getPackageIdentity(pkg.source, scope);
+        const userEntry = sources.find((entry) => entry.scope === "user" &&
+            this.getPackageIdentity(this.getPackageSourceString(entry.pkg), "user") === identity);
+        return userEntry ? { source: this.getPackageSourceString(userEntry.pkg), scope: "user" } : undefined;
     }
     resolveLocalExtensionSource(source, accumulator, filter, metadata, baseDir) {
         const resolved = this.resolvePathFromBase(source.path, baseDir);
@@ -1157,7 +1185,7 @@ export class DefaultPackageManager {
         }
         try {
             const targetVersion = await this.getLatestNpmVersion(source.version ? source.spec : source.name, source.range);
-            return targetVersion !== installedVersion;
+            return gt(targetVersion, installedVersion);
         }
         catch {
             return false;
@@ -1169,7 +1197,7 @@ export class DefaultPackageManager {
             return undefined;
         try {
             const content = readFileSync(packageJsonPath, "utf-8");
-            const pkg = JSON.parse(content);
+            const pkg = JSON.parse(stripBom(content));
             return pkg.version;
         }
         catch {
@@ -1356,25 +1384,30 @@ export class DefaultPackageManager {
     }
     /**
      * Dedupe packages: if same package identity appears in both global and project,
-     * keep only the project one (project wins).
+     * keep only the project one (project wins). A project entry with autoload=false
+     * is a delta over the global entry, so both are kept (delta first).
      */
     dedupePackages(packages) {
+        const result = [];
         const seen = new Map();
         for (const entry of packages) {
-            const sourceStr = typeof entry.pkg === "string" ? entry.pkg : entry.pkg.source;
-            const identity = this.getPackageIdentity(sourceStr, entry.scope);
-            const existing = seen.get(identity);
-            if (!existing) {
-                seen.set(identity, entry);
+            const identity = this.getPackageIdentity(this.getPackageSourceString(entry.pkg), entry.scope);
+            const index = seen.get(identity);
+            if (index === undefined) {
+                seen.set(identity, result.length);
+                result.push(entry);
+                continue;
             }
-            else if (entry.scope === "project" && existing.scope === "user") {
-                // Project wins over user
-                seen.set(identity, entry);
+            const existing = result[index];
+            if (existing?.scope === "project" && entry.scope === "user") {
+                if (typeof existing.pkg === "object" && existing.pkg.autoload === false)
+                    result.push(entry);
             }
-            // If existing is project and new is global, keep existing (project)
-            // If both are same scope, keep first one
+            else if (entry.scope === "project") {
+                result[index] = entry;
+            }
         }
-        return Array.from(seen.values());
+        return result;
     }
     parseNpmSpec(spec) {
         const match = spec.match(/^(@?[^@]+(?:\/[^@]+)?)(?:@(.+))?$/);
@@ -1455,11 +1488,16 @@ export class DefaultPackageManager {
         if (!existsSync(installRoot)) {
             return;
         }
-        if (this.getPackageManagerName() === "bun") {
+        const packageManagerName = this.getPackageManagerName();
+        if (packageManagerName === "bun") {
             await this.runNpmCommand(["uninstall", source.name, "--cwd", installRoot]);
             return;
         }
-        await this.runNpmCommand(["uninstall", source.name, "--prefix", installRoot]);
+        const args = ["uninstall", source.name, "--prefix", installRoot];
+        if (packageManagerName !== "pnpm") {
+            args.push("--legacy-peer-deps");
+        }
+        await this.runNpmCommand(args);
     }
     async installGit(source, scope) {
         const targetDir = this.getGitInstallPath(source, scope);
@@ -1477,13 +1515,21 @@ export class DefaultPackageManager {
             this.ensureGitIgnore(gitRoot);
         }
         mkdirSync(dirname(targetDir), { recursive: true });
-        await this.runCommand("git", ["clone", source.repo, targetDir]);
-        if (source.ref) {
-            await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+        rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
+        try {
+            await this.runCommand("git", ["clone", source.repo, targetDir]);
+            if (source.ref) {
+                await this.runCommand("git", ["checkout", source.ref], { cwd: targetDir });
+            }
+            const packageJsonPath = join(targetDir, "package.json");
+            if (existsSync(packageJsonPath)) {
+                await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+            }
         }
-        const packageJsonPath = join(targetDir, "package.json");
-        if (existsSync(packageJsonPath)) {
-            await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+        catch (error) {
+            rmSync(targetDir, { recursive: true, force: true });
+            this.pruneEmptyGitParents(targetDir, gitRoot);
+            throw error;
         }
     }
     async updateGit(source, scope) {
@@ -1499,6 +1545,53 @@ export class DefaultPackageManager {
         const target = await this.getLocalGitUpdateTarget(targetDir);
         await this.ensureGitRef(targetDir, target.fetchArgs, target.ref);
     }
+    hasMissingGitDependencies(targetDir) {
+        const packageJsonPath = join(targetDir, "package.json");
+        if (!existsSync(packageJsonPath))
+            return false;
+        try {
+            const manifest = JSON.parse(stripBom(readFileSync(packageJsonPath, "utf-8")));
+            if (!manifest.dependencies ||
+                typeof manifest.dependencies !== "object" ||
+                Array.isArray(manifest.dependencies)) {
+                return false;
+            }
+            const nodeModulesDir = resolve(targetDir, "node_modules");
+            return Object.keys(manifest.dependencies).some((name) => {
+                const dependencyPath = resolve(nodeModulesDir, name);
+                if (!dependencyPath.startsWith(`${nodeModulesDir}${sep}`))
+                    return false;
+                return !existsSync(dependencyPath);
+            });
+        }
+        catch {
+            return false;
+        }
+    }
+    async repairMissingGitDependencies(targetDir) {
+        if (!this.hasMissingGitDependencies(targetDir))
+            return;
+        await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+    }
+    getGitUpdateMarkerPath(targetDir) {
+        return join(dirname(targetDir), `.${basename(targetDir)}.pi-update-incomplete`);
+    }
+    async cleanAndInstallGitDependencies(targetDir, markerPath) {
+        // Clean untracked files (extensions should be pristine). If this fails after
+        // deleting dependencies, repair them so the existing extension still loads.
+        try {
+            await this.runCommand("git", ["clean", "-fdx"], { cwd: targetDir });
+        }
+        catch (error) {
+            await this.repairMissingGitDependencies(targetDir).catch(() => { });
+            throw error;
+        }
+        const packageJsonPath = join(targetDir, "package.json");
+        if (existsSync(packageJsonPath)) {
+            await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
+        }
+        rmSync(markerPath, { force: true });
+    }
     async ensureGitRef(targetDir, fetchArgs, ref) {
         // Fetch only the ref we will reset to, avoiding unrelated branch/tag noise.
         await this.runCommand("git", fetchArgs, { cwd: targetDir });
@@ -1511,16 +1604,19 @@ export class DefaultPackageManager {
             cwd: targetDir,
             timeoutMs: NETWORK_TIMEOUT_MS,
         });
+        const markerPath = this.getGitUpdateMarkerPath(targetDir);
         if (localHead.trim() === targetHead.trim()) {
+            if (existsSync(markerPath)) {
+                await this.cleanAndInstallGitDependencies(targetDir, markerPath);
+            }
+            else {
+                await this.repairMissingGitDependencies(targetDir);
+            }
             return;
         }
+        writeFileSync(markerPath, "", "utf-8");
         await this.runCommand("git", ["reset", "--hard", commitRef], { cwd: targetDir });
-        // Clean untracked files (extensions should be pristine)
-        await this.runCommand("git", ["clean", "-fdx"], { cwd: targetDir });
-        const packageJsonPath = join(targetDir, "package.json");
-        if (existsSync(packageJsonPath)) {
-            await this.runNpmCommand(this.getGitDependencyInstallArgs(), { cwd: targetDir });
-        }
+        await this.cleanAndInstallGitDependencies(targetDir, markerPath);
     }
     async refreshTemporaryGitSource(source, sourceStr) {
         if (isOfflineModeEnabled()) {
@@ -1537,9 +1633,8 @@ export class DefaultPackageManager {
     }
     async removeGit(source, scope) {
         const targetDir = this.getGitInstallPath(source, scope);
-        if (!existsSync(targetDir))
-            return;
         rmSync(targetDir, { recursive: true, force: true });
+        rmSync(this.getGitUpdateMarkerPath(targetDir), { force: true });
         this.pruneEmptyGitParents(targetDir, this.getGitInstallRoot(scope));
     }
     pruneEmptyGitParents(targetDir, installRoot) {
@@ -1708,7 +1803,10 @@ export class DefaultPackageManager {
             for (const resourceType of RESOURCE_TYPES) {
                 const patterns = filter[resourceType];
                 const target = this.getTargetMap(accumulator, resourceType);
-                if (patterns !== undefined) {
+                if (filter.autoload === false) {
+                    this.applyPackageDeltaFilter(packageRoot, patterns ?? [], resourceType, target, metadata);
+                }
+                else if (patterns !== undefined) {
                     this.applyPackageFilter(packageRoot, patterns, resourceType, target, metadata);
                 }
                 else {
@@ -1717,7 +1815,7 @@ export class DefaultPackageManager {
             }
             return true;
         }
-        const manifest = this.readPiManifest(packageRoot);
+        const manifest = readPiManifest(join(packageRoot, "package.json"));
         if (manifest) {
             for (const resourceType of RESOURCE_TYPES) {
                 const entries = manifest[resourceType];
@@ -1740,7 +1838,7 @@ export class DefaultPackageManager {
         return hasAnyDir;
     }
     collectDefaultResources(packageRoot, resourceType, target, metadata) {
-        const manifest = this.readPiManifest(packageRoot);
+        const manifest = readPiManifest(join(packageRoot, "package.json"));
         const entries = manifest?.[resourceType];
         if (entries) {
             this.addManifestEntries(entries, packageRoot, resourceType, target, metadata);
@@ -1771,13 +1869,23 @@ export class DefaultPackageManager {
             this.addResource(target, f, metadata, enabled);
         }
     }
+    applyPackageDeltaFilter(packageRoot, userPatterns, resourceType, target, metadata) {
+        if (userPatterns.length === 0) {
+            return;
+        }
+        const { allFiles } = this.collectManifestFiles(packageRoot, resourceType);
+        const enabledByUser = applyAutoloadDisabledPatterns(allFiles, userPatterns, packageRoot);
+        for (const [filePath, enabled] of enabledByUser) {
+            this.addResource(target, filePath, metadata, enabled);
+        }
+    }
     /**
      * Collect all files from a package for a resource type, applying manifest patterns.
      * Returns { allFiles, enabledByManifest } where enabledByManifest is the set of files
      * that pass the manifest's own patterns.
      */
     collectManifestFiles(packageRoot, resourceType) {
-        const manifest = this.readPiManifest(packageRoot);
+        const manifest = readPiManifest(join(packageRoot, "package.json"));
         const entries = manifest?.[resourceType];
         if (entries && entries.length > 0) {
             const allFiles = this.collectFilesFromManifestEntries(entries, packageRoot, resourceType);
@@ -1791,20 +1899,6 @@ export class DefaultPackageManager {
         }
         const allFiles = collectResourceFiles(conventionDir, resourceType);
         return { allFiles, enabledByManifest: new Set(allFiles) };
-    }
-    readPiManifest(packageRoot) {
-        const packageJsonPath = join(packageRoot, "package.json");
-        if (!existsSync(packageJsonPath)) {
-            return null;
-        }
-        try {
-            const content = readFileSync(packageJsonPath, "utf-8");
-            const pkg = JSON.parse(content);
-            return pkg.pi ?? null;
-        }
-        catch {
-            return null;
-        }
     }
     addManifestEntries(entries, root, resourceType, target, metadata) {
         if (!entries)
@@ -1824,12 +1918,7 @@ export class DefaultPackageManager {
             if (!hasGlobPattern(entry)) {
                 return [resolve(root, entry)];
             }
-            return globSync(entry, {
-                cwd: root,
-                absolute: true,
-                dot: false,
-                nodir: false,
-            }).map((match) => resolve(match));
+            return expandPackageGlob(entry, root);
         });
         return this.collectFilesFromPaths(resolved, resourceType);
     }

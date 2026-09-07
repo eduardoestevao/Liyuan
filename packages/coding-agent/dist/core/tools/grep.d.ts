@@ -11,6 +11,10 @@ declare const grepSchema: Type.TObject<{
     context: Type.TOptional<Type.TNumber>;
     limit: Type.TOptional<Type.TNumber>;
 }>;
+export declare const grepToolSystemPromptContribution: {
+    readonly snippet: "Search file contents for patterns (respects .gitignore)";
+    readonly guidelines: readonly [];
+};
 export type GrepToolInput = Static<typeof grepSchema>;
 export interface GrepToolDetails {
     truncation?: TruncationResult;

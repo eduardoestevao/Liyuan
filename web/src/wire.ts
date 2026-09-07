@@ -5,6 +5,7 @@ export type {
 	AssistantSessionInfo,
 	AuthorScript,
 	ClientFrame,
+	DraftView,
 	RpPanel,
 	ServerFrame,
 	UpdateWire,

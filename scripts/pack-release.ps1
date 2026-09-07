@@ -217,6 +217,19 @@ function Stage-Clean {
     throw "PACK BUG: .liyuan/extensions/roleplay.ts missing from stage - release would ship without RP layer"
   }
 
+  # /XD data also excludes pi's generated model catalogs. Only these product
+  # JSON assets are restored; the user-data exclusion above stays in effect.
+  foreach ($catalogRoot in @("packages\ai\src\providers\data", "packages\ai\dist\providers\data")) {
+    $catalogSrc = Join-Path $prod $catalogRoot
+    $catalogDst = Join-Path $dest $catalogRoot
+    if (-not (Test-Path -LiteralPath (Join-Path $catalogSrc ".manifest.json"))) {
+      throw "PACK BUG: pi model catalog is missing from $catalogRoot"
+    }
+    New-Item -ItemType Directory -Force -Path $catalogDst | Out-Null
+    Get-ChildItem -LiteralPath $catalogSrc -File -Force -Filter "*.json" |
+      Copy-Item -Destination $catalogDst -Force
+  }
+
   # Keep only Liyuan default_* sample cards (never ship ST/community demo packs
   # like Seraphina/Eldoria, nor personal Chinese test cards).
   $cards = Join-Path $dest "assets\cards"
@@ -380,6 +393,15 @@ if not any(n.endswith('.liyuan/extensions/roleplay.ts') for n in names):
     errors.append('MISSING .liyuan/extensions/roleplay.ts (RP layer would not load)')
 if not any(n.endswith('server/mcp/vision-server.mjs') for n in names):
     errors.append('MISSING server/mcp/vision-server.mjs (builtin vision MCP would not ship)')
+catalogs = []
+for kind in ('src', 'dist'):
+    prefix = f'Liyuan/packages/ai/{kind}/providers/data/'
+    files = {n[len(prefix):] for n in names if n.startswith(prefix) and n.endswith('.json')}
+    catalogs.append(files)
+    if '.manifest.json' not in files or len(files) < 2:
+        errors.append(f'MISSING pi model catalogs ({kind})')
+if catalogs[0] != catalogs[1]:
+    errors.append('MISMATCH pi source/runtime model catalogs')
 forbidden_dirs = ['.liyuan-memory/', '.liyuan-state/', '.liyuan-uploads/', '.liyuan-lore/',
                   '.liyuan-codex/', '.liyuan-assistant/', '.liyuan-worldline/', '.liyuan-media/',
                   '.liyuan-audio/', '.liyuan-cache/', '.superpowers/', 'scratch/', 'summaries/',

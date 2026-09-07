@@ -2,7 +2,7 @@ import { type Theme } from "../modes/interactive/theme/theme.ts";
 import type { ResourceDiagnostic } from "./diagnostics.ts";
 export type { ResourceCollision, ResourceDiagnostic } from "./diagnostics.ts";
 import { type EventBus } from "./event-bus.ts";
-import type { ExtensionFactory, LoadExtensionsResult } from "./extensions/types.ts";
+import type { InlineExtension, LoadExtensionsResult } from "./extensions/types.ts";
 import { type PathMetadata } from "./package-manager.ts";
 import type { PromptTemplate } from "./prompt-templates.ts";
 import { SettingsManager } from "./settings-manager.ts";
@@ -47,7 +47,13 @@ export interface ResourceLoader {
         }>;
     };
     getSystemPrompt(): string | undefined;
+    getSystemPromptSource(): {
+        path: string;
+    } | undefined;
     getAppendSystemPrompt(): string[];
+    getAppendSystemPromptSources(): Array<{
+        path: string;
+    }>;
     extendResources(paths: ResourceExtensionPaths): void;
     reload(options?: ResourceLoaderReloadOptions): Promise<void>;
 }
@@ -67,7 +73,7 @@ export interface DefaultResourceLoaderOptions {
     additionalSkillPaths?: string[];
     additionalPromptTemplatePaths?: string[];
     additionalThemePaths?: string[];
-    extensionFactories?: ExtensionFactory[];
+    extensionFactories?: InlineExtension[];
     noExtensions?: boolean;
     noSkills?: boolean;
     noPromptTemplates?: boolean;
@@ -145,11 +151,14 @@ export declare class DefaultResourceLoader implements ResourceLoader {
     private themeDiagnostics;
     private agentsFiles;
     private systemPrompt?;
+    private systemPromptSourcePath?;
     private appendSystemPrompt;
+    private appendSystemPromptSourcePaths;
     private lastSkillPaths;
     private extensionSkillSourceInfos;
     private extensionPromptSourceInfos;
     private extensionThemeSourceInfos;
+    private resourceMetadataByPath;
     private lastPromptPaths;
     private lastThemePaths;
     private loaded;
@@ -174,7 +183,13 @@ export declare class DefaultResourceLoader implements ResourceLoader {
         }>;
     };
     getSystemPrompt(): string | undefined;
+    getSystemPromptSource(): {
+        path: string;
+    } | undefined;
     getAppendSystemPrompt(): string[];
+    getAppendSystemPromptSources(): Array<{
+        path: string;
+    }>;
     extendResources(paths: ResourceExtensionPaths): void;
     loadProjectTrustExtensions(): Promise<LoadExtensionsResult>;
     reload(options?: ResourceLoaderReloadOptions): Promise<void>;

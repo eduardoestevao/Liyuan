@@ -29,11 +29,11 @@ export interface Component {
      */
     invalidate(): void;
 }
-type InputListenerResult = {
+export type TuiInputListenerResult = {
     consume?: boolean;
     data?: string;
 } | undefined;
-type InputListener = (data: string) => InputListenerResult;
+export type TuiInputListener = (data: string) => TuiInputListenerResult;
 /**
  * Interface for components that can receive focus and display a hardware cursor.
  * When focused, the component should emit CURSOR_MARKER at the cursor position
@@ -134,39 +134,83 @@ export declare class Container implements Component {
     invalidate(): void;
     render(width: number): string[];
 }
-/**
- * TUI - Main class for managing terminal UI with differential rendering
- */
-export declare class TUI extends Container {
+/** Composite overlay content into a terminal line at a fixed column. */
+export declare function compositeTuiLine(baseLine: string, overlayLine: string, startCol: number, overlayWidth: number, totalWidth: number): string;
+export type TuiMode = "regular" | "fullscreen";
+export interface TuiStopOptions {
+    /** Leave renderer output in place for another TUI taking over the same terminal. */
+    preserveScreen?: boolean;
+}
+export interface TUI extends Component {
+    readonly mode: TuiMode;
+    children: Component[];
     terminal: Terminal;
-    private previousLines;
-    private previousKittyImageIds;
-    private previousWidth;
-    private previousHeight;
+    onDebug?: () => void;
+    readonly fullRedraws: number;
+    addChild(component: Component): void;
+    removeChild(component: Component): void;
+    clear(): void;
+    getShowHardwareCursor(): boolean;
+    setShowHardwareCursor(enabled: boolean): void;
+    getClearOnShrink(): boolean;
+    setClearOnShrink(enabled: boolean): void;
+    setFocus(component: Component | null): void;
+    showOverlay(component: Component, options?: OverlayOptions): OverlayHandle;
+    hideOverlay(): void;
+    hasOverlay(): boolean;
+    start(): void;
+    stop(options?: TuiStopOptions): void;
+    renderNow(force?: boolean): void;
+    requestRender(force?: boolean): void;
+    addInputListener(listener: TuiInputListener): () => void;
+    removeInputListener(listener: TuiInputListener): void;
+    onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
+    setTerminalColorSchemeNotifications(enabled: boolean): void;
+    queryTerminalBackgroundColor(options: {
+        timeoutMs: number;
+    }): Promise<RgbColor | undefined>;
+    queryTerminalColorScheme(options: {
+        timeoutMs: number;
+    }): Promise<TerminalColorScheme | undefined>;
+}
+export declare const VIEWPORT_TUI: unique symbol;
+export interface ViewportTUI extends TUI {
+    readonly [VIEWPORT_TUI]: true;
+    setLayoutRoot(component: Component | undefined): void;
+}
+export declare function isViewportTUI(tui: TUI): tui is ViewportTUI;
+export declare abstract class TuiBase extends Container implements TUI {
+    abstract readonly mode: TuiMode;
+    terminal: Terminal;
     private focusedComponent;
     private inputListeners;
     /** Global callback for debug key (Shift+Ctrl+D). Called before input is forwarded to focused component. */
     onDebug?: () => void;
     private renderRequested;
+    private immediateRenderScheduled;
     private renderTimer;
     private lastRenderAt;
     private static readonly MIN_RENDER_INTERVAL_MS;
-    private cursorRow;
-    private hardwareCursorRow;
     private showHardwareCursor;
     private clearOnShrink;
-    private maxLinesRendered;
-    private previousViewportTop;
-    private fullRedrawCount;
-    private stopped;
+    protected fullRedrawCount: number;
+    protected stopped: boolean;
     private pendingOsc11BackgroundReplies;
     private pendingOsc11BackgroundQueries;
     private terminalColorSchemeListeners;
     private terminalColorSchemeNotificationsEnabled;
+    protected readonly logDirectory: string;
     private focusOrderCounter;
     private overlayStack;
+    get hasOverlayEntries(): boolean;
     private overlayFocusRestore;
-    constructor(terminal: Terminal, showHardwareCursor?: boolean);
+    constructor(terminal: Terminal, showHardwareCursor?: boolean, logDirectory?: string);
+    protected abstract doRender(): void;
+    protected resetRenderState(): void;
+    protected beforeTerminalStart(): void;
+    protected afterTerminalStart(): void;
+    protected beforeTerminalStop(_options: TuiStopOptions): void;
+    protected afterTerminalStop(_options: TuiStopOptions): void;
     get fullRedraws(): number;
     getShowHardwareCursor(): boolean;
     setShowHardwareCursor(enabled: boolean): void;
@@ -177,6 +221,7 @@ export declare class TUI extends Container {
      * When false, empty rows remain (reduces redraws on slower terminals).
      */
     setClearOnShrink(enabled: boolean): void;
+    getFocusedComponent(): Component | null;
     setFocus(component: Component | null): void;
     private setFocusInternal;
     private clearOverlayFocusRestore;
@@ -185,6 +230,7 @@ export declare class TUI extends Container {
     private getVisibleOverlayFocusRestore;
     private isOverlayFocusAncestor;
     private retargetOverlayPreFocus;
+    protected getMountedRoots(): readonly Component[];
     private isComponentMounted;
     private containsComponent;
     /**
@@ -196,21 +242,26 @@ export declare class TUI extends Container {
     hideOverlay(): void;
     /** Check if there are any visible overlays */
     hasOverlay(): boolean;
+    /** Check if the focused component is a visible overlay */
+    protected isOverlayFocused(): boolean;
     /** Check if an overlay entry is currently visible */
     private isOverlayVisible;
     /** Find the visual-frontmost visible capturing overlay, if any */
     private getTopmostVisibleOverlay;
     invalidate(): void;
     start(): void;
-    addInputListener(listener: InputListener): () => void;
-    removeInputListener(listener: InputListener): void;
+    addInputListener(listener: TuiInputListener): () => void;
+    removeInputListener(listener: TuiInputListener): void;
     onTerminalColorSchemeChange(listener: (scheme: TerminalColorScheme) => void): () => void;
     setTerminalColorSchemeNotifications(enabled: boolean): void;
     private queryCellSize;
-    stop(): void;
+    stop(options?: TuiStopOptions): void;
+    renderNow(force?: boolean): void;
     requestRender(force?: boolean): void;
+    private requestImmediateRender;
+    private cancelRenderTimer;
     private scheduleRender;
-    private handleInput;
+    private handleTerminalInput;
     private consumeOsc11BackgroundResponse;
     private consumeTerminalColorSchemeReport;
     private consumeCellSizeResponse;
@@ -222,15 +273,8 @@ export declare class TUI extends Container {
     private resolveAnchorRow;
     private resolveAnchorCol;
     /** Composite all overlays into content lines (sorted by focusOrder, higher = on top). */
-    private compositeOverlays;
-    private static readonly SEGMENT_RESET;
-    private applyLineResets;
-    private collectKittyImageIds;
-    private deleteKittyImages;
-    private getKittyImageReservedRows;
-    private expandChangedRangeForKittyImages;
-    private deleteChangedKittyImages;
-    /** Splice overlay content into a base line at a specific column. Single-pass optimized. */
+    protected compositeOverlays(lines: string[], termWidth: number, termHeight: number): string[];
+    protected applyLineResets(lines: string[]): string[];
     private compositeLineAt;
     /**
      * Find and extract cursor position from rendered lines.
@@ -240,14 +284,10 @@ export declare class TUI extends Container {
      * @param height - Terminal height (visible viewport size)
      * @returns Cursor position { row, col } or null if no marker found
      */
-    private extractCursorPosition;
-    private doRender;
-    /**
-     * Position the hardware cursor for IME candidate window.
-     * @param cursorPos The cursor position extracted from rendered output, or null
-     * @param totalLines Total number of rendered lines
-     */
-    private positionHardwareCursor;
+    protected extractCursorPosition(lines: string[], height: number): {
+        row: number;
+        col: number;
+    } | null;
     /**
      * Query the terminal's default background color with OSC 11 (`ESC ] 11 ; ? BEL`).
      * @param timeoutMs Query timeout in milliseconds.

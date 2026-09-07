@@ -154,6 +154,13 @@ export class RpcClient {
         await this.send({ type: "abort" });
     }
     /**
+     * Clear queued steering and follow-up messages, returning their text.
+     */
+    async clearQueue() {
+        const response = await this.send({ type: "clear_queue" });
+        return this.getData(response);
+    }
+    /**
      * Start a new session, optionally with parent tracking.
      * @param parentSession - Optional parent session path for lineage tracking
      * @returns Object with `cancelled: true` if an extension cancelled the new session
@@ -202,6 +209,13 @@ export class RpcClient {
     async cycleThinkingLevel() {
         const response = await this.send({ type: "cycle_thinking_level" });
         return this.getData(response);
+    }
+    /**
+     * Get list of available thinking levels for the current model.
+     */
+    async getAvailableThinkingLevels() {
+        const response = await this.send({ type: "get_available_thinking_levels" });
+        return this.getData(response).levels;
     }
     /**
      * Set steering mode.
@@ -344,7 +358,7 @@ export class RpcClient {
     // =========================================================================
     /**
      * Wait for agent to become idle (no streaming).
-     * Resolves when agent_end event is received.
+     * Resolves when agent_settled event is received.
      */
     waitForIdle(timeout = 60000) {
         return new Promise((resolve, reject) => {
@@ -353,7 +367,7 @@ export class RpcClient {
                 reject(new Error(`Timeout waiting for agent to become idle. Stderr: ${this.stderr}`));
             }, timeout);
             const unsubscribe = this.onEvent((event) => {
-                if (event.type === "agent_end") {
+                if (event.type === "agent_settled") {
                     clearTimeout(timer);
                     unsubscribe();
                     resolve();
@@ -373,7 +387,7 @@ export class RpcClient {
             }, timeout);
             const unsubscribe = this.onEvent((event) => {
                 events.push(event);
-                if (event.type === "agent_end") {
+                if (event.type === "agent_settled") {
                     clearTimeout(timer);
                     unsubscribe();
                     resolve(events);

@@ -6,7 +6,7 @@ import { closeWatcher, FS_WATCH_RETRY_DELAY_MS, watchWithErrorHandler } from "..
  * Find git metadata paths by walking up from cwd.
  * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
  */
-function findGitPaths(cwd) {
+export function findGitPaths(cwd) {
     let dir = cwd;
     while (true) {
         const gitPath = join(dir, ".git");
@@ -81,7 +81,7 @@ function shouldPollGitHead(repoDir) {
 }
 /**
  * Provides git branch and extension statuses - data not otherwise accessible to extensions.
- * Token stats, model info available via ctx.sessionManager and ctx.model.
+ * Context usage on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model.
  */
 export class FooterDataProvider {
     cwd;

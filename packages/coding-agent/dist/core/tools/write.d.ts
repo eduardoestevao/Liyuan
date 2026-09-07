@@ -5,6 +5,10 @@ declare const writeSchema: Type.TObject<{
     path: Type.TString;
     content: Type.TString;
 }>;
+export declare const writeToolSystemPromptContribution: {
+    readonly snippet: "Create or overwrite files";
+    readonly guidelines: readonly ["Use write only for new files or complete rewrites."];
+};
 export type WriteToolInput = Static<typeof writeSchema>;
 /**
  * Pluggable operations for the write tool.

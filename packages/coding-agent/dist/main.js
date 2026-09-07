@@ -6,36 +6,43 @@
  */
 import { createInterface } from "node:readline";
 import { modelsAreEqual } from "@liyuan/ai";
+import { setCapabilityOverrides } from "@liyuan/tui";
 import chalk from "chalk";
-import { parseArgs, printHelp } from "./cli/args.js";
+import { normalizeSessionName, parseArgs, printHelp } from "./cli/args.js";
+import { checkProviderAuth, createAuthCheckModelRuntime, getProviderCredential, } from "./cli/auth-check.js";
+import { AuthCommandError, getAuthCommandName, getAuthCommandUsage, isAuthCommandHelp, parseAuthCommand, printAuthCommandHelp, validateAuthCommandArgs, } from "./cli/auth-command.js";
+import { resolveCredentialForPrint } from "./cli/credential-print.js";
 import { processFileArguments } from "./cli/file-processor.js";
 import { buildInitialMessage } from "./cli/initial-message.js";
 import { listModels } from "./cli/list-models.js";
 import { createProjectTrustContext } from "./cli/project-trust.js";
 import { selectSession } from "./cli/session-picker.js";
 import { shouldRunFirstTimeSetup, showFirstTimeSetup, showStartupSelector } from "./cli/startup-ui.js";
-import { ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.js";
+import { APP_NAME, ENV_SESSION_DIR, expandTildePath, getAgentDir, getPackageDir, VERSION } from "./config.js";
 import { createAgentSessionRuntime } from "./core/agent-session-runtime.js";
 import { createAgentSessionFromServices, createAgentSessionServices, } from "./core/agent-session-services.js";
 import { formatNoModelsAvailableMessage } from "./core/auth-guidance.js";
-import { AuthStorage } from "./core/auth-storage.js";
+import { AuthStorage, ReadOnlyAuthStorage } from "./core/auth-storage.js";
 import { exportFromFile } from "./core/export-html/index.js";
 import { applyHttpProxySettings, configureHttpDispatcher } from "./core/http-dispatcher.js";
 import { resolveCliModel, resolveModelScope } from "./core/model-resolver.js";
+import { ModelRuntime } from "./core/model-runtime.js";
 import { restoreStdout, takeOverStdout } from "./core/output-guard.js";
 import { resolveProjectTrusted } from "./core/project-trust.js";
 import { formatMissingSessionCwdPrompt, getMissingSessionCwdIssue, MissingSessionCwdError, } from "./core/session-cwd.js";
 import { assertValidSessionId, SessionManager } from "./core/session-manager.js";
+import { collectSettingsDiagnostics, deduplicateDiagnostics } from "./core/settings-diagnostics.js";
 import { SettingsManager } from "./core/settings-manager.js";
 import { printTimings, resetTimings, time } from "./core/timings.js";
 import { hasTrustRequiringProjectResources, ProjectTrustStore } from "./core/trust-manager.js";
+import { builtInExtensions } from "./extensions/index.js";
 import { runMigrations, showDeprecationWarnings } from "./migrations.js";
 import { InteractiveMode, runPrintMode, runRpcMode } from "./modes/index.js";
 import { initTheme, stopThemeWatcher } from "./modes/interactive/theme/theme.js";
-import { handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
+import { cleanupManagedInstall, handleConfigCommand, handlePackageCommand } from "./package-manager-cli.js";
 import { isLocalPath, normalizePath, resolvePath } from "./utils/paths.js";
 import { cleanupWindowsSelfUpdateQuarantine } from "./utils/windows-self-update.js";
-const EXTENSION_LOAD_FAILURE_HINT = 'Hint: Start without extensions using "pi -ne".';
+const EXTENSION_LOAD_FAILURE_HINT = `Hint: Start without extensions using "${APP_NAME} -ne".`;
 /**
  * Read all content from piped stdin.
  * Returns undefined if stdin is a TTY (interactive terminal).
@@ -56,12 +63,6 @@ async function readPipedStdin() {
         });
         process.stdin.resume();
     });
-}
-function collectSettingsDiagnostics(settingsManager, context) {
-    return settingsManager.drainErrors().map(({ scope, error }) => ({
-        type: "warning",
-        message: `(${context}, ${scope} settings) ${error.message}`,
-    }));
 }
 function reportDiagnostics(diagnostics) {
     for (const diagnostic of diagnostics) {
@@ -92,6 +93,78 @@ function toPrintOutputMode(appMode) {
 }
 function isPlainRuntimeMetadataCommand(parsed) {
     return !parsed.print && parsed.mode === undefined && (parsed.help === true || parsed.listModels !== undefined);
+}
+async function runAuthCommand(args) {
+    if (isAuthCommandHelp(args)) {
+        printAuthCommandHelp();
+        return true;
+    }
+    let command;
+    try {
+        command = parseAuthCommand(args);
+    }
+    catch (error) {
+        const message = error instanceof AuthCommandError ? error.message : "Failed to parse auth command";
+        console.error(chalk.red(`Error: ${message}`));
+        process.exitCode = 1;
+        return true;
+    }
+    if (!command)
+        return false;
+    const parsed = parseArgs(command.args);
+    if (parsed.unknownFlags.size > 0) {
+        const option = parsed.unknownFlags.keys().next().value;
+        console.error(chalk.red(`Unknown option --${option} for "${getAuthCommandName(command.kind)}".`));
+        console.error(chalk.dim(`Use "${APP_NAME} --help" or "${getAuthCommandUsage(command.kind)}".`));
+        process.exitCode = 1;
+        return true;
+    }
+    try {
+        if (parsed.diagnostics.length > 0) {
+            throw new AuthCommandError(parsed.diagnostics.map((diagnostic) => diagnostic.message).join("\n"));
+        }
+        if (command.kind !== "check") {
+            const signal = AbortSignal.timeout(15_000);
+            const modelRuntime = await ModelRuntime.create({ allowModelNetwork: false, signal });
+            const credential = await resolveCredentialForPrint(parsed, modelRuntime, command.kind, command.minExpiryMs, signal);
+            process.stdout.write(`${credential}\n`);
+            return true;
+        }
+        const requestedAuth = validateAuthCommandArgs(parsed, command.kind);
+        let result;
+        let credential;
+        try {
+            const credentials = command.noRefresh ? new ReadOnlyAuthStorage() : AuthStorage.create();
+            const modelRuntime = await createAuthCheckModelRuntime(credentials);
+            result = await checkProviderAuth(parsed, modelRuntime, { refresh: !command.noRefresh });
+            if (command.credentials && result.status === "ready") {
+                credential = await getProviderCredential(result.provider, modelRuntime, credentials, {
+                    refresh: !command.noRefresh,
+                });
+                if (!credential) {
+                    result = { status: "not_ready", provider: result.provider, reason: "credential_not_available" };
+                }
+            }
+        }
+        catch {
+            result = {
+                status: "invalid",
+                provider: requestedAuth.provider ?? requestedAuth.model,
+                reason: "invalid_state",
+            };
+        }
+        const output = command.json
+            ? JSON.stringify({ ...result, ...(credential ? { credentials: credential } : {}) })
+            : (credential ?? result.status);
+        process.stdout.write(`${output}\n`);
+        process.exitCode = result.status === "ready" ? 0 : result.status === "not_ready" ? 1 : 2;
+    }
+    catch (error) {
+        const message = error instanceof AuthCommandError ? error.message : "Failed to resolve credential";
+        console.error(chalk.red(`Error: ${message}`));
+        process.exitCode = command.kind === "check" ? 2 : 1;
+    }
+    return true;
 }
 async function prepareInitialMessage(parsed, autoResizeImages, stdinContent) {
     if (parsed.fileArgs.length === 0) {
@@ -202,7 +275,7 @@ function forkSessionOrExit(sourcePath, cwd, sessionDir, sessionId) {
         process.exit(1);
     }
 }
-async function createSessionManager(parsed, cwd, sessionDir, settingsManager) {
+export async function createSessionManager(parsed, cwd, sessionDir, settingsManager) {
     if (parsed.noSession || parsed.help || parsed.listModels !== undefined) {
         return SessionManager.inMemory(cwd, parsed.sessionId !== undefined ? { id: parsed.sessionId } : undefined);
     }
@@ -266,10 +339,11 @@ async function createSessionManager(parsed, cwd, sessionDir, settingsManager) {
         if (existingSession) {
             return SessionManager.open(existingSession.path, sessionDir);
         }
+        console.error(chalk.yellow(`Warning: No project session found with id '${parsed.sessionId}'; creating a new session with that id.`));
     }
     return SessionManager.create(cwd, sessionDir, { id: parsed.sessionId });
 }
-function buildSessionOptions(parsed, scopedModels, hasExistingSession, modelRegistry, settingsManager) {
+function buildSessionOptions(parsed, scopedModels, hasExistingSession, modelRuntime, settingsManager) {
     const options = {};
     const diagnostics = [];
     let cliThinkingFromModel = false;
@@ -281,7 +355,7 @@ function buildSessionOptions(parsed, scopedModels, hasExistingSession, modelRegi
             cliProvider: parsed.provider,
             cliModel: parsed.model,
             cliThinking: parsed.thinking,
-            modelRegistry,
+            modelRuntime,
         });
         if (resolved.warning) {
             diagnostics.push({ type: "warning", message: resolved.warning });
@@ -303,7 +377,7 @@ function buildSessionOptions(parsed, scopedModels, hasExistingSession, modelRegi
         // Check if saved default is in scoped models - use it if so, otherwise first scoped model
         const savedProvider = settingsManager.getDefaultProvider();
         const savedModelId = settingsManager.getDefaultModel();
-        const savedModel = savedProvider && savedModelId ? modelRegistry.find(savedProvider, savedModelId) : undefined;
+        const savedModel = savedProvider && savedModelId ? modelRuntime.getModel(savedProvider, savedModelId) : undefined;
         const savedInScope = savedModel ? scopedModels.find((sm) => modelsAreEqual(sm.model, savedModel)) : undefined;
         if (savedInScope) {
             options.model = savedInScope.model;
@@ -333,7 +407,7 @@ function buildSessionOptions(parsed, scopedModels, hasExistingSession, modelRegi
             thinkingLevel: sm.thinkingLevel,
         }));
     }
-    // API key from CLI - set in authStorage
+    // API key from CLI - set as a non-persistent runtime override
     // (handled by caller before createAgentSession)
     // Tools
     if (parsed.noTools) {
@@ -361,20 +435,25 @@ async function promptForMissingSessionCwd(issue, settingsManager) {
 }
 export async function main(args, options) {
     resetTimings();
+    const extensionFactories = [...builtInExtensions, ...(options?.extensionFactories ?? [])];
     const offlineMode = args.includes("--offline") || isTruthyEnvFlag(process.env.PI_OFFLINE);
     if (offlineMode) {
         process.env.PI_OFFLINE = "1";
         process.env.PI_SKIP_VERSION_CHECK = "1";
     }
+    if (await runAuthCommand(args)) {
+        return;
+    }
     if (process.platform === "win32") {
         cleanupWindowsSelfUpdateQuarantine(getPackageDir());
     }
+    cleanupManagedInstall();
     const cwd = process.cwd();
     const agentDir = getAgentDir();
     const bootstrapSettingsManager = SettingsManager.create(cwd, agentDir, { projectTrusted: false });
     applyHttpProxySettings(bootstrapSettingsManager.getGlobalSettings().httpProxy);
     configureHttpDispatcher();
-    if (await handlePackageCommand(args, { extensionFactories: options?.extensionFactories })) {
+    if (await handlePackageCommand(args, { extensionFactories })) {
         const exitCode = process.exitCode ?? 0;
         if (process.platform === "win32" && exitCode === 0 && args[0] === "update") {
             // We normally prefer process.exit(0) for package commands so bad extensions cannot keep
@@ -386,7 +465,7 @@ export async function main(args, options) {
         process.exit(exitCode);
         return;
     }
-    if (await handleConfigCommand(args, { extensionFactories: options?.extensionFactories })) {
+    if (await handleConfigCommand(args, { extensionFactories })) {
         return;
     }
     const parsed = parseArgs(args);
@@ -433,12 +512,15 @@ export async function main(args, options) {
     const { migratedAuthProviders: migratedProviders, deprecationWarnings } = runMigrations(cwd);
     time("runMigrations");
     const startupSettingsManager = SettingsManager.create(cwd, agentDir);
-    reportDiagnostics(collectSettingsDiagnostics(startupSettingsManager, "startup session lookup"));
+    const startupSettingsDiagnostics = collectSettingsDiagnostics(startupSettingsManager);
     // Experimental first-time setup: theme choice and analytics opt-in.
     // Runs before any runtime services are created so the chosen settings apply everywhere.
     if (appMode === "interactive" && !parsed.help && parsed.listModels === undefined && shouldRunFirstTimeSetup()) {
         await showFirstTimeSetup(startupSettingsManager);
         time("firstTimeSetup");
+    }
+    if (appMode === "interactive" && parsed.useTheme !== undefined) {
+        startupSettingsManager.applyOverrides({ theme: parsed.useTheme });
     }
     // Decide the final runtime cwd before creating cwd-bound runtime services.
     // --session and --resume may select a session from another project, so project-local
@@ -465,8 +547,8 @@ export async function main(args, options) {
         }
     }
     if (parsed.name !== undefined) {
-        const name = parsed.name.trim();
-        if (!name) {
+        const name = normalizeSessionName(parsed.name);
+        if (name === undefined) {
             console.error(chalk.red("Error: --name requires a non-empty value"));
             process.exit(1);
         }
@@ -484,7 +566,6 @@ export async function main(args, options) {
     const resolvedSkillPaths = resolveCliPaths(cwd, parsed.skills);
     const resolvedPromptTemplatePaths = resolveCliPaths(cwd, parsed.promptTemplates);
     const resolvedThemePaths = resolveCliPaths(cwd, parsed.themes);
-    const authStorage = AuthStorage.create();
     const createRuntime = async ({ cwd, agentDir, sessionManager, sessionStartEvent, projectTrustContext, }) => {
         const isInitialRuntime = sessionStartEvent === undefined;
         const projectTrustDiagnostics = [];
@@ -500,8 +581,8 @@ export async function main(args, options) {
         const services = await createAgentSessionServices({
             cwd,
             agentDir,
-            authStorage,
             settingsManager: runtimeSettingsManager,
+            modelRuntimeSignal: AbortSignal.timeout(15_000),
             extensionFlagValues: parsed.unknownFlags,
             resourceLoaderReloadOptions: shouldResolveProjectTrust
                 ? {
@@ -538,22 +619,24 @@ export async function main(args, options) {
                 noContextFiles: parsed.noContextFiles,
                 systemPrompt: parsed.systemPrompt,
                 appendSystemPrompt: parsed.appendSystemPrompt,
-                extensionFactories: options?.extensionFactories,
+                extensionFactories,
             },
         });
-        const { settingsManager, modelRegistry, resourceLoader } = services;
+        const { settingsManager, modelRuntime, resourceLoader } = services;
         const diagnostics = [
             ...projectTrustDiagnostics,
             ...services.diagnostics,
-            ...collectSettingsDiagnostics(settingsManager, "runtime creation"),
+            ...collectSettingsDiagnostics(settingsManager),
             ...resourceLoader.getExtensions().errors.map(({ path, error }) => ({
                 type: "error",
                 message: `Failed to load extension "${path}": ${error}`,
             })),
         ];
         const modelPatterns = parsed.models ?? settingsManager.getEnabledModels();
-        const scopedModels = modelPatterns && modelPatterns.length > 0 ? await resolveModelScope(modelPatterns, modelRegistry) : [];
-        const { options: sessionOptions, cliThinkingFromModel, diagnostics: sessionOptionDiagnostics, } = buildSessionOptions(parsed, scopedModels, sessionManager.buildSessionContext().messages.length > 0, modelRegistry, settingsManager);
+        const scopedModels = modelPatterns && modelPatterns.length > 0
+            ? await resolveModelScope(modelPatterns, modelRuntime, { signal: AbortSignal.timeout(15_000) })
+            : [];
+        const { options: sessionOptions, cliThinkingFromModel, diagnostics: sessionOptionDiagnostics, } = buildSessionOptions(parsed, scopedModels, sessionManager.buildSessionContext().messages.length > 0, modelRuntime, settingsManager);
         diagnostics.push(...sessionOptionDiagnostics);
         if (parsed.apiKey) {
             if (!sessionOptions.model) {
@@ -563,7 +646,7 @@ export async function main(args, options) {
                 });
             }
             else {
-                authStorage.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
+                await modelRuntime.setRuntimeApiKey(sessionOptions.model.provider, parsed.apiKey);
             }
         }
         const created = await createAgentSessionFromServices({
@@ -596,10 +679,12 @@ export async function main(args, options) {
     });
     time("createAgentSessionRuntime");
     const { services, session, modelFallbackMessage } = runtime;
-    const { settingsManager, modelRegistry, resourceLoader } = services;
+    const { settingsManager, modelRuntime, resourceLoader } = services;
+    setCapabilityOverrides(settingsManager.getTerminalCapabilityOverrides());
     applyHttpProxySettings(settingsManager.getGlobalSettings().httpProxy);
     configureHttpDispatcher(settingsManager.getHttpIdleTimeoutMs());
     if (parsed.help) {
+        reportDiagnostics(startupSettingsDiagnostics);
         const extensionFlags = resourceLoader
             .getExtensions()
             .extensions.flatMap((extension) => Array.from(extension.flags.values()));
@@ -607,8 +692,9 @@ export async function main(args, options) {
         process.exit(0);
     }
     if (parsed.listModels !== undefined) {
+        reportDiagnostics(startupSettingsDiagnostics);
         const searchPattern = typeof parsed.listModels === "string" ? parsed.listModels : undefined;
-        await listModels(modelRegistry, searchPattern);
+        await listModels(modelRuntime, searchPattern, AbortSignal.timeout(15_000));
         process.exit(0);
     }
     // Read piped stdin content (if any) - skip for RPC mode which uses stdin for JSON-RPC
@@ -629,8 +715,12 @@ export async function main(args, options) {
         await showDeprecationWarnings(deprecationWarnings);
     }
     time("resolveModelScope");
-    reportDiagnostics(runtime.diagnostics);
-    if (runtime.diagnostics.some((diagnostic) => diagnostic.type === "error")) {
+    const startupDiagnostics = deduplicateDiagnostics([...startupSettingsDiagnostics, ...runtime.diagnostics]);
+    const hasRuntimeErrors = runtime.diagnostics.some((diagnostic) => diagnostic.type === "error");
+    if (appMode !== "interactive" || hasRuntimeErrors) {
+        reportDiagnostics(startupDiagnostics);
+    }
+    if (hasRuntimeErrors) {
         if (runtime.diagnostics.some((diagnostic) => diagnostic.message.includes("Failed to load extension"))) {
             console.error(chalk.yellow(EXTENSION_LOAD_FAILURE_HINT));
         }
@@ -646,6 +736,15 @@ export async function main(args, options) {
         console.error(chalk.red("Error: PI_STARTUP_BENCHMARK only supports interactive mode"));
         process.exit(1);
     }
+    // RPC refreshes catalogs here in the background; interactive mode starts its refresh after TUI initialization.
+    if (!offlineMode && appMode === "rpc") {
+        const controller = new AbortController();
+        const timeout = setTimeout(() => controller.abort(), 15_000);
+        void modelRuntime
+            .refresh({ signal: controller.signal })
+            .catch(() => { })
+            .finally(() => clearTimeout(timeout));
+    }
     if (appMode === "rpc") {
         printTimings();
         await runRpcMode(runtime);
@@ -653,12 +752,15 @@ export async function main(args, options) {
     else if (appMode === "interactive") {
         const interactiveMode = new InteractiveMode(runtime, {
             migratedProviders,
+            startupDiagnostics,
             modelFallbackMessage,
             autoTrustOnReloadCwd,
             initialMessage,
             initialImages,
             initialMessages: parsed.messages,
             verbose: parsed.verbose,
+            tuiMode: parsed.tuiMode,
+            initialThemeSetting: parsed.useTheme,
         });
         if (startupBenchmark) {
             await interactiveMode.init();

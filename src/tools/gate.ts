@@ -41,6 +41,7 @@ export const GATED_TOOLS = [
 	"lorebook_create",
 	"memory_add",
 	"memory_delete",
+	"memory_update",
 ] as const;
 
 /**

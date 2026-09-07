@@ -19,10 +19,15 @@
 import { EventEmitter } from "events";
 export type StdinBufferOptions = {
     /**
-     * Maximum time to wait for sequence completion (default: 10ms)
-     * After this time, the buffer is flushed even if incomplete
+     * Maximum time to wait for an incomplete sequence such as CSI or mouse
+     * (default: 50ms).
      */
     timeout?: number;
+    /**
+     * Maximum time to wait after a lone ESC before treating it as Escape
+     * (default: 10ms). Increase for high-latency Alt+key input (SSH).
+     */
+    escapeTimeout?: number;
 };
 export type StdinBufferEventMap = {
     data: [string];
@@ -36,6 +41,7 @@ export declare class StdinBuffer extends EventEmitter<StdinBufferEventMap> {
     private buffer;
     private timeout;
     private readonly timeoutMs;
+    private readonly escapeTimeoutMs;
     private pasteMode;
     private pasteBuffer;
     private pendingKittyPrintableCodepoint;

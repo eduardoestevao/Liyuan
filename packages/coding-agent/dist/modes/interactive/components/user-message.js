@@ -1,5 +1,6 @@
 import { Box, Container, Markdown } from "@liyuan/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { createMarkdownTransform } from "./markdown-transform.js";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
@@ -10,11 +11,13 @@ export class UserMessageComponent extends Container {
     text;
     markdownTheme;
     outputPad;
-    constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1) {
+    markdownTransformers;
+    constructor(text, markdownTheme = getMarkdownTheme(), outputPad = 1, markdownTransformers = []) {
         super();
         this.text = text;
         this.markdownTheme = markdownTheme;
         this.outputPad = outputPad;
+        this.markdownTransformers = markdownTransformers;
         this.rebuild();
     }
     setOutputPad(padding) {
@@ -26,7 +29,11 @@ export class UserMessageComponent extends Container {
         const contentBox = new Box(this.outputPad, 1, (content) => theme.bg("userMessageBg", content));
         contentBox.addChild(new Markdown(this.text, 0, 0, this.markdownTheme, {
             color: (content) => theme.fg("userMessageText", content),
-        }, { preserveOrderedListMarkers: true, preserveBackslashEscapes: true }));
+        }, {
+            preserveOrderedListMarkers: true,
+            preserveBackslashEscapes: true,
+            transform: createMarkdownTransform("user", false, this.markdownTransformers),
+        }));
         this.addChild(contentBox);
     }
     render(width) {

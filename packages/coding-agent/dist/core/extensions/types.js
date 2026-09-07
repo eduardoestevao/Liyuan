@@ -21,6 +21,9 @@ export function defineTool(tool) {
 export function isBashToolResult(e) {
     return e.toolName === "bash";
 }
+export function isPowerShellToolResult(e) {
+    return e.toolName === "powershell";
+}
 export function isReadToolResult(e) {
     return e.toolName === "read";
 }

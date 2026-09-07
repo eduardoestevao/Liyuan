@@ -1,14 +1,58 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { test, afterEach } from "node:test";
+import { createServer } from "node:http";
 
-import { SessionManager } from "@liyuan/agent-runtime";
+import { ModelRuntime, createAgentSession, DefaultResourceLoader, SessionManager, SettingsManager, type AgentSession } from "@liyuan/agent-runtime";
+import roleplayExtension from "../.liyuan/extensions/roleplay.ts";
 import { fauxAssistantMessage, fauxThinking, fauxToolCall } from "@liyuan/ai/providers/faux";
-import { registerFauxProvider, streamSimple } from "@liyuan/ai/compat";
+import { getModel, registerFauxProvider, streamSimple } from "@liyuan/ai/compat";
 
-import { StageEngine, type StageStreamFn } from "../src/stage/engine.ts";
+import { StageEngine, type StageStreamFn, type StageEngineDeps } from "../src/stage/engine.ts";
+import { getStageConnection } from "../src/stage/bridge.ts";
+import { applyDraftRevisions } from "../src/stage/draft-projection.ts";
+import { DraftStore, draftDirectory } from "../src/stage/draft-store.ts";
+
+
+const sessions: AgentSession[] = [];
+const sessionByEngine = new WeakMap<StageEngine, AgentSession>();
+const hookErrors: string[] = [];
+afterEach(async () => {
+	for (const session of sessions.splice(0)) {
+		await session.extensionRunner.emit({ type: "session_shutdown", reason: "quit" });
+		session.dispose();
+	}
+	assert.deepEqual(hookErrors.splice(0), [], "真实 pi 扩展不得静默丢钩子");
+});
+
+async function makePiEngine(deps: Omit<StageEngineDeps, "getSession"> & { sessionManager: SessionManager }, nativeProvider = false) {
+	const selected = deps.getModel() ?? getModel("anthropic", "claude-sonnet-4-5");
+	const agentDir = join(deps.cwd, ".pi-test");
+	mkdirSync(agentDir, { recursive: true });
+	const modelRuntime = await ModelRuntime.create({ authPath: join(agentDir, "auth.json"), modelsPath: null });
+	modelRuntime.registerProvider(String(selected!.provider), { api: selected!.api, baseUrl: selected!.baseUrl, apiKey: "test-key", models: [selected as never] });
+	await modelRuntime.setRuntimeApiKey(String(selected!.provider), "test-key");
+	const settingsManager = SettingsManager.inMemory({ compaction: { enabled: false }, retry: { enabled: false } });
+	const resourceLoader = new DefaultResourceLoader({
+		cwd: deps.cwd, agentDir, settingsManager,
+		extensionFactories: [roleplayExtension],
+		noExtensions: true, noSkills: true, noPromptTemplates: true, noThemes: true, noContextFiles: true,
+	});
+	await resourceLoader.reload();
+	const { session } = await createAgentSession({
+		cwd: deps.cwd, agentDir, modelRuntime, settingsManager, resourceLoader,
+		sessionManager: deps.sessionManager, model: selected as never, thinkingLevel: "off", noTools: "builtin",
+	});
+	await session.bindExtensions({ mode: "rpc", onError: (event) => hookErrors.push(event.event + ": " + event.error) });
+	// faux 流注入真实 Agent 的 provider seam；context / tool_call / 生命周期均走生产钩子。
+	if (!nativeProvider) session.agent.streamFunction = deps.sideStreamFn as never;
+	sessions.push(session);
+	const engine = new StageEngine({ ...deps, getSession: () => session as never });
+	sessionByEngine.set(engine, session);
+	return engine;
+}
 
 /** 临时舞台：配置+卡+独立会话目录 */
 const makeStage = () => {
@@ -23,36 +67,27 @@ const makeStage = () => {
 	return { cwd, sm };
 };
 
-const makeEngine = (
+const makeEngine = async (
 	cwd: string,
 	sm: InstanceType<typeof SessionManager>,
 	model: unknown,
 	events: ConstructorParameters<typeof StageEngine>[0]["events"] = {},
 ) =>
-	new StageEngine({
+	await makePiEngine({
 		cwd,
-		getSessionManager: () => sm as never,
+		sessionManager: sm,
 		getModel: () => model as never,
 		getAuth: async () => ({}),
-		streamFn: streamSimple as unknown as StageStreamFn,
+		sideStreamFn: streamSimple as unknown as StageStreamFn,
 		events,
 	});
 
-/**
- * 场记那一发（M3 起「本拍零落账」的拍才会发起——M-R1 后记账注入把落账拉到台上，
- * 兜底触发率大降，但直出代收+模型不落账的测试路径仍会走到）。
- */
+/** 封笔后的场记旁路。 */
 const fauxScribeEmpty = () => fauxAssistantMessage(JSON.stringify({ patch: {} }));
 
-/**
- * 直出正文一拍的完整应答序列（M-R1 五注入日程）：
- * 正文 → 代收回执轮（空应答）→ 记账注入轮（空应答）→ 场记兜底。
- * 合约为空（卡无状态栏）时谢幕注入不发生，日程即收束。
- */
+/** 当前基线：一发正文，随后一发场记；不再有催告/记账注入轮。 */
 const directBeat = (text: string | ((ctx: unknown) => unknown)) => [
 	typeof text === "string" ? fauxAssistantMessage(text) : text,
-	fauxAssistantMessage(""),
-	fauxAssistantMessage(""),
 	fauxScribeEmpty(),
 ];
 
@@ -63,7 +98,7 @@ test("引擎：一拍全链路（user 落树 → 流式 → assistant 落树 →
 		reg.setResponses(directBeat("云澜垂眸受了半礼。「山门夜巡未归的人，是你？」") as never);
 		let partials = 0;
 		let end: { aborted: boolean; entryId?: string; error?: string } | null = null;
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"), {
 			onDelta: () => partials++,
 			onTurnEnd: (info) => (end = info),
 		});
@@ -95,7 +130,7 @@ test("引擎：abort 半拍——已流出的正文落树、标记 aborted", asy
 		]);
 		let end: { aborted: boolean; entryId?: string } | null = null;
 		let streamed = "";
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"), {
 			onDelta: (kind, delta) => {
 				if (kind !== "text") return;
 				streamed += delta;
@@ -121,12 +156,12 @@ test("引擎：abort 半拍——已流出的正文落树、标记 aborted", asy
 test("引擎：无模型/无用户输入的失败路径走通知，不落错误正文", async () => {
 	const { cwd, sm } = makeStage();
 	const notices: string[] = [];
-	const engine = new StageEngine({
+	const engine = await makePiEngine({
 		cwd,
-		getSessionManager: () => sm as never,
+		sessionManager: sm,
 		getModel: () => undefined,
 		getAuth: async () => ({}),
-		streamFn: streamSimple as unknown as StageStreamFn,
+		sideStreamFn: streamSimple as unknown as StageStreamFn,
 		events: { onNotify: (_l, t) => notices.push(t) },
 	});
 	await engine.performTurn("你好。");
@@ -156,18 +191,16 @@ const addBannedWordPreset = (cwd: string) => {
 };
 
 
-test("引擎循环：代收回执后模型不改（只闲聊收笔）→ 保留现稿如实交付，闲聊不落树", async () => {
+test("引擎：直出正文如实交付，不因预设词表改写模型措辞", async () => {
 	const { cwd, sm } = makeStage();
 	addBannedWordPreset(cwd);
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
 	try {
 		reg.setResponses([
 			fauxAssistantMessage("她眼中闪过一丝冷意，收剑入鞘。"),
-			fauxAssistantMessage("就这样吧。"), // 模型看过事实仍不改，闲聊收笔
-			fauxAssistantMessage(""), // 记账注入轮：无变动直接停
 			fauxScribeEmpty(),
 		]);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
 		await engine.performTurn("拔剑指向她。");
 
 		const { history } = rebuildHistory(sm.getBranch() as BranchEntryLike[]);
@@ -197,7 +230,7 @@ test("引擎记账：中断的半拍不记账（半截正文不进账本）", as
 			fauxScribe({ time: "不该被记下的时间" }),
 		]);
 		let streamed = "";
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"), {
 			onDelta: (kind, delta) => {
 				if (kind !== "text") return;
 				streamed += delta;
@@ -231,11 +264,12 @@ test("引擎循环：格式尾巴（状态栏占位+catsay）走 text 通道 →
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
 	try {
 		reg.setResponses([
-			// 8/05 实锤形态：draft_write 只交正文，思考里宣告还要写状态栏与点评
+			// 当前工具面已撤下 draft_write：正文经 text，查账后输出格式尾巴。
 			fauxAssistantMessage(
 				[
 					fauxThinking("The user decides. Now the status bar and cat commentary."),
-					fauxToolCall("draft_write", { content: "暮色四合，两人到了溪桥。" }),
+					{ type: "text", text: "暮色四合，两人到了溪桥。" },
+					fauxToolCall("world_state_get", {}),
 				],
 				{ stopReason: "toolUse" },
 			),
@@ -247,7 +281,7 @@ test("引擎循环：格式尾巴（状态栏占位+catsay）走 text 通道 →
 		]);
 		const activities: string[] = [];
 		let streamed = "";
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"), {
 			onActivity: (d) => activities.push(d),
 			onDelta: (kind, d) => {
 				if (kind === "text") streamed += d;
@@ -283,11 +317,11 @@ test("引擎循环：格式尾巴（状态栏占位+catsay）走 text 通道 →
 		const textSegs = (timeline ?? []).filter((s) => s.kind === "text");
 		const tlText = textSegs.map((s) => s.text ?? "").join("\n\n");
 		assert.ok(tlText.includes("咪咪点评"), "持久化时间线含尾巴");
-		// 分段同构（8/09 输出形式）：稿段与尾巴段各自独立——稿段带 draft，尾巴段不带
-		assert.equal(textSegs.length, 2, "稿段 + 尾巴段，互不吸收");
-		assert.ok(textSegs[0].draft === true && (textSegs[0].text ?? "").includes("暮色四合"), "稿段在前且带 draft 标记");
-		assert.ok(textSegs[1].draft !== true && (textSegs[1].text ?? "").includes("咪咪点评"), "尾巴独立末段（非稿段）");
-		assert.ok(activities.some((a) => a.includes("交稿")), "过程条照常");
+		// 当前直出路径在停手时整段代收；格式内容随正文一起留在稿段中。
+		assert.equal(textSegs.length, 1, "正文与格式尾巴完整代收");
+		assert.ok(textSegs[0].draft === true && (textSegs[0].text ?? "").includes("暮色四合"), "稿段带 draft 标记");
+		assert.ok((textSegs[0].text ?? "").includes("咪咪点评"), "格式尾巴不能因经过 pi 丢失");
+		assert.ok(activities.some((a) => a.includes("代收")), "过程条照常");
 	} finally {
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });
@@ -296,14 +330,14 @@ test("引擎循环：格式尾巴（状态栏占位+catsay）走 text 通道 →
 
 
 
-test("引擎循环：催稿后仍空手 → 认栽收拍并通知（不再静默丢拍）", async () => {
+test("引擎：模型停手但无正文 → 收拍并通知，不擅自催告续轮", async () => {
 	const { cwd, sm } = makeStage();
 	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
 	try {
 		reg.setResponses([fauxAssistantMessage(""), fauxAssistantMessage("")]);
 		const notices: string[] = [];
 		let end: { error?: string } | null = null;
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"), {
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"), {
 			onNotify: (_l, t) => notices.push(t),
 			onTurnEnd: (info) => (end = info),
 		});
@@ -342,12 +376,10 @@ test("引擎压缩：compactNow() 手动压缩不等周期；流式中拒绝", a
 		const responses: unknown[] = [];
 		for (let i = 1; i <= 8; i++) {
 			responses.push(fauxAssistantMessage(`第 ${i} 拍的正文。${"云".repeat(1200)}`));
-			responses.push(fauxAssistantMessage(""));
-			responses.push(fauxAssistantMessage(""));
 			responses.push(fauxScribeEmpty());
 		}
 		reg.setResponses(responses as never);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
 		for (let i = 1; i <= 8; i++) await engine.performTurn(`第 ${i} 拍我说的话。`);
 
 		assert.equal(
@@ -402,7 +434,7 @@ test("ask：注入 askUser 才上清单；未注入则剔除（依赖缺失不�
 			},
 			fauxScribeEmpty(),
 		]);
-		const engine = makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
 		await engine.performTurn("开演。");
 		const names = (ctxs[0].tools ?? []).map((t) => t.name);
 		assert.ok(!names.includes("ask"), "未注入 askUser 时 ask 不上清单");
@@ -424,12 +456,12 @@ test("ask：注入 askUser 时 ask 上清单", async () => {
 			},
 			fauxScribeEmpty(),
 		]);
-		const engine = new StageEngine({
+		const engine = await makePiEngine({
 			cwd,
-			getSessionManager: () => sm as never,
+			sessionManager: sm,
 			getModel: () => reg.getModel("faux-rp"),
 			getAuth: async () => ({}),
-			streamFn: streamSimple as unknown as StageStreamFn,
+			sideStreamFn: streamSimple as unknown as StageStreamFn,
 			askUser: async () => "好",
 		});
 		await engine.performTurn("开演。");
@@ -464,16 +496,16 @@ test("引擎：旁路调用走 sideEntry 的模型与它自己的档，并按它
 			return (streamSimple as unknown as StageStreamFn)(model as never, ctx as never, options as never);
 		}) as unknown as StageStreamFn;
 
-		const engine = new StageEngine({
+		const engine = await makePiEngine({
 			cwd,
-			getSessionManager: () => sm as never,
+			sessionManager: sm,
 			getModel: () => reg.getModel("faux-rp") as never,
 			getSideEntry: () => ({ model: reg.getModel("faux-side") as never, thinking: "off", label: "flash off" }),
 			getAuth: async (m) => {
 				authFor.push(String((m as { id: string }).id));
 				return {};
 			},
-			streamFn: recording,
+			sideStreamFn: recording,
 			events: {},
 		});
 		await engine.performTurn("我上前行礼。");
@@ -502,15 +534,15 @@ test("引擎：未配旁路条目时旁路跟随剧情模型（旧行为不变�
 			return (streamSimple as unknown as StageStreamFn)(model as never, ctx as never, options as never);
 		}) as unknown as StageStreamFn;
 
-		const engine = new StageEngine({
+		const engine = await makePiEngine({
 			cwd,
-			getSessionManager: () => sm as never,
+			sessionManager: sm,
 			getModel: () => reg.getModel("faux-rp") as never,
 			getAuth: async () => {
 				authCalls++;
 				return {};
 			},
-			streamFn: recording,
+			sideStreamFn: recording,
 			events: {},
 		});
 		await engine.performTurn("我上前行礼。");
@@ -530,13 +562,13 @@ test("引擎：旁路每一发都出回执——思考字数与耗时", async ()
 	try {
 		reg.setResponses(directBeat("云澜垂眸受了半礼。") as never);
 		const activity: string[] = [];
-		const engine = new StageEngine({
+		const engine = await makePiEngine({
 			cwd,
-			getSessionManager: () => sm as never,
+			sessionManager: sm,
 			getModel: () => reg.getModel("faux-rp") as never,
 			getSideEntry: () => ({ model: reg.getModel("faux-side") as never, thinking: "off", label: "flash off" }),
 			getAuth: async () => ({}),
-			streamFn: streamSimple as unknown as StageStreamFn,
+			sideStreamFn: streamSimple as unknown as StageStreamFn,
 			events: { onActivity: (d) => activity.push(d) },
 		});
 		await engine.performTurn("我上前行礼。");
@@ -552,4 +584,867 @@ test("引擎：旁路每一发都出回执——思考字数与耗时", async ()
 		reg.unregister();
 		rmSync(cwd, { recursive: true, force: true });
 	}
+});
+
+
+
+// ---------------- 回归 pi：真实钩子、会话树与工具循环 ----------------
+
+const piDeps = (cwd: string, sm: SessionManager, model: unknown): Omit<StageEngineDeps, "getSession"> & { sessionManager: SessionManager } => ({
+	cwd, sessionManager: sm, getModel: () => model as never,
+	getAuth: async () => ({}), sideStreamFn: streamSimple as unknown as StageStreamFn,
+});
+const userEntries = (sm: SessionManager) => sm.getEntries().filter((entry) => entry.type === "message" && entry.message.role === "user");
+const assertSessionAligned = (session: AgentSession) => {
+	// pi assigns the live custom message and its tree entry separate timestamps.
+	// A millisecond boundary is not a content/history mismatch; ordinary message timestamps still match exactly.
+	const comparable = (messages: AgentSession["messages"]) => messages.map((message) => {
+		if (message.role !== "custom") return message;
+		const { timestamp, ...content } = message;
+		return content;
+	});
+	assert.deepEqual(comparable(session.messages), comparable(session.sessionManager.buildSessionContext().messages), "树与 pi 内存必须一致");
+};
+
+test("pi：工具结果进入下一次请求，过程不落树；重生成复用同一 user 并隔离旧分支", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const contexts: any[] = [];
+		reg.setResponses([
+			fauxAssistantMessage([fauxThinking("先查账。"), fauxToolCall("world_state_get", {})], { stopReason: "toolUse" }),
+			(ctx) => { contexts.push(ctx); return fauxAssistantMessage("她踏上旧桥。"); },
+			fauxScribe({ location: "旧桥" }),
+		]);
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: { onTurnEnd: (info) => ends.push(info) } });
+		const session = sessionByEngine.get(engine)!;
+		const events: string[] = [];
+		session.subscribe((event) => events.push(event.type));
+		await engine.performTurn("到桥边去。");
+		assert.ok(ends[0]?.entryId && !ends[0]?.error);
+		assert.equal(events.filter((type) => type === "agent_start").length, 1);
+		assert.equal(events.filter((type) => type === "agent_end").length, 1);
+		assert.equal(events.filter((type) => type === "tool_execution_start").length, 1);
+		assert.ok(contexts[0].messages.some((message: any) => message.role === "toolResult" && JSON.stringify(message.content).includes("RAW:")));
+		const user = userEntries(sm)[0]!;
+		assert.equal(sm.getEntry(ends[0].entryId)!.parentId, user.id, "正文仍是 user 的直接子节点");
+		assert.equal(sm.getBranch().filter((entry) => entry.type === "message" && entry.message.role === "toolResult").length, 0);
+		assertSessionAligned(session);
+
+		session.setLeaf(user.id);
+		reg.setResponses([
+			(ctx) => { contexts.push(ctx); return fauxAssistantMessage("她留在岸上。"); },
+			fauxScribeEmpty(),
+		]);
+		await engine.regenerate();
+		assert.ok(ends[1]?.entryId && !ends[1]?.error);
+		assert.equal(userEntries(sm).length, 1, "重生成不能追加第二条用户输入");
+		assert.equal(sm.getEntry(ends[1].entryId)!.parentId, user.id);
+		assert.equal(sm.getEntries().filter((entry) => entry.parentId === user.id && entry.type === "message" && entry.message.role === "assistant").length, 2);
+		assert.ok(!JSON.stringify(contexts[1].messages).includes("她踏上旧桥"), "旧回复不能进入新变体");
+		assert.ok(!JSON.stringify(contexts[1].messages).includes("旧桥"), "旧变体的账本不能泄漏");
+		assertSessionAligned(session);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：ask 等用户答复，后续工具顺序执行，答案经 toolResult 回喂", { timeout: 5000 }, async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	const entered = Promise.withResolvers<void>();
+	const answer = Promise.withResolvers<string | undefined>();
+	try {
+		const contexts: any[] = [];
+		reg.setResponses([
+			fauxAssistantMessage([fauxToolCall("ask", { question: "走哪扇门？", options: ["东门", "西门"] }), fauxToolCall("world_state_get", {})], { stopReason: "toolUse" }),
+			(ctx) => { contexts.push(ctx); return fauxAssistantMessage("她走向东门。"); },
+			fauxScribeEmpty(),
+		]);
+		const engine = await makePiEngine({
+			...piDeps(cwd, sm, reg.getModel("faux-rp")),
+			askUser: async (_question, _options, signal) => {
+				assert.ok(signal instanceof AbortSignal);
+				entered.resolve();
+				return answer.promise;
+			},
+		});
+		const session = sessionByEngine.get(engine)!;
+		const starts: string[] = [];
+		session.subscribe((event) => { if (event.type === "tool_execution_start") starts.push(event.toolName); });
+		const turn = engine.performTurn("让我选一扇门。");
+		await entered.promise;
+		assert.deepEqual(starts, ["ask"], "用户没有回答之前，不得越过 ask 执行后面的工具");
+		answer.resolve("东门");
+		await turn;
+		assert.deepEqual(starts, ["ask", "world_state_get"]);
+		const replies = contexts[0].messages.filter((message: any) => message.role === "toolResult");
+		assert.ok(JSON.stringify(replies[0].content).includes("用户已作答：「东门」。"));
+		assert.equal(replies[1].toolName, "world_state_get");
+		assertSessionAligned(session);
+	} finally {
+		answer.resolve(undefined);
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：ask 用户停止，不执行同批剩余工具，也不再请求模型", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			fauxAssistantMessage([fauxToolCall("ask", { question: "往哪走？", options: ["东", "西"] }), fauxToolCall("world_state_get", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("不该被请求的下一轮。"),
+		]);
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => undefined });
+		await engine.performTurn("让我选择。");
+		assert.equal(reg.getPendingResponseCount(), 1);
+		const debug = sm.getBranch().find((entry) => entry.type === "custom" && entry.customType === "rp-text-debug") as any;
+		assert.ok(debug);
+		assert.equal(debug.data.beatLog.filter((row: any) => row.ev === "tool_call" && row.data.startsWith("world_state_get")).length, 0);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：等待 ask 时中断能传达信号，半拍不记账，下一拍可继续", { timeout: 5000 }, async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	const entered = Promise.withResolvers<void>();
+	try {
+		reg.setResponses([fauxAssistantMessage([fauxToolCall("ask", { question: "走吗？", options: ["走", "等"] })], { stopReason: "toolUse" })]);
+		const ends: any[] = [];
+		const engine = await makePiEngine({
+			...piDeps(cwd, sm, reg.getModel("faux-rp")),
+			askUser: async (_q, _o, signal) => new Promise((resolve) => {
+				signal!.addEventListener("abort", () => resolve(undefined), { once: true });
+				entered.resolve();
+			}),
+			events: { onTurnEnd: (info) => ends.push(info) },
+		});
+		const turn = engine.performTurn("让我决定。");
+		await entered.promise;
+		engine.abort();
+		await turn;
+		assert.equal(ends[0]?.aborted, true);
+		assert.equal(sm.getBranch().filter((entry) => entry.type === "custom" && entry.customType === "rp-state").length, 0);
+		reg.setResponses(directBeat("她等到天亮。") as never);
+		await engine.performTurn("等到天亮。");
+		assert.ok(ends[1]?.entryId && !ends[1]?.error);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：写入门禁只在 tool_call 判断，默认拒绝，用户明确要求后执行", async () => {
+	const { cwd, sm } = makeStage();
+	writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟", creationMode: "ask" }));
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let writes = 0;
+		const results: any[] = [];
+		const engine = await makePiEngine({
+			...piDeps(cwd, sm, reg.getModel("faux-rp")),
+			addMemory: async () => { writes++; return { added: 1, total: 1, chunks: 1 }; },
+		});
+		for (const input of ["继续走。", "记住他在东门等我的约定。"]) {
+			reg.setResponses([
+				fauxAssistantMessage([fauxToolCall("memory_add", { text: "他会在东门等候，时间是明日清晨。" })], { stopReason: "toolUse" }),
+				(ctx) => { results.push(ctx.messages.findLast((message: any) => message.role === "toolResult")); return fauxAssistantMessage("她点了点头。"); },
+				fauxScribeEmpty(),
+			]);
+			await engine.performTurn(input);
+		}
+		assert.equal(writes, 1);
+		assert.equal(results[0].isError, true);
+		assert.ok(JSON.stringify(results[0].content).includes("本轮用户并未要求记录"));
+		assert.notEqual(results[1].isError, true);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：缺少稿件版本的调用由原生 schema 拒绝，模型可改走正文通道", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let result: any;
+		reg.setResponses([
+			fauxAssistantMessage([fauxToolCall("draft_write", { content: "这份未受理的稿不应上屏。" })], { stopReason: "toolUse" }),
+			(ctx) => { result = ctx.messages.findLast((message: any) => message.role === "toolResult"); return fauxAssistantMessage("她打开窗。"); },
+			fauxScribeEmpty(),
+		]);
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		await engine.performTurn("继续。");
+		assert.equal(result.isError, true);
+		const history = rebuildHistory(sm.getBranch() as BranchEntryLike[]).history;
+		assert.equal(history.at(-1)?.text, "她打开窗。");
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：20 轮后撤工具，只再请求一次；不新增催告或续轮指令", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let lastContext: any;
+		reg.setResponses([
+			...Array.from({ length: 20 }, () => fauxAssistantMessage([fauxToolCall("world_state_get", {})], { stopReason: "toolUse" })),
+			(ctx) => { lastContext = ctx; return fauxAssistantMessage("天色已晚。"); },
+			fauxScribeEmpty(),
+		]);
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		const session = sessionByEngine.get(engine)!;
+		let calls = 0;
+		session.subscribe((event) => { if (event.type === "tool_execution_start") calls++; });
+		await engine.performTurn("看看周围。");
+		assert.equal(calls, 20);
+		assert.equal(lastContext.tools?.length ?? 0, 0);
+		assert.equal(lastContext.messages.filter((message: any) => message.role === "user").length, 1, "只有本拍用户输入，未插入催告");
+		assert.equal(reg.getPendingResponseCount(), 0);
+		assertSessionAligned(session);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：撤工具后模型仍给工具调用，也在第 21 次回应停止", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			...Array.from({ length: 21 }, () => fauxAssistantMessage([fauxToolCall("world_state_get", {})], { stopReason: "toolUse" })),
+			fauxAssistantMessage("这一发不该消耗。"),
+		]);
+		const engine = await makeEngine(cwd, sm, reg.getModel("faux-rp"));
+		await engine.performTurn("看看周围。");
+		assert.equal(reg.getPendingResponseCount(), 1);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：忙时排队的下一拍在前拍落树后装配", { timeout: 5000 }, async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	const entered = Promise.withResolvers<void>();
+	const answer = Promise.withResolvers<string | undefined>();
+	try {
+		let secondContext: any;
+		reg.setResponses([
+			fauxAssistantMessage([fauxToolCall("ask", { question: "走吗？", options: ["走", "等"] })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("她跨过门槛。"), fauxScribe({ location: "门内" }),
+			(ctx) => { secondContext = ctx; return fauxAssistantMessage("她停在廊下。"); }, fauxScribeEmpty(),
+		]);
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")),
+			askUser: async () => { entered.resolve(); return answer.promise; },
+			events: { onTurnEnd: info => ends.push(info) },
+		});
+		const first = engine.performTurn("往前走。");
+		await entered.promise;
+		await engine.performTurn("进门以后停下。");
+		assert.equal(userEntries(sm).length, 1);
+		answer.resolve("走");
+		await first;
+		assert.equal(ends.length, 2);
+		assert.ok(ends.every(info => info.entryId && !info.error));
+		assert.equal(userEntries(sm).length, 2);
+		assert.ok(JSON.stringify(secondContext.messages).includes("她跨过门槛"));
+		assert.ok(JSON.stringify(secondContext.messages).includes("门内"));
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		answer.resolve(undefined);
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：错误与空回复不存过程正文，后续拍仍可继续", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: { onTurnEnd: info => ends.push(info) } });
+		for (const response of [fauxAssistantMessage("", { stopReason: "error", errorMessage: "provider unavailable" }), fauxAssistantMessage("")]) {
+			reg.setResponses([response]);
+			await engine.performTurn("继续。");
+			assertSessionAligned(sessionByEngine.get(engine)!);
+		}
+		assert.ok(ends[0].error.includes("provider unavailable"));
+		assert.equal(ends[1].error, "no-draft");
+		assert.equal(sm.getEntries().filter(entry => entry.type === "message" && entry.message.role === "assistant").length, 0);
+		reg.setResponses(directBeat("雨停了。") as never);
+		await engine.performTurn("等雨停。");
+		assert.ok(ends[2].entryId && !ends[2].error);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi SDK：真实 HTTP 请求保留 RP 上下文、采样参数、鉴权及原生工具续轮", { timeout: 15000 }, async () => {
+	const { cwd, sm } = makeStage();
+	const requests: any[] = [];
+	const auth: unknown[] = [];
+	const server = createServer(async (req, res) => {
+		let raw = "";
+		for await (const chunk of req) raw += chunk;
+		requests.push(JSON.parse(raw));
+		auth.push(req.headers.authorization);
+		res.writeHead(200, { "Content-Type": "text/event-stream" });
+		const tool = requests.length === 1;
+		const delta = tool
+			? { role: "assistant", tool_calls: [{ index: 0, id: "call-native", type: "function", function: { name: "world_state_get", arguments: "{}" } }] }
+			: { role: "assistant", content: "她收起了地图。" };
+		for (const [part, reason] of [[delta, null], [{}, tool ? "tool_calls" : "stop"]]) {
+			res.write(`data: ${JSON.stringify({ id: "test", object: "chat.completion.chunk", created: 1, model: "native-test", choices: [{ index: 0, delta: part, finish_reason: reason }] })}\n\n`);
+		}
+		res.end("data: [DONE]\n\n");
+	});
+	await new Promise<void>(resolve => server.listen(0, "127.0.0.1", resolve));
+	try {
+		writeFileSync(join(cwd, "preset.json"), JSON.stringify({ blocks: [{ id: "style", channel: "system", enabled: true, content: "固定测试文案。" }], samplers: { temperature: 0.37, top_p: 0.71 } }));
+		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟", preset: "preset.json" }));
+		const model = { ...getModel("openai", "gpt-4o-mini")!, api: "openai-completions", provider: "native-test", id: "native-test", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` };
+		const side: StageStreamFn = () => ({ async *[Symbol.asyncIterator]() { yield { type: "done", message: fauxScribeEmpty() }; }, result: async () => fauxScribeEmpty() });
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, model), sideStreamFn: side, events: { onTurnEnd: info => ends.push(info) } }, true);
+		await engine.performTurn("收起地图。");
+		assert.equal(ends[0].error, undefined);
+		assert.ok(ends[0].entryId && !ends[0].error);
+		assert.equal(requests.length, 2);
+		assert.deepEqual(auth, ["Bearer test-key", "Bearer test-key"]);
+		for (const body of requests) {
+			assert.equal(body.temperature, 0.37);
+			assert.equal(body.top_p, 0.71);
+			assert.ok(body.tools.some((tool: any) => tool.function.name === "world_state_get"));
+			assert.ok(JSON.stringify(body.messages).includes("固定测试文案"));
+			assert.ok(JSON.stringify(body.messages).includes("收起地图"));
+		}
+		assert.ok(requests[1].messages.some((message: any) => message.role === "tool" && message.tool_call_id === "call-native"));
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：媒体只在正文之后落一份，保留 toolCallId，下一拍不重放媒体工具过程", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const call = fauxToolCall("show_html", { html: "<p>临时地图</p>", title: "地图" });
+		let nextContext: any;
+		reg.setResponses([
+			fauxAssistantMessage([call], { stopReason: "toolUse" }),
+			fauxAssistantMessage("她展开地图。"), fauxScribeEmpty(),
+			(ctx) => { nextContext = ctx; return fauxAssistantMessage("她指向东面。"); }, fauxScribeEmpty(),
+		]);
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), media: true });
+		await engine.performTurn("给我看地图。");
+		const messages = sm.getBranch().filter(entry => entry.type === "message");
+		assert.deepEqual(messages.map(entry => entry.message.role), ["user", "assistant", "toolResult"]);
+		const media = messages[2].message as any;
+		assert.equal(media.toolCallId, call.id);
+		assert.equal(media.details.rpHtml.html, "<p>临时地图</p>");
+		assert.equal(messages[1].parentId, messages[0].id);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+		await engine.performTurn("东面有什么？");
+		assert.ok(!nextContext.messages.some((message: any) => message.role === "toolResult"));
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally {
+		reg.unregister();
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("pi：reload 重绑同一会话的 RP 连接，之后仍走原生循环", async () => {
+	const { cwd, sm } = makeStage();
+	const model = getModel("anthropic", "claude-sonnet-4-5")!;
+	const responses = [fauxAssistantMessage("她翻开第一页。"), fauxScribeEmpty(), fauxAssistantMessage("她翻到第二页。"), fauxScribeEmpty()];
+	const stream: StageStreamFn = () => {
+		const message = responses.shift()!;
+		return { async *[Symbol.asyncIterator]() { yield { type: "done", message }; }, result: async () => message };
+	};
+	try {
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, model), sideStreamFn: stream, events: { onTurnEnd: info => ends.push(info) } });
+		const session = sessionByEngine.get(engine)!;
+		await engine.performTurn("打开书。");
+		const before = getStageConnection(sm.getSessionId());
+		assert.ok(before);
+		await session.reload();
+		assert.ok(getStageConnection(sm.getSessionId()));
+		assert.notEqual(getStageConnection(sm.getSessionId()), before);
+		await engine.performTurn("翻一页。");
+		assert.ok(ends.every(info => info.entryId && !info.error));
+		assert.equal(ends.length, 2);
+		assertSessionAligned(session);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+const draftTool = (name: string, args: Record<string, unknown>) => fauxAssistantMessage([fauxToolCall(name, args)], { stopReason: "toolUse" });
+
+test("第三刀·收笔遵循 pi 终止语义：单独调用不再续轮，混合批次仍能一致落稿", async () => {
+	for (const mixed of [false, true]) {
+		const { cwd, sm } = makeStage();
+		const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+		try {
+			let scribeSeen = false;
+			reg.setResponses([
+				draftTool("draft_write", { version: 0, content: "她合上了书。" }),
+				fauxAssistantMessage([
+					...(mixed ? [fauxToolCall("draft_read", {})] : []),
+					fauxToolCall("draft_seal", { version: 1 }),
+				], { stopReason: "toolUse" }),
+				...(mixed ? [fauxAssistantMessage("")] : []),
+				(ctx) => {
+					assert.equal(ctx.tools?.length ?? 0, 0, "收笔之后应直接进入场记");
+					scribeSeen = true;
+					return fauxScribeEmpty();
+				},
+			]);
+			const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+			await engine.performTurn("合上书。");
+			assert.equal(scribeSeen, true);
+			assert.equal(reg.state.callCount, mixed ? 4 : 3);
+			assert.equal(engine.getWorkspace()?.phase, "sealed");
+			assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "她合上了书。");
+			assertSessionAligned(sessionByEngine.get(engine)!);
+		} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+	}
+});
+
+test("第三刀·原生循环：探索门禁、分段、ask 改道、精确修改与收笔共用同一工件", async () => {
+	const { cwd, sm } = makeStage();
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let gateResult: any, askResult: any;
+		reg.setResponses([
+			draftTool("beat_plan", { _: true, mode: "explore", steps: [{ id: "gate", text: "去西门" }] }),
+			draftTool("draft_write", { version: 0, content: "探索期不应落笔" }),
+			(ctx) => { gateResult = ctx.messages.findLast((m: any) => m.role === "toolResult"); return draftTool("beat_plan", { mode: "write" }); },
+			draftTool("draft_write", { version: 0, content: "她停在路口。" }),
+			draftTool("ask", { question: "往哪走？", options: ["东门", "西门"] }),
+			(ctx) => { askResult = ctx.messages.findLast((m: any) => m.role === "toolResult"); return draftTool("beat_plan", { steps: [{ id: "gate", text: "去西门", status: "cancelled" }, { id: "east", text: "去东门", status: "in_progress" }] }); },
+			draftTool("draft_append", { version: 1, content: "她向东门快走。" }),
+			draftTool("draft_read", { _: true }),
+			draftTool("draft_edit", { version: 2, edits: [{ old: "快走", new: "缓步而行" }] }),
+			draftTool("draft_seal", { version: 3 }),
+			fauxScribeEmpty(),
+		]);
+		const ends: any[] = [];
+		let engine: StageEngine;
+		engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => {
+			assert.equal(engine.getWorkspace()?.draft, "她停在路口。");
+			assert.equal(engine.getWorkspace()?.phase, "waiting");
+			return "东门";
+		}, events: { onTurnEnd: (info) => ends.push(info) } });
+		await engine.performTurn("到路口再由我选方向。");
+		assert.equal(gateResult.isError, true);
+		assert.ok(JSON.stringify(askResult).includes("东门"));
+		const ws = engine.getWorkspace()!;
+		assert.equal(ws.draft, "她停在路口。\n\n她向东门缓步而行。");
+		assert.equal(ws.phase, "sealed");
+		assert.equal(ws.version, 3);
+		assert.equal(ws.explicitWrites, 3);
+		assert.equal(ws.directWrites, 0);
+		assert.equal(ws.plan[1].status, "in_progress", "未勾完计划仍可收笔");
+		assert.equal(ends[0].error, undefined);
+		assert.equal(reg.getPendingResponseCount(), 0);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, ws.draft);
+		assert.equal(ws.timeline.filter((s) => s.kind === "text").map((s) => s.text).join(""), ws.draft);
+		const activities = ws.timeline.flatMap((s) => s.kind === "tool" ? s.activities : []);
+		assert.equal(activities.filter((a) => a.kind === "tool_start").length, activities.filter((a) => a.kind === "tool_end").length);
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·参数流中停止：未执行的半段落盘，重新创建引擎仍可读取", async () => {
+	for (const append of [false, true]) {
+		const { cwd, sm } = makeStage();
+		const model = getModel("anthropic", "claude-sonnet-4-5")!;
+		let requests = 0;
+		const partialText = "她拿起桌上的";
+		const partial = fauxAssistantMessage([fauxToolCall(append ? "draft_append" : "draft_write", { version: append ? 1 : 0, content: partialText })], { stopReason: "aborted" });
+		const stream: StageStreamFn = () => {
+			requests++;
+			if (append && requests === 1) {
+				const first = draftTool("draft_write", { version: 0, content: "门开了。" });
+				return { async *[Symbol.asyncIterator]() { yield { type: "done", message: first }; }, result: async () => first };
+			}
+			return { async *[Symbol.asyncIterator]() {
+				yield { type: "start", partial: { ...partial, content: [], stopReason: "pending" } };
+				await new Promise((resolve) => setTimeout(resolve, 270));
+				yield { type: "toolcall_delta", contentIndex: 0, delta: partialText, partial };
+				yield { type: "error", error: partial };
+			}, result: async () => partial };
+		};
+		try {
+			let engine: StageEngine;
+			engine = await makePiEngine({ ...piDeps(cwd, sm, model), sideStreamFn: stream, events: { onWorkspace: (ws) => {
+				if (ws.preview?.content === partialText) engine.abort();
+			} } });
+			await engine.performTurn("继续。");
+			const ws = engine.getWorkspace()!;
+			assert.equal(ws.draft, (append ? "门开了。\n\n" : "") + partialText);
+			assert.equal(ws.phase, "stopped");
+			assert.equal(ws.explicitWrites, append ? 1 : 0, "半截工具调用没有执行");
+			assert.equal(ws.directWrites, 1, "中断文本由宿主保存，单独计数");
+			assert.equal(requests, append ? 2 : 1, "停止后没有场记调用");
+			assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, ws.draft);
+			const reopened = new StageEngine({ ...piDeps(cwd, sm, model), getSession: () => sessionByEngine.get(engine)! as never });
+			assert.deepEqual(reopened.getWorkspace(), ws);
+		} finally { rmSync(cwd, { recursive: true, force: true }); }
+	}
+});
+
+test("第三刀·探索直出不越过写入阶段，普通工具两侧的直接正文仍保留", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([draftTool("beat_plan", { mode: "explore" }), fauxAssistantMessage("这里只是探索结论。")]);
+		const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+		await engine.performTurn("先探索。");
+		assert.equal(engine.getWorkspace()?.draft, "");
+		assert.equal(engine.getWorkspace()?.version, 0);
+		assert.equal(engine.getWorkspace()?.sealed, false);
+		reg.setResponses([
+			fauxAssistantMessage([{ type: "text", text: "她握住窗闩。" }, fauxToolCall("world_state_get", {})], { stopReason: "toolUse" }),
+			fauxAssistantMessage("她推开窗。"), fauxScribeEmpty(),
+		]);
+		await engine.performTurn("继续演。");
+		assert.equal(engine.getWorkspace()?.draft, "她握住窗闩。她推开窗。");
+		assert.equal(engine.getWorkspace()?.timeline.filter((s) => s.kind === "text").map((s) => s.text).join(""), "她握住窗闩。她推开窗。");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·停止：ask 前已写文本保留，同批续写不执行，场记不运行", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			draftTool("draft_write", { version: 0, content: "她打开了门。" }),
+			fauxAssistantMessage([fauxToolCall("ask", { question: "进去吗？", options: ["进去", "等"] }), fauxToolCall("draft_append", { version: 1, content: "不该执行" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("不该请求"),
+		]);
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => undefined });
+		await engine.performTurn("开门，等我决定。");
+		assert.equal(engine.getWorkspace()?.draft, "她打开了门。");
+		assert.equal(engine.getWorkspace()?.phase, "stopped");
+		assert.equal(reg.getPendingResponseCount(), 1);
+		assert.ok(!sm.getBranch().some((e) => e.type === "custom" && e.customType === "rp-state"));
+		assertSessionAligned(sessionByEngine.get(engine)!);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·直出兼容：提问前的直接正文与回答后的直接续文都保存", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([
+			fauxAssistantMessage([{ type: "text", text: "她打开了门。" }, fauxToolCall("ask", { question: "进去吗？", options: ["进去", "等"] })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("她走进屋里。"), fauxScribeEmpty(),
+		]);
+		let engine: StageEngine;
+		engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => {
+			assert.equal(engine.getWorkspace()?.draft, "她打开了门。"); return "进去";
+		} });
+		await engine.performTurn("开门，等我决定。");
+		assert.equal(engine.getWorkspace()?.draft, "她打开了门。\n\n她走进屋里。");
+		assert.equal(engine.getWorkspace()?.phase, "sealed");
+		assert.equal(engine.getWorkspace()?.explicitWrites, 0);
+		assert.equal(reg.getPendingResponseCount(), 0);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·真实完成状态：写了稿但未收笔时保留工件，不用口头完成冒充收笔", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([draftTool("draft_write", { version: 0, content: "她停在门外。" }), fauxAssistantMessage(""), fauxScribeEmpty()]);
+		const ends: any[] = [];
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: { onTurnEnd: (info) => ends.push(info) } });
+		await engine.performTurn("继续。");
+		assert.equal(ends[0].error, "unsealed-draft");
+		assert.equal(engine.getWorkspace()?.phase, "stopped");
+		assert.equal(engine.getWorkspace()?.draft, "她停在门外。");
+		assert.equal(reg.getPendingResponseCount(), 1, "不启动未收笔稿件的场记");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·等待时用户恢复版本：旧版本写入失败，模型读取新版本后继续", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let stale: any;
+		reg.setResponses([
+			draftTool("draft_write", { version: 0, content: "她留下了。" }),
+			draftTool("draft_write", { version: 1, content: "她离开了。" }),
+			draftTool("ask", { question: "接着走吗？", options: ["留下", "走"] }),
+			draftTool("draft_append", { version: 2, content: "过期续写" }),
+			(ctx) => { stale = ctx.messages.findLast((m: any) => m.role === "toolResult"); return draftTool("draft_read", {}); },
+			draftTool("draft_append", { version: 3, content: "她坐到桌边。" }),
+			draftTool("draft_seal", { version: 4 }), fauxScribeEmpty(),
+		]);
+		let engine: StageEngine;
+		engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => {
+			const ws = engine.getWorkspace()!;
+			assert.equal(ws.version, 2);
+			assert.equal(engine.restoreDraft(ws.id, 1, 2).version, 3);
+			assert.equal(engine.getWorkspace()?.draft, "她留下了。");
+			return "留下";
+		} });
+		await engine.performTurn("到门口等我决定。");
+		assert.equal(stale.isError, true, JSON.stringify(stale));
+		assert.equal(engine.getWorkspace()?.draft, "她留下了。\n\n她坐到桌边。");
+		assert.equal(engine.getWorkspace()?.version, 4);
+		assert.equal(engine.getWorkspace()?.phase, "sealed");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("第三刀·用户恢复留档中断：重建引擎补记一次，未收笔状态不被抹掉", async () => {
+	const { cwd, sm } = makeStage(); const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses([draftTool("draft_write", { version: 0, content: "第一稿" }), draftTool("draft_write", { version: 1, content: "第二稿" }), fauxAssistantMessage("")]);
+		const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+		await engine.performTurn("改稿。");
+		const ws = engine.getWorkspace()!;
+		const append = sm.appendCustomEntry.bind(sm);
+		sm.appendCustomEntry = (type, data) => {
+			if (type === "rp-draft-revision") throw new Error("模拟会话文件不可写");
+			return append(type, data);
+		};
+		assert.throws(() => engine.restoreDraft(ws.id, 1, 2), /不可写/);
+		sm.appendCustomEntry = append;
+		const reopened = new StageEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), getSession: () => sessionByEngine.get(engine)! as never });
+		assert.equal(reopened.getWorkspace()?.draft, "第一稿");
+		assert.equal(reopened.getWorkspace()?.phase, "stopped");
+		assert.equal(reopened.getWorkspace()?.version, 3);
+		assert.equal(reopened.getWorkspace()?.restorePending, undefined);
+		assert.equal(sm.getBranch().filter((e) => e.type === "custom" && e.customType === "rp-draft-revision").length, 1);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "第一稿");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·原生循环：连续回改同一回复、原文后半保留，续演上下文没有过期改稿指令", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const original = "她推开门。‘进来。’\n\n她把干椅子放在桌边。\n\n后半段：窗下那本旧簿仍旧摊着，门边的竹盘没有移动。";
+		const ends: any[] = [], refreshes: string[] = [];
+		reg.setResponses(directBeat(original));
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: {
+			onTurnEnd: (info) => ends.push(info),
+			onReplyRevised: (id) => { refreshes.push(id); assert.ok(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text.includes("来，里面坐。")); },
+		} });
+		await engine.performTurn("我敲了敲门。");
+		const source = engine.getWorkspace()!, sourceStore = new DraftStore(draftDirectory(cwd, sm.getSessionDir(), sm.getSessionId()), source.id);
+		const sourceBytes = readFileSync(sourceStore.file, "utf8");
+		let expected = original;
+		for (const [index, old, replacement] of [[0, "进来。", "来，里面坐。"], [1, "干椅子", "干净的椅子"]] as const) {
+			reg.setResponses([
+				fauxAssistantMessage([{ type: "text", text: "我先看看上一拍。" }, fauxToolCall("previous_draft_read", {})], { stopReason: "toolUse" }),
+				(ctx) => {
+					const read = ctx.messages.findLast((m: any) => m.role === "toolResult") as any;
+					assert.equal(read.isError, false);
+					const data = JSON.parse(read.content[0].text);
+					assert.equal(data.content, expected);
+					assert.equal(data.version, index + 1);
+					return draftTool("previous_draft_edit", { version: data.version, edits: [{ old, new: replacement }] });
+				},
+				fauxScribe({ time: "修订不能推进的时刻" }),
+			]);
+			await engine.performTurn(`第${index + 1}次改稿请求：只改措辞，其余保留。`);
+			expected = expected.replace(old, replacement);
+			assert.equal(reg.getPendingResponseCount(), 1, "修订工具原生终止，不发另一条回复或场记");
+			assert.equal(ends.at(-1).error, undefined);
+			assert.equal(ends.at(-1).entryId, undefined);
+			assert.equal(ends.at(-1).revisedEntryId, source.entryId);
+			const ws = engine.getWorkspace()!;
+			assert.equal(ws.draft, expected);
+			assert.equal(ws.entryId, source.entryId);
+			assert.equal(ws.version, index + 2);
+			assert.equal(new DraftStore(draftDirectory(cwd, sm.getSessionDir(), sm.getSessionId()), ws.id).read()?.draft, expected);
+			assert.equal(engine.getWorkspaces().filter((w) => w.entryId === source.entryId).length, 1, "只展示当前分支的有效稿件");
+			assert.equal(sm.getBranch().filter((e) => e.type === "message" && e.message.role === "assistant").length, 1);
+			assert.equal(sm.getBranch().filter((e) => e.type === "custom" && e.customType === "rp-state").length, 0);
+			const history = rebuildHistory(sm.getBranch() as BranchEntryLike[]).history;
+			assert.deepEqual(history.slice(-2).map((m) => m.text), ["我敲了敲门。", expected]);
+			assert.deepEqual(history.filter((m) => m.role === "user").map((m) => m.text), ["我敲了敲门。"]);
+			assert.equal(readFileSync(sourceStore.file, "utf8"), sourceBytes);
+			assertSessionAligned(sessionByEngine.get(engine)!);
+		}
+		assert.deepEqual(refreshes, [source.entryId, source.entryId]);
+		const reopened = new StageEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), getSession: () => sessionByEngine.get(engine)! as never });
+		assert.equal(reopened.getWorkspace()?.draft, expected);
+		reg.setResponses([
+			(ctx) => {
+				const texts = ctx.messages.filter((m: any) => m.role === "assistant").map((m: any) => m.content.filter((c: any) => c.type === "text").map((c: any) => c.text).join(""));
+				assert.ok(texts.includes(expected), "下一发模型收到修后的整拍，含后半段");
+				assert.ok(!JSON.stringify(ctx.messages).includes("次改稿请求"));
+				return fauxAssistantMessage("她翻到了下一页。");
+			}, fauxScribeEmpty(),
+		]);
+		await engine.performTurn("接着翻下一页。");
+		assert.equal(reg.getPendingResponseCount(), 0);
+		assert.ok(ends.at(-1).entryId);
+		assert.equal(ends.at(-1).revisedEntryId, undefined);
+		assert.equal(sm.getBranch().filter((e) => e.type === "message" && e.message.role === "assistant").length, 2);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·世界线：从共享回复开两条分支，各自修订，返回原点仍是原稿", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses(directBeat("她合上书。后半段原样保留。"));
+		const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+		await engine.performTurn("合上书。");
+		const session = sessionByEngine.get(engine)!, rootLeaf = sm.getLeafId()!, original = engine.getWorkspace()!;
+		const leaves: string[] = [], drafts: string[] = [];
+		for (const next of ["册子", "书册"]) {
+			session.setLeaf(rootLeaf);
+			assert.equal(engine.getWorkspace()?.draft, original.draft);
+			reg.setResponses([draftTool("previous_draft_read", {}), draftTool("previous_draft_edit", { version: 1, edits: [{ old: "书", new: next }] })]);
+			await engine.performTurn(`只把书换成${next}。`);
+			leaves.push(sm.getLeafId()!); drafts.push(engine.getWorkspace()!.id);
+			assert.equal(engine.getWorkspace()?.draft, `她合上${next}。后半段原样保留。`);
+		}
+		assert.notEqual(drafts[0], drafts[1]);
+		session.setLeaf(leaves[0]);
+		assert.equal(engine.getWorkspace()?.id, drafts[0]);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "她合上册子。后半段原样保留。");
+		assert.ok(!engine.getWorkspaces().some((w) => w.id === drafts[1]));
+		session.setLeaf(rootLeaf);
+		assert.equal(engine.getWorkspace()?.draft, original.draft);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, original.draft);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·混合工具批次：成功修订后，额外直出和同批新稿不能变成另一拍", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses(directBeat("窗边有灯。后半还在。"));
+		const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+		await engine.performTurn("环顾屋里。");
+		reg.setResponses([
+			draftTool("previous_draft_read", {}),
+			fauxAssistantMessage([fauxToolCall("world_state_get", {}), fauxToolCall("previous_draft_edit", { version: 1, edits: [{ old: "窗边", new: "窗下" }] }), fauxToolCall("draft_append", { version: 2, content: "不该续写的故事。" })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("已修改，接下来她走出了门。"), fauxScribeEmpty(),
+		]);
+		await engine.performTurn("只润色上一拍，别推进。");
+		assert.equal(engine.getWorkspace()?.draft, "窗下有灯。后半还在。");
+		assert.equal(reg.getPendingResponseCount(), 1);
+		assert.equal(sm.getBranch().filter((e) => e.type === "message" && e.message.role === "assistant").length, 1);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "窗下有灯。后半还在。");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·同步中断：修订稿先持久化，重建引擎只补记一次，不生成替代回复", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses(directBeat("她说：进来。后半段。"));
+		const engine = await makePiEngine(piDeps(cwd, sm, reg.getModel("faux-rp")));
+		await engine.performTurn("进门。");
+		const source = engine.getWorkspace()!;
+		const append = sm.appendCustomEntry.bind(sm);
+		sm.appendCustomEntry = (type, data) => { if (type === "rp-draft-revision") throw new Error("模拟回执同步中断"); return append(type, data); };
+		reg.setResponses([draftTool("previous_draft_read", {}), draftTool("previous_draft_edit", { version: 1, edits: [{ old: "进来", new: "请进" }] }), fauxAssistantMessage("同步尚未成功。")]);
+		await engine.performTurn("只润色台词。");
+		sm.appendCustomEntry = append;
+		const reopened = new StageEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), getSession: () => sessionByEngine.get(engine)! as never });
+		assert.equal(reopened.getWorkspace()?.draft, "她说：请进。后半段。");
+		assert.equal(reopened.getWorkspace()?.restorePending, undefined);
+		assert.equal(reopened.getWorkspace()?.entryId, source.entryId);
+		assert.equal(sm.getBranch().filter((e) => e.type === "custom" && e.customType === "rp-draft-revision").length, 1);
+		assert.equal(sm.getBranch().filter((e) => e.type === "message" && e.message.role === "assistant").length, 1);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "她说：请进。后半段。");
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·停止：已成功落回原回复的修订保留，不追加半拍或记账", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		reg.setResponses(directBeat("她说：进来。后半段。"));
+		let engine: StageEngine;
+		engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: { onReplyRevised: () => engine.abort() } });
+		await engine.performTurn("进门。");
+		reg.setResponses([draftTool("previous_draft_read", {}), draftTool("previous_draft_edit", { version: 1, edits: [{ old: "进来", new: "请进" }] }), fauxScribeEmpty()]);
+		await engine.performTurn("只润色台词。");
+		assert.equal(engine.getWorkspace()?.phase, "sealed");
+		assert.equal(engine.getWorkspace()?.draft, "她说：请进。后半段。");
+		assert.equal(reg.getPendingResponseCount(), 1);
+		assert.equal(sm.getBranch().filter((e) => e.type === "message" && e.message.role === "assistant").length, 1);
+		const projected = applyDraftRevisions(sm.getBranch());
+		assert.ok(JSON.stringify(projected.find((e) => e.type === "message" && e.message.role === "assistant")).includes("请进"));
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·选择归属：ask 回答与原拍持久化，下一拍历史和读稿都保留实际用户决定", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		const answer = "改变主意，先回屋取伞。";
+		reg.setResponses([
+			fauxAssistantMessage([{ type: "text", text: "她在路口等你。" }, fauxToolCall("ask", { question: "走哪边？", options: ["去渡口", "去石桥"] })], { stopReason: "toolUse" }),
+			fauxAssistantMessage("她随你回了屋。"), fauxScribeEmpty(),
+		]);
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), askUser: async () => answer });
+		await engine.performTurn("到了路口让我选。");
+		assert.deepEqual(engine.getWorkspace()?.choices, [{ question: "走哪边？", answer }]);
+		const first = sm.getBranch().find((e) => e.type === "message" && e.message.role === "user") as any;
+		assert.equal(first.message.content[0].text, "到了路口让我选。", "原始 user 仍只有一条原文");
+		reg.setResponses([
+			(ctx) => {
+				assert.ok(ctx.messages.some((m: any) => m.role === "user" && JSON.stringify(m.content).includes(answer)), "选择作为历史用户输入进入下一发");
+				return draftTool("previous_draft_read", {});
+			},
+			(ctx) => {
+				const read = ctx.messages.findLast((m: any) => m.role === "toolResult") as any;
+				const data = JSON.parse(read.content[0].text);
+				assert.deepEqual(data.userChoices, [{ question: "走哪边？", answer }]);
+				return draftTool("previous_draft_edit", { version: data.version, edits: [{ old: "路口", new: "岔路口" }] });
+			},
+		]);
+		await engine.performTurn("只改第一句，其他不动。");
+		assert.equal(engine.getWorkspace()?.draft, "她在岔路口等你。\n\n她随你回了屋。");
+		assert.deepEqual(engine.getWorkspace()?.choices, [{ question: "走哪边？", answer }]);
+		assert.equal(reg.getPendingResponseCount(), 0);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("上一拍·发布守卫：落稿后切走分支，不把回执写到别的世界线", async () => {
+	const { cwd, sm } = makeStage(), reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	try {
+		let rootLeaf: string | undefined, editLeaf: string | undefined, switched = false, engine: StageEngine;
+		reg.setResponses(directBeat("她点头。后半段。"));
+		engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: { onWorkspace: (ws) => {
+			if (rootLeaf && ws.revision && ws.restorePending && !switched) {
+				switched = true; editLeaf = sm.getLeafId()!;
+				// Simulate a low-level host/tree change; AgentSession itself forbids UI navigation while streaming.
+				sm.branch(rootLeaf);
+			}
+		} } });
+		await engine.performTurn("点头。"); rootLeaf = sm.getLeafId()!;
+		reg.setResponses([draftTool("previous_draft_read", {}), draftTool("previous_draft_edit", { version: 1, edits: [{ old: "点头", new: "颔首" }] }), fauxAssistantMessage("同步等待恢复。")]);
+		await engine.performTurn("润色第一句。");
+		assert.equal(switched, true);
+		assert.equal(sm.getBranch().filter((e) => e.type === "custom" && e.customType === "rp-draft-revision").length, 0);
+		assert.equal(rebuildHistory(sm.getBranch() as BranchEntryLike[]).history.at(-1)?.text, "她点头。后半段。");
+		sessionByEngine.get(engine)!.setLeaf(editLeaf!);
+		assert.equal(engine.getWorkspace()?.draft, "她颔首。后半段。");
+		assert.equal(sm.getBranch().filter((e) => e.type === "custom" && e.customType === "rp-draft-revision").length, 1);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
 });

@@ -40,7 +40,6 @@ import {
 	type AccessData,
 } from "../src/access.ts";
 import { findModelEntry, loadAgentConfig, normalizeAgentConfig, syncAgentConfigToRuntime } from "../src/agent-config.ts";
-import { streamSimple } from "@liyuan/ai/compat";
 import { loadCardFile, readCardRawJson, updateCardFields } from "../src/card.ts";
 import { findInitVar, findSchemaDefaults, seedMvuIfNeeded } from "../src/mvu.ts";
 import { authorScriptManifest, extractAuthorScripts } from "../src/authorScripts.ts";
@@ -97,6 +96,8 @@ import {
 	memoryManualAdd,
 	memoryRecallForTurn,
 	memorySearch,
+	memorySearchReport,
+	memoryReadChunk,
 	onNarrativeTurnEnd,
 } from "../src/memory/index.ts";
 import {
@@ -273,6 +274,7 @@ let runtime = await createAgentSessionRuntime(createRuntime, {
 });
 
 let session: AgentSession = runtime.session;
+let stage: StageEngine;
 let unsubscribe: (() => void) | undefined;
 
 // ---------- WS 广播 ----------
@@ -689,7 +691,7 @@ const currentDisplaySkin = () => {
 const branchMessages = (): unknown[] => {
 	try {
 		const out: unknown[] = [];
-		for (const e of session.sessionManager.getBranch() as Array<Record<string, unknown>>) {
+		for (const e of applyDraftRevisions(session.sessionManager.getBranch()) as Array<Record<string, unknown>>) {
 			if (e.type === "message" && e.message) out.push(e.message);
 			else if (e.type === "custom_message") {
 				// details 必须透传：开场白序号（rpGreeting）等元数据只存在于树条目上，
@@ -702,6 +704,10 @@ const branchMessages = (): unknown[] => {
 					details: e.details,
 				});
 			}
+			else if (e.type === "custom" && e.customType === "rp-draft-revision") {
+				const revision = e.data as { requestId?: string; version?: number } | undefined;
+				if (revision?.requestId) out.push({ role: "custom", customType: "rp-draft-revision", content: `上一拍已修订 · v${revision.version}`, display: true });
+			}
 		}
 		return out;
 	} catch {
@@ -710,6 +716,7 @@ const branchMessages = (): unknown[] => {
 };
 
 const helloFrame = (): ServerFrame => {
+	const workspace = stage?.getWorkspace();
 	const cardfront = loadCardFrontSnapshot(cwd);
 	const skin =
 		cardfront.enabled && cardfront.hasSkin && cardfront.rules.length
@@ -741,6 +748,8 @@ const helloFrame = (): ServerFrame => {
 		state: currentState(),
 		stats: safeStats(),
 		panels: currentPanels(),
+		workspace: workspace ? workspaceView(workspace) : undefined,
+		streaming: stage?.isStreaming ?? false,
 		// 一档皮肤与消息同帧:首屏不得依赖二次 REST(缓存/竞态会让 StatusBlock 回落统一面板)
 		cardfront: { ...cardfrontLite, scriptManifest: authorScriptManifest(scripts) },
 	};
@@ -748,6 +757,11 @@ const helloFrame = (): ServerFrame => {
 
 /** 全量重放（斜杠命令 / 树导航 / 压缩后：让所有端与会话文件对齐） */
 const resyncAll = () => broadcast(helloFrame());
+
+const workspaceView = (workspace: TurnWorkspace) => {
+	const { mediaDeliveries: _media, ...view } = workspace;
+	return { ...view, revisions: workspace.revisions.map(({ text: _text, ...revision }) => revision) };
+};
 
 /** 会话树条目是否为开场白 */
 const isGreetingTreeEntry = (e: Record<string, unknown>): boolean => {
@@ -859,9 +873,7 @@ const hostSwitchGreeting = async (rawArg: string): Promise<void> => {
 			if (result.cancelled) return;
 		} else {
 			// 树根开场白：resetLeaf，新开场白与旧的并列 sibling，当前只显示新的
-			sm.resetLeaf();
-			const ctx = sm.buildSessionContext();
-			session.agent.state.messages = ctx.messages;
+			session.setLeaf(null);
 		}
 	}
 
@@ -898,7 +910,7 @@ const regenerateSwipe = async (): Promise<void> => {
 	// 世界状态/历史均为 f(分支)（R3/R4），无需旧的 navigateTree 恢复舞蹈——
 	// 废弃分支上的场记快照天然不在新分支上，账本不会泄漏（8/02 A 雷的结构性解法）。
 	if (sm.getLeafId() !== userId) {
-		sm.branch(userId);
+		session.setLeaf(userId);
 	}
 	// 展示层立刻去掉旧回复（只显示到 user）
 	resyncAll();
@@ -1070,9 +1082,9 @@ const sideEntryOf = (): { model: StageModelLike; thinking?: string; label?: stri
 		const agent = loadAgentConfig(cwd).config;
 		const entry = findModelEntry(agent.providers?.[sel.provider]?.models, sel.entry);
 		if (!entry) return warn("不在连接配置里");
-		const m = session.modelRegistry.find(sel.provider, entry.id);
+		const m = session.modelRuntime.getModel(sel.provider, entry.id);
 		if (!m) return warn(`模型 ${entry.id} 不在可用清单`);
-		if (!session.modelRegistry.hasConfiguredAuth(m)) return warn("缺少 API key");
+		if (!session.modelRuntime.hasConfiguredAuth(m.provider)) return warn("缺少 API key");
 		if (warnedSideEntry) warnedSideEntry = "";
 		const thinking = thinkingLevelOfEntry(agent, sel.provider, sel.entry);
 		return { model: m as never, ...(thinking ? { thinking } : {}), label: sel.entry };
@@ -1093,17 +1105,11 @@ const sideTextOnce = async (
 	opts?: { maxTokens?: number; reasoning?: string; signal?: AbortSignal },
 ): Promise<string | { error: string }> => {
 	if (!model) return { error: "无可用模型" };
-	let auth: { apiKey?: string; headers?: Record<string, string> } = {};
 	try {
-		auth = (await session.modelRegistry.getApiKeyAndHeaders(model as never)) as typeof auth;
-	} catch (e) {
-		return { error: e instanceof Error ? e.message : String(e) };
-	}
-	try {
-		const s = (streamSimple as unknown as StageStreamFn)(
-			model as unknown as StageModelLike,
+		const s = session.modelRuntime.streamSimple(
+			model as never,
 			{ systemPrompt, messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }] },
-			{ apiKey: auth.apiKey, headers: auth.headers, maxTokens: opts?.maxTokens ?? 4096, reasoning: opts?.reasoning ?? "off", signal: opts?.signal },
+			{ maxTokens: opts?.maxTokens ?? 4096, reasoning: (opts?.reasoning ?? "off") as never, signal: opts?.signal },
 		);
 		let final: AssistantMsgLike | null = null;
 		for await (const e of s) {
@@ -1210,7 +1216,7 @@ const bindSession = async () => {
 		uiContext: uiContext as any,
 		mode: "rpc",
 		commandContextActions: {
-			waitForIdle: () => session.agent.waitForIdle(),
+			waitForIdle: () => session.waitForIdle(),
 			newSession: (options: unknown) => runtime.newSession(options as never),
 			fork: async (entryId: string, options: unknown) => {
 				const result = await runtime.fork(entryId, options as never);
@@ -1230,6 +1236,8 @@ const bindSession = async () => {
 
 	unsubscribe?.();
 	unsubscribe = session.subscribe((event) => {
+		// RP 增量与落树由拍级回调交付；原生工具起止事件供过程栏和资产缓存失效使用。
+		if (stage?.isStreaming && event.type !== "tool_execution_start" && event.type !== "tool_execution_end") return;
 		switch (event.type) {
 			case "agent_start":
 				broadcast({ type: "agent", state: "start" });
@@ -1379,9 +1387,9 @@ const restHost: RestHost = {
 	isStreaming: () => session.isStreaming,
 	listModels: () => ({
 		current: currentModelInfo(),
-		models: session.modelRegistry.getAvailable().map((m) => ({
+		models: session.modelRuntime.getAvailableSnapshot().map((m) => ({
 			provider: m.provider,
-			providerName: session.modelRegistry.getProviderDisplayName(m.provider),
+			providerName: session.modelRuntime.getProvider(m.provider)?.name ?? m.provider,
 			id: m.id,
 			name: m.name || m.id,
 			reasoning: m.reasoning === true,
@@ -1391,7 +1399,7 @@ const restHost: RestHost = {
 		})),
 	}),
 	async selectModel(provider, id) {
-		const m = session.modelRegistry.find(provider, id);
+		const m = session.modelRuntime.getModel(provider, id);
 		if (!m) throw new Error(`模型不存在：${provider}/${id}`);
 		await session.setModel(m);
 		const current = currentModelInfo();
@@ -1409,19 +1417,18 @@ const restHost: RestHost = {
 	},
 	authProviders() {
 		const counts = new Map<string, number>();
-		for (const m of session.modelRegistry.getAll()) {
+		for (const m of session.modelRuntime.getModels()) {
 			counts.set(m.provider, (counts.get(m.provider) ?? 0) + 1);
 		}
 		// 当前会话模型所属 provider 置顶，便于在「现有渠道」里看见
 		const currentProvider = session.model?.provider;
 		return [...counts.entries()]
 			.map(([provider, modelCount]) => {
-				const status = session.modelRegistry.getProviderAuthStatus(provider);
-				// pi：环境变量渠道 configured 恒 false，但 hasAuth 为真且模型可用
-				const ready = session.modelRegistry.authStorage.hasAuth(provider);
+				const status = session.modelRuntime.getProviderAuthStatus(provider);
+				const ready = session.modelRuntime.hasConfiguredAuth(provider);
 				return {
 					provider,
-					displayName: session.modelRegistry.getProviderDisplayName(provider),
+					displayName: session.modelRuntime.getProvider(provider)?.name ?? provider,
 					configured: status.configured,
 					ready,
 					...(ready || status.configured
@@ -1443,18 +1450,18 @@ const restHost: RestHost = {
 				return Number(b.ready) - Number(a.ready) || Number(b.configured) - Number(a.configured) || a.displayName.localeCompare(b.displayName);
 			});
 	},
-	setAuthKey(provider, key) {
-		session.modelRegistry.authStorage.set(provider, { type: "api_key", key });
+	async setAuthKey(provider, key) {
+		await session.modelRuntime.login(provider, "api_key", { prompt: async () => key, notify: () => {} });
 	},
-	removeAuth(provider) {
-		session.modelRegistry.authStorage.remove(provider);
+	async removeAuth(provider) {
+		await session.modelRuntime.logout(provider);
 	},
 	agentDir: () => getAgentDir(),
 	providerSnapshot(provider) {
-		const all = session.modelRegistry.getAll().filter((m) => m.provider === provider);
+		const all = session.modelRuntime.getModels().filter((m) => m.provider === provider);
 		if (all.length === 0) return null;
 		const sample = all[0] as { baseUrl?: string; api?: string; id: string; name?: string; reasoning?: boolean; contextWindow?: number; maxTokens?: number };
-		const status = session.modelRegistry.getProviderAuthStatus(provider);
+		const status = session.modelRuntime.getProviderAuthStatus(provider);
 		const envKey =
 			status.source === "environment" && status.label
 				? status.label
@@ -1476,7 +1483,9 @@ const restHost: RestHost = {
 			})),
 		};
 	},
-	refreshModels: () => session.modelRegistry.refresh(),
+	async refreshModels() {
+		await session.modelRuntime.refresh({ allowNetwork: false });
+	},
 	async reloadSession() {
 		await session.reload();
 		refreshNamesFromConfig();
@@ -1817,10 +1826,10 @@ try {
 	if (loaded.exists && Object.keys(loaded.config.providers).length > 0) {
 		const cfg = normalizeAgentConfig(loaded.config);
 		syncAgentConfigToRuntime(cwd, getAgentDir(), cfg);
-		session.modelRegistry.refresh();
+		await session.modelRuntime.refresh({ allowNetwork: false });
 		const cur = session.model;
 		if (cur) {
-			const next = session.modelRegistry.find(cur.provider, cur.id);
+			const next = session.modelRuntime.getModel(cur.provider, cur.id);
 			if (next) await session.setModel(next);
 			const p = cfg.providers[cur.provider];
 			const entry = Array.isArray(p?.models) ? p.models.find((m) => String(m.id) === cur.id) : undefined;
@@ -1896,6 +1905,7 @@ const storyBridge: StoryBridge = {
 	// 当前剧情会话 + 当前卡**路径**（scopeId 按路径 hash，只给卡名会落到另一个空作用域）。
 	memoryScope: () => memoryScopeFor(),
 	// 世界线视图（M-D5 助手侧 worldline_list 工具用）：从剧情会话树拉存档点
+	memoryBranchIds: branchNodeIds,
 	worldlineSaves: () => flattenWorldlineSaves(restHost.worldlineView()),
 	// 面板（M-D5 助手侧 panel_* 工具用）：当前剧情会话的面板读写
 	storyPanels: () => ({
@@ -2402,13 +2412,17 @@ const httpServer = createServer((req, res) => {
 
 const wss = new WebSocketServer({ server: httpServer, path: "/ws" });
 
-// ---------- 台上引擎（PLAN-RP-HARNESS R1：叙事回合走自建循环，pi 只留幕后） ----------
+// ---------- 台上领域逻辑（生成/工具循环归 pi，RP 扩展负责装配与收尾） ----------
 
-const stage = new StageEngine({
+stage = new StageEngine({
 	cwd,
-	getSessionManager: () => session.sessionManager as never,
+	getSession: () => session as never,
 	getModel: () => session.model as never,
-	getAuth: async (m) => session.modelRegistry.getApiKeyAndHeaders(m as never),
+	getAuth: async (m) => {
+		const result = await session.modelRuntime.getAuth(m as never);
+		if (!result) throw new Error(`模型 ${m.provider}/${m.id} 没有可用鉴权`);
+		return result.auth;
+	},
 	// 旁路条目（场记/压缩用）：sideEntryOf 是唯一主人，定义与语义见 bindSession 前
 	getSideEntry: sideEntryOf,
 	getThinking: () => session.thinkingLevel,
@@ -2416,15 +2430,8 @@ const stage = new StageEngine({
 	getStateFile: (sessionId) => stateFileOf(sessionId),
 	// memory_search 工具：剧情库 + 外部资料库合并取前 6（与扩展侧同一套语义）
 	// 分支隔离与被动召回同源——模型主动检索也不该捞到重roll 掉的那些拍。
-	searchMemory: async (sessionId, query) => {
-		const scope = memoryScopeFor(sessionId);
-		const ids = branchNodeIds();
-		const [narrative, external] = await Promise.all([
-			memorySearch(cwd, scope, "narrative", query, undefined, ids).catch(() => []),
-			memorySearch(cwd, scope, "external", query, undefined, ids).catch(() => []),
-		]);
-		return [...narrative, ...external].sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 6);
-	},
+	searchMemory: (sessionId, query) => memorySearchReport(cwd, memoryScopeFor(sessionId), query, branchNodeIds()),
+	readMemory: (sessionId, ref) => memoryReadChunk(cwd, memoryScopeFor(sessionId), ref, branchNodeIds()),
 	// 【剧情记忆】每拍被动召回：与 memory_search 同一套 scope 绑定，但走 memoryRecallForTurn——
 	// 那里管着设置面板的「每轮自动检索并注入模型」开关（关 = 返回空 = 不出块）。
 	recallMemory: (sessionId, query) =>
@@ -2436,7 +2443,7 @@ const stage = new StageEngine({
 			...(input.title ? { title: input.title } : {}),
 		}),
 	listMemory: (sessionId, storeId) =>
-		memoryListChunks(cwd, memoryScopeFor(sessionId), storeId),
+		memoryListChunks(cwd, memoryScopeFor(sessionId), storeId, branchNodeIds()),
 	deleteMemory: (sessionId, storeId, id) =>
 		memoryDeleteChunk(cwd, memoryScopeFor(sessionId), storeId, id),
 	// 面板读写（M-D5）：按 session 绑定 artifacts 文件，注入后台上可通过 panel_write/read/close 操控面板
@@ -2614,12 +2621,14 @@ const stage = new StageEngine({
 		updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch);
 		void restHost.softRefreshConfig();
 	},
-	streamFn: streamSimple as unknown as StageStreamFn,
+	sideStreamFn: ((model, context, options) => session.modelRuntime.streamSimple(model as never, context as never, options as never)) as StageStreamFn,
 	events: {
 		onTurnStart: () => broadcast({ type: "agent", state: "start" }),
 		onDelta: (kind, delta, draft, reset) =>
 			broadcast({ type: "delta", kind, delta, ...(draft ? { draft: true } : {}), ...(reset ? { reset: true } : {}) }),
 		onDraftResync: (segments) => broadcast({ type: "draft_resync", segments }),
+		onWorkspace: (workspace) => broadcast({ type: "draft_workspace", workspace: workspaceView(workspace), streaming: stage.isStreaming }),
+		onReplyRevised: () => resyncAll(),
 		onStreamClear: () => broadcast({ type: "stream", state: "clear" }),
 		onNotify: (level, text) => broadcast({ type: "notify", level, text }),
 		onActivity: (detail) => broadcast({ type: "activity", activity: { kind: "note", name: "stage", detail } }),
@@ -2627,24 +2636,20 @@ const stage = new StageEngine({
 			broadcast({ type: "agent", state: "end" });
 			// reroll/编辑输入后无产出（aborted 无落树 / error）：回退到 reroll 前的旧叶——
 			// 不许留下「只有 user 没有回复」的空拍（8/05：reroll 链上停止，前版本全消失）。
-			if (rerollFallbackLeaf && (!info.entryId || info.error)) {
+			if (rerollFallbackLeaf && !info.revisedEntryId && (!info.entryId || info.error)) {
 				const sm = session.sessionManager;
 				if (sm.getLeafId() !== rerollFallbackLeaf) {
 					try {
-						sm.branch(rerollFallbackLeaf);
+						session.setLeaf(rerollFallbackLeaf);
 					} catch {
 						// 回退失败不致命：保持当前状态
 					}
 				}
 			}
 			rerollFallbackLeaf = null;
-			// 传统命令路径（/compact /rewind 等）仍读 AgentSession 内存副本：引擎写树后对齐一次
-			try {
-				session.agent.state.messages = session.sessionManager.buildSessionContext().messages;
-			} catch {
-				// 对齐失败不影响本拍；下次树导航会重建
-			}
 			resyncAll();
+			const stats = safeStats();
+			if (stats) broadcast({ type: "stats", stats });
 			// 向量记忆入库：只在真落了新正文时（中断/错误拍不入）
 			if (!info.entryId || info.error || info.aborted) return;
 			// 树坐标在进异步块前同步取（同上：随后的重roll 会挪叶）。这条路径已有 info.entryId
@@ -2675,6 +2680,7 @@ const stage = new StageEngine({
 						cwd,
 						memoryScopeFor(),
 						lastText,
+						{ nodeId: memNodeId, branchIds: memBranchIds },
 					);
 					if (mem.error) {
 						broadcast({ type: "notify", level: "warning", text: `向量记忆：入库失败 · ${mem.error}` });
@@ -2757,13 +2763,13 @@ const handlePrompt = async (text: string) => {
 		const userEntry = branch.find((e) => e.id === userId);
 		const parentId = userEntry?.parentId;
 		if (parentId && parentId !== userId) {
-			if (sm.getLeafId() !== parentId) sm.branch(parentId);
+			if (sm.getLeafId() !== parentId) session.setLeaf(parentId);
 		} else if (sm.getLeafId() !== userId) {
 			// 旧输入是根（无 parent）：无法替换，退而保留输入本身
-			sm.branch(userId);
+			session.setLeaf(userId);
 		}
 		// 追加编辑后的用户消息
-		sm.appendMessage({ role: "user", content: [{ type: "text", text: rerollArgMatch[1].trim() }], timestamp: Date.now() });
+		session.appendMessage({ role: "user", content: [{ type: "text", text: rerollArgMatch[1].trim() }], timestamp: Date.now() });
 		sm.flush();
 		resyncAll();
 		await stage.regenerate();
@@ -2803,7 +2809,7 @@ const handlePrompt = async (text: string) => {
 	}
 
 	// 2026-07-18 合流：主框一律进剧情侧；// 与整段括号不再硬改道。
-	// 2026-08-02 起叙事回合走台上引擎（PLAN-RP-HARNESS R1）；斜杠命令仍经 pi 会话执行。
+	// 台上管理拍级输入队列；叙事生成与斜杠命令都经 pi 会话执行。
 
 	const isCommand = trimmed.startsWith("/");
 	if (!isCommand) {
@@ -3107,7 +3113,7 @@ wss.on("connection", (ws, req) => {
 	}
 	clients.add(ws);
 	ws.send(JSON.stringify(helloFrame()));
-	if (storyStreaming()) ws.send(JSON.stringify({ type: "agent", state: "start" } satisfies ServerFrame));
+	// hello already restores the active beat and its stream; another start would erase that snapshot.
 	// 助手面板：连接即对齐（busy 随帧携带，断线重连恢复生成中状态）
 	ws.send(JSON.stringify(assistantHelloFrame()));
 	// 在线更新状态：新连接即对齐（有新版/就绪时主页 chip 才能亮）
@@ -3125,7 +3131,22 @@ wss.on("connection", (ws, req) => {
 				return;
 			}
 			try {
-				switch (frame.type) {
+					switch (frame.type) {
+						case "draft_history": {
+							const draft = stage.getWorkspaces().find((d) => d.id === frame.id);
+							if (!draft) throw new Error("当前分支没有这份稿件。");
+							ws.send(JSON.stringify({ type: "draft_history", id: draft.id, revisions: draft.revisions } satisfies ServerFrame));
+							break;
+						}
+						case "draft_restore": {
+							if (stage.getWorkspace()?.id !== frame.id) throw new Error("只能恢复当前拍的稿件版本。");
+						const restored = stage.restoreDraft(frame.id, frame.version, frame.expectedVersion);
+						if (restored.entryId) {
+							resyncAll();
+							}
+							broadcast({ type: "draft_workspace", workspace: workspaceView(restored), streaming: stage.isStreaming });
+							break;
+						}
 					case "prompt": {
 						const text = String(frame.text ?? "").trim();
 						if (text) await handlePrompt(text);
@@ -3135,7 +3156,7 @@ wss.on("connection", (ws, req) => {
 						// 强制停止：按下即收敛 UI/选择卡，再撕掉本拍（台上引擎 + 旧循环 + 委托中的助手）
 						for (const id of [...pendingChoices.keys()]) settleChoice(id, { stop: true });
 						const wasStreaming = storyStreaming() || (assistantHost?.isStreaming() ?? false);
-						if (session.isStreaming) broadcast({ type: "agent", state: "end" });
+						if (session.isStreaming && !stage.isStreaming) broadcast({ type: "agent", state: "end" });
 						if (assistantHost?.isStreaming()) broadcast({ type: "assistant_state", state: "end" });
 						stage.abort(); // 引擎自会以 aborted 谢幕（半拍正文保留）
 						void session.abort().catch((err) => {
@@ -3211,7 +3232,7 @@ wss.on("connection", (ws, req) => {
 							const previousSessionFile = session.sessionFile;
 							// 按 pi 的 teardownCurrent 同款收尾旧会话（session_shutdown → 扩展收尾 → dispose），
 							// 不能只丢引用：roleplay.ts 在 shutdown 事件里落盘收尾。
-							await session.dispose();
+							await runtime.dispose();
 							runtime = await createAgentSessionRuntime(createRuntime, {
 								cwd,
 								agentDir: getAgentDir(),
@@ -3256,7 +3277,7 @@ wss.on("connection", (ws, req) => {
 							const previousSessionFile = session.sessionFile;
 							// 按 pi 的 teardownCurrent 同款收尾旧会话（session_shutdown → 扩展收尾 → dispose），
 							// 不能只丢引用：roleplay.ts 在 shutdown 事件里落盘收尾。
-							await session.dispose();
+							await runtime.dispose();
 							runtime = await createAgentSessionRuntime(createRuntime, {
 								cwd,
 								agentDir: getAgentDir(),
@@ -3432,3 +3453,5 @@ const shutdown = async () => {
 };
 process.on("SIGINT", () => void shutdown());
 process.on("SIGTERM", () => void shutdown());
+import { applyDraftRevisions } from "../src/stage/draft-projection.ts";
+import type { TurnWorkspace } from "../src/stage/workspace.ts";

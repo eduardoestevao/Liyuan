@@ -18,6 +18,8 @@
  */
 import { EventEmitter } from "events";
 const ESC = "\x1b";
+const DEFAULT_SEQUENCE_TIMEOUT_MS = 50;
+const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
 const BRACKETED_PASTE_START = "\x1b[200~";
 const BRACKETED_PASTE_END = "\x1b[201~";
 /**
@@ -227,12 +229,14 @@ export class StdinBuffer extends EventEmitter {
     buffer = "";
     timeout = null;
     timeoutMs;
+    escapeTimeoutMs;
     pasteMode = false;
     pasteBuffer = "";
     pendingKittyPrintableCodepoint;
     constructor(options = {}) {
         super();
-        this.timeoutMs = options.timeout ?? 10;
+        this.timeoutMs = options.timeout ?? DEFAULT_SEQUENCE_TIMEOUT_MS;
+        this.escapeTimeoutMs = options.escapeTimeout ?? DEFAULT_ESCAPE_TIMEOUT_MS;
     }
     process(data) {
         // Clear any pending timeout
@@ -311,12 +315,13 @@ export class StdinBuffer extends EventEmitter {
             this.emitDataSequence(sequence);
         }
         if (this.buffer.length > 0) {
+            const timeoutMs = this.buffer === ESC ? this.escapeTimeoutMs : this.timeoutMs;
             this.timeout = setTimeout(() => {
                 const flushed = this.flush();
                 for (const sequence of flushed) {
                     this.emitDataSequence(sequence);
                 }
-            }, this.timeoutMs);
+            }, timeoutMs);
         }
     }
     emitDataSequence(sequence) {

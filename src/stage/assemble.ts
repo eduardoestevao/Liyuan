@@ -32,7 +32,7 @@ export interface BranchEntryLike {
 	content?: unknown;
 	data?: unknown;
 	display?: boolean;
-	message?: { role?: string; content?: unknown; stopReason?: string };
+	message?: { role?: string; content?: unknown; stopReason?: string; details?: Record<string, unknown> };
 }
 
 /** 装配产物里的一条历史消息（引擎再转 @liyuan/ai Message） */
@@ -138,6 +138,7 @@ export function activeSummary(branch: BranchEntryLike[]): { summary: string; cut
  * M4：有 rp-summary 时，被覆盖的早期条目整段不进历史，改由 summary 字段回读为【前情提要】。
  */
 export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRule[] = []): RebuiltHistory {
+	branch = applyDraftRevisions(branch, { omitEditRequests: true });
 	const active = activeSummary(branch);
 	const live = active ? branch.slice(active.cut) : branch;
 
@@ -147,6 +148,17 @@ export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRu
 		if (e.type === "message" && e.message) {
 			const r = e.message.role;
 			if (r === "user" || r === "assistant") {
+				// A choice answered during the beat belongs to that beat's user input. Dropping
+				// it makes the resulting continuation look like an unrequested model decision.
+				const choices = e.message.details?.rpChoices;
+				if (r === "assistant" && Array.isArray(choices)) {
+					const answers = choices.filter((c) => typeof c?.answer === "string").map((c) => c.answer);
+					for (let i = stream.length - 1; answers.length && i >= 0; i--) {
+						if (stream[i]._role !== "user") continue;
+						stream[i].content = [textOf(stream[i].content), ...answers].join("\n\n");
+						break;
+					}
+				}
 				stream.push({ role: r, content: e.message.content, _role: r });
 			}
 			continue;
@@ -511,3 +523,4 @@ export function detectsLanguageMismatch(text: string, language: string): boolean
 	const cjk = letters.filter((ch) => /\p{Script=Han}/u.test(ch)).length;
 	return cjk / letters.length < 0.3;
 }
+import { applyDraftRevisions } from "./draft-projection.ts";

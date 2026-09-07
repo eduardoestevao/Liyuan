@@ -264,7 +264,7 @@ export function locateEdit(text: string, old: string): { ok: true; at: EditLocat
 		let i = hay.indexOf(needle);
 		while (i !== -1 && hits.length <= 8) {
 			hits.push(i);
-			i = hay.indexOf(needle, i + needle.length);
+			i = hay.indexOf(needle, i + 1);
 		}
 		return hits;
 	};
@@ -388,11 +388,11 @@ export function applyDraftEdits(text: string, edits: DraftEditItem[]): DraftEdit
 	return { ok: true, text: out, details };
 }
 
-/** 命中处的上下文引用（±pad 字，空白压平）——draft_search 与验收报告共用 */
+/** Exact source substring; no ellipses or whitespace normalization inside an editable quote. */
 const ctxQuote = (text: string, idx: number, len: number, pad = 8): string => {
 	const from = Math.max(0, idx - pad);
 	const to = Math.min(text.length, idx + len + pad);
-	return `${from > 0 ? "…" : ""}${text.slice(from, to).replace(/\s+/g, " ")}${to < text.length ? "…" : ""}`;
+	return text.slice(from, to);
 };
 
 /** draft_search：在现稿中定位文字，返回 ±24 字上下文引用（供 draft_edit 取精确原文） */

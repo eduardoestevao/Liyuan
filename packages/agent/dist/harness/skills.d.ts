@@ -16,8 +16,9 @@ export declare function formatSkillInvocation(skill: Skill, additionalInstructio
 /**
  * Load skills from one or more directories.
  *
- * Traverses directories recursively, loads `SKILL.md` files, loads direct root `.md` files as skills, honors ignore files,
- * and returns diagnostics for invalid skill files. Missing input directories are skipped.
+ * Traverses directories recursively, loads `SKILL.md` files, loads direct root `.md` files with skill
+ * frontmatter, honors ignore files, and returns diagnostics for invalid declared skill files. Missing input
+ * directories are skipped.
  */
 export declare function loadSkills(env: ExecutionEnv, dirs: string | string[]): Promise<{
     skills: Skill[];

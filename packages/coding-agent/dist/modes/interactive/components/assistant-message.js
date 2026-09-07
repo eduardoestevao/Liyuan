@@ -1,5 +1,6 @@
 import { Container, Markdown, Spacer, Text } from "@liyuan/tui";
 import { getMarkdownTheme, theme } from "../theme/theme.js";
+import { createMarkdownTransform } from "./markdown-transform.js";
 const OSC133_ZONE_START = "\x1b]133;A\x07";
 const OSC133_ZONE_END = "\x1b]133;B\x07";
 const OSC133_ZONE_FINAL = "\x1b]133;C\x07";
@@ -12,14 +13,17 @@ export class AssistantMessageComponent extends Container {
     markdownTheme;
     hiddenThinkingLabel;
     outputPad;
+    markdownTransformers;
     lastMessage;
     hasToolCalls = false;
-    constructor(message, hideThinkingBlock = false, markdownTheme = getMarkdownTheme(), hiddenThinkingLabel = "Thinking...", outputPad = 1) {
+    isStreaming = false;
+    constructor(message, hideThinkingBlock = false, markdownTheme = getMarkdownTheme(), hiddenThinkingLabel = "Thinking...", outputPad = 1, markdownTransformers = []) {
         super();
         this.hideThinkingBlock = hideThinkingBlock;
         this.markdownTheme = markdownTheme;
         this.hiddenThinkingLabel = hiddenThinkingLabel;
         this.outputPad = outputPad;
+        this.markdownTransformers = markdownTransformers;
         // Container for text/thinking content
         this.contentContainer = new Container();
         this.addChild(this.contentContainer);
@@ -60,8 +64,9 @@ export class AssistantMessageComponent extends Container {
         lines[lines.length - 1] = OSC133_ZONE_END + OSC133_ZONE_FINAL + lines[lines.length - 1];
         return lines;
     }
-    updateContent(message) {
+    updateContent(message, isStreaming = this.isStreaming) {
         this.lastMessage = message;
+        this.isStreaming = isStreaming;
         // Clear content container
         this.contentContainer.clear();
         const hasVisibleContent = message.content.some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
@@ -74,30 +79,46 @@ export class AssistantMessageComponent extends Container {
             if (content.type === "text" && content.text.trim()) {
                 // Assistant text messages with no background - trim the text
                 // Set paddingY=0 to avoid extra spacing before tool executions
-                this.contentContainer.addChild(new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme));
+                this.contentContainer.addChild(new Markdown(content.text.trim(), this.outputPad, 0, this.markdownTheme, undefined, {
+                    transform: createMarkdownTransform("assistant", this.isStreaming, this.markdownTransformers),
+                }));
             }
-            else if (content.type === "thinking" && content.thinking.trim()) {
+            else if (content.type === "thinking") {
+                const thinkingBlocks = [];
+                for (; i < message.content.length; i++) {
+                    const thinkingContent = message.content[i];
+                    if (thinkingContent.type !== "thinking") {
+                        break;
+                    }
+                    const thinking = thinkingContent.thinking.trim();
+                    if (thinking) {
+                        thinkingBlocks.push(thinking);
+                    }
+                }
+                i--;
+                if (thinkingBlocks.length === 0) {
+                    continue;
+                }
                 // Add spacing only when another visible assistant content block follows.
                 // This avoids a superfluous blank line before separately-rendered tool execution blocks.
                 const hasVisibleContentAfter = message.content
                     .slice(i + 1)
                     .some((c) => (c.type === "text" && c.text.trim()) || (c.type === "thinking" && c.thinking.trim()));
                 if (this.hideThinkingBlock) {
-                    // Show static thinking label when hidden
+                    // Show one static label for each run of thinking blocks when hidden.
                     this.contentContainer.addChild(new Text(theme.italic(theme.fg("thinkingText", this.hiddenThinkingLabel)), this.outputPad, 0));
-                    if (hasVisibleContentAfter) {
-                        this.contentContainer.addChild(new Spacer(1));
-                    }
                 }
                 else {
-                    // Thinking traces in thinkingText color, italic
-                    this.contentContainer.addChild(new Markdown(content.thinking.trim(), this.outputPad, 0, this.markdownTheme, {
+                    // Render each run of thinking blocks as one Markdown section.
+                    this.contentContainer.addChild(new Markdown(thinkingBlocks.join("\n\n"), this.outputPad, 0, this.markdownTheme, {
                         color: (text) => theme.fg("thinkingText", text),
                         italic: true,
+                    }, {
+                        transform: createMarkdownTransform("assistant-thinking", this.isStreaming, this.markdownTransformers),
                     }));
-                    if (hasVisibleContentAfter) {
-                        this.contentContainer.addChild(new Spacer(1));
-                    }
+                }
+                if (hasVisibleContentAfter) {
+                    this.contentContainer.addChild(new Spacer(1));
                 }
             }
         }
@@ -108,7 +129,7 @@ export class AssistantMessageComponent extends Container {
         this.hasToolCalls = hasToolCalls;
         if (message.stopReason === "length") {
             this.contentContainer.addChild(new Spacer(1));
-            this.contentContainer.addChild(new Text(theme.fg("error", "Error: Model stopped because it reached the maximum output token limit. The response may be incomplete."), this.outputPad, 0));
+            this.contentContainer.addChild(new Text(theme.fg("error", "Response was truncated before completion."), this.outputPad, 0));
         }
         else if (!hasToolCalls) {
             if (message.stopReason === "aborted") {

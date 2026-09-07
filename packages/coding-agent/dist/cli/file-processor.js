@@ -7,6 +7,7 @@ import { resolve } from "path";
 import { resolveReadPath } from "../core/tools/path-utils.js";
 import { processImage } from "../utils/image-process.js";
 import { detectSupportedImageMimeTypeFromFile } from "../utils/mime.js";
+import { stripBom } from "../utils/text.js";
 /** Process @file arguments into text content and image attachments */
 export async function processFileArguments(fileArgs, options) {
     const autoResizeImages = options?.autoResizeImages ?? true;
@@ -55,7 +56,7 @@ export async function processFileArguments(fileArgs, options) {
         else {
             // Handle text file
             try {
-                const content = await readFile(absolutePath, "utf-8");
+                const content = stripBom(await readFile(absolutePath, "utf-8"));
                 text += `<file name="${absolutePath}">\n${content}\n</file>\n`;
             }
             catch (error) {

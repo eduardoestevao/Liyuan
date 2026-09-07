@@ -4,9 +4,9 @@
  * When navigating to a different point in the session tree, this generates
  * a summary of the branch being left so context isn't lost.
  */
-import { completeSimple } from "@liyuan/ai/compat";
+import { contentText } from "@liyuan/ai";
 import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage, } from "../messages.js";
-import { estimateTokens } from "./compaction.js";
+import { completeSummarization, estimateTokens, getSummarizationFailure } from "./compaction.js";
 import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, SUMMARIZATION_SYSTEM_PROMPT, serializeConversation, } from "./utils.js";
 // ============================================================================
 // Entry Collection
@@ -185,7 +185,7 @@ Keep each section concise. Preserve exact file paths, function names, and error 
  * @param options - Generation options
  */
 export async function generateBranchSummary(entries, options) {
-    const { model, apiKey, headers, env, signal, customInstructions, replaceInstructions, reserveTokens = 16384, streamFn, } = options;
+    const { model, apiKey, headers, env, signal, customInstructions, replaceInstructions, reserveTokens = 16384, streamFn, retry, callbacks, } = options;
     // Token budget = context window minus reserved space for prompt + response
     const contextWindow = model.contextWindow || 128000;
     const tokenBudget = contextWindow - reserveTokens;
@@ -218,23 +218,23 @@ export async function generateBranchSummary(entries, options) {
     ];
     // Call LLM for summarization. Prefer the session stream function so SDK
     // request behavior (timeouts, retries, attribution headers) stays consistent
-    // without running through agent state/events.
+    // without running through agent state/events. Retried via completeSummarization
+    // so transient stream drops reuse the configured retry policy.
     const context = { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages };
     const requestOptions = { apiKey, headers, env, signal, maxTokens: 2048 };
-    const response = streamFn
-        ? await (await streamFn(model, context, requestOptions)).result()
-        : await completeSimple(model, context, requestOptions);
+    const response = await completeSummarization(model, context, requestOptions, streamFn, retry, callbacks);
     // Check if aborted or errored
     if (response.stopReason === "aborted") {
         return { aborted: true };
     }
-    if (response.stopReason === "error") {
-        return { error: response.errorMessage || "Summarization failed" };
+    const failure = getSummarizationFailure(response, "Branch summarization");
+    if (failure) {
+        return { error: failure };
     }
-    let summary = response.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+    if (response.content.some((block) => block.type === "toolCall")) {
+        return { error: "Branch summarization attempted to call a tool" };
+    }
+    let summary = contentText(response.content);
     // Prepend preamble to provide context about the branch summary
     summary = BRANCH_SUMMARY_PREAMBLE + summary;
     // Compute file lists and append to summary
@@ -242,6 +242,7 @@ export async function generateBranchSummary(entries, options) {
     summary += formatFileOperations(readFiles, modifiedFiles);
     return {
         summary: summary || "No summary generated",
+        usage: response.usage,
         readFiles,
         modifiedFiles,
     };

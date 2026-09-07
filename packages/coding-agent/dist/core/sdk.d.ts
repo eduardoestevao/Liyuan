@@ -1,22 +1,19 @@
 import { type ThinkingLevel } from "@liyuan/agent-core";
 import { type Model } from "@liyuan/ai/compat";
 import { AgentSession } from "./agent-session.ts";
-import { AuthStorage } from "./auth-storage.ts";
 import type { LoadExtensionsResult, SessionStartEvent, ToolDefinition } from "./extensions/index.ts";
-import { ModelRegistry } from "./model-registry.ts";
+import { ModelRuntime } from "./model-runtime.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
 import { SessionManager } from "./session-manager.ts";
 import { SettingsManager } from "./settings-manager.ts";
-import { createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, withFileMutationQueue } from "./tools/index.ts";
+import { createBashTool, createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, withFileMutationQueue } from "./tools/index.ts";
 export interface CreateAgentSessionOptions {
     /** Working directory for project-local discovery. Default: process.cwd() */
     cwd?: string;
     /** Global config directory. Default: ~/.pi/agent */
     agentDir?: string;
-    /** Auth storage for credentials. Default: AuthStorage.create(agentDir/auth.json) */
-    authStorage?: AuthStorage;
-    /** Model registry. Default: ModelRegistry.create(authStorage, agentDir/models.json) */
-    modelRegistry?: ModelRegistry;
+    /** Canonical model/auth runtime. Defaults to a runtime using agentDir/auth.json and models.json. */
+    modelRuntime?: ModelRuntime;
     /** Model to use. Default: from settings, else first available */
     model?: Model<any>;
     /** Thinking level. Default: from settings, else 'medium' (clamped to model capabilities) */
@@ -37,9 +34,11 @@ export interface CreateAgentSessionOptions {
     /**
      * Optional allowlist of tool names.
      *
-     * When omitted, pi enables the default built-in tools (read, bash, edit, write)
-     * and leaves extension/custom tools enabled unless `noTools` changes that default.
-     * When provided, only the listed tool names are enabled.
+     * When omitted, pi uses the `defaultTools` setting for the initial built-in
+     * selection when configured. Otherwise it enables the default built-in tools
+     * (read, bash, edit, write). Extension/custom tools remain enabled unless
+     * `noTools` changes that default. When provided, only the listed tool names are
+     * enabled.
      */
     tools?: string[];
     /** Optional denylist of tool names to disable. Applies after `tools` when both are provided. */
@@ -65,11 +64,11 @@ export interface CreateAgentSessionResult {
     modelFallbackMessage?: string;
 }
 export * from "./agent-session-runtime.ts";
-export type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionFactory, SlashCommandInfo, SlashCommandSource, ToolDefinition, } from "./extensions/index.ts";
+export type { ExtensionAPI, ExtensionCommandContext, ExtensionContext, ExtensionFactory, InlineExtension, SlashCommandInfo, SlashCommandSource, ToolDefinition, } from "./extensions/index.ts";
 export type { PromptTemplate } from "./prompt-templates.ts";
 export type { Skill } from "./skills.ts";
 export type { Tool } from "./tools/index.ts";
-export { withFileMutationQueue, createCodingTools, createReadOnlyTools, createReadTool, createBashTool, createEditTool, createWriteTool, createGrepTool, createFindTool, createLsTool, };
+export { withFileMutationQueue, createCodingTools, createReadOnlyTools, createReadTool, createBashTool, createEditTool, createWriteTool, createGrepTool, createFindTool, createLsTool, createPowerShellTool, };
 /**
  * Create an AgentSession with the specified options.
  *

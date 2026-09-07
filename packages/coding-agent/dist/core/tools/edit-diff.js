@@ -4,6 +4,7 @@
 import * as Diff from "diff";
 import { constants } from "fs";
 import { access, readFile } from "fs/promises";
+import { splitBom } from "../../utils/text.js";
 import { resolveToCwd } from "./path-utils.js";
 export function detectLineEnding(content) {
     const crlfIdx = content.indexOf("\r\n");
@@ -172,10 +173,6 @@ export function fuzzyFindText(content, oldText) {
         usedFuzzyMatch: true,
         contentForReplacement: fuzzyContent,
     };
-}
-/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
-export function stripBom(content) {
-    return content.startsWith("\uFEFF") ? { bom: "\uFEFF", text: content.slice(1) } : { bom: "", text: content };
 }
 function countOccurrences(content, oldText) {
     const fuzzyContent = normalizeForFuzzyMatch(content);
@@ -404,7 +401,7 @@ export async function computeEditsDiff(path, edits, cwd) {
         // Read the file
         const rawContent = await readFile(absolutePath, "utf-8");
         // Strip BOM before matching (LLM won't include invisible BOM in oldText)
-        const { text: content } = stripBom(rawContent);
+        const { text: content } = splitBom(rawContent);
         const normalizedContent = normalizeToLF(content);
         const { baseContent, newContent } = applyEditsToNormalizedContent(normalizedContent, edits, path);
         // Generate the diff

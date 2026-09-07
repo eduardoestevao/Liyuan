@@ -9,6 +9,7 @@ export interface SlashCommandInfo {
 export interface BuiltinSlashCommand {
     name: string;
     description: string;
+    argumentHint?: string;
 }
 export declare const BUILTIN_SLASH_COMMANDS: ReadonlyArray<BuiltinSlashCommand>;
 //# sourceMappingURL=slash-commands.d.ts.map

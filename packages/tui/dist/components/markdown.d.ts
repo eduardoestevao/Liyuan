@@ -45,6 +45,10 @@ export interface MarkdownOptions {
     preserveOrderedListMarkers?: boolean;
     /** Preserve source backslash escapes instead of normalizing escaped punctuation. */
     preserveBackslashEscapes?: boolean;
+    /** Transform source Markdown before parsing, with the exact width available for content. */
+    transform?: (markdown: string, availableWidth: number) => string;
+    /** Render supported LaTeX math expressions as Unicode text (default: true). */
+    renderLatex?: boolean;
 }
 export declare class Markdown implements Component {
     private text;

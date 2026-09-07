@@ -11,6 +11,10 @@ const lsSchema = Type.Object({
     path: Type.Optional(Type.String({ description: "Directory to list (default: current directory)" })),
     limit: Type.Optional(Type.Number({ description: "Maximum number of entries to return (default: 500)" })),
 });
+export const lsToolSystemPromptContribution = {
+    snippet: "List directory contents",
+    guidelines: [],
+};
 const DEFAULT_LIMIT = 500;
 const defaultLsOperations = {
     exists: pathExists,
@@ -57,7 +61,7 @@ export function createLsToolDefinition(cwd, options) {
         name: "ls",
         label: "ls",
         description: `List directory contents. Returns entries sorted alphabetically, with '/' suffix for directories. Includes dotfiles. Output is truncated to ${DEFAULT_LIMIT} entries or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-        promptSnippet: "List directory contents",
+        promptSnippet: lsToolSystemPromptContribution.snippet,
         parameters: lsSchema,
         async execute(_toolCallId, { path, limit }, signal, _onUpdate, _ctx) {
             return new Promise((resolve, reject) => {

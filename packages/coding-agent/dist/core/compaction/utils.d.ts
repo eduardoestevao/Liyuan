@@ -2,7 +2,7 @@
  * Shared utilities for compaction and branch summarization.
  */
 import type { AgentMessage } from "@liyuan/agent-core";
-import type { Message } from "@liyuan/ai";
+import { type Message } from "@liyuan/ai";
 export interface FileOperations {
     read: Set<string>;
     written: Set<string>;

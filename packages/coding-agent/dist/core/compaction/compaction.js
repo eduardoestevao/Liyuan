@@ -4,9 +4,10 @@
  * Pure functions for compaction logic. The session manager handles I/O,
  * and after compaction the session is reloaded.
  */
+import { contentText, retryAssistantCall, uuidv7 } from "@liyuan/ai";
 import { completeSimple } from "@liyuan/ai/compat";
-import { convertToLlm, createBranchSummaryMessage, createCompactionSummaryMessage, createCustomMessage, } from "../messages.js";
-import { buildSessionContext } from "../session-manager.js";
+import { convertToLlm } from "../messages.js";
+import { buildSessionContext, sessionEntryToContextMessages, } from "../session-manager.js";
 import { computeFileLists, createFileOps, extractFileOpsFromMessage, formatFileOperations, SUMMARIZATION_SYSTEM_PROMPT, serializeConversation, } from "./utils.js";
 /**
  * Extract file operations from messages and previous compaction entries.
@@ -42,26 +43,33 @@ function extractFileOperations(messages, entries, prevCompactionIndex) {
  * Extract AgentMessage from an entry if it produces one.
  * Returns undefined for entries that don't contribute to LLM context.
  */
-function getMessageFromEntry(entry) {
-    if (entry.type === "message") {
-        return entry.message;
-    }
-    if (entry.type === "custom_message") {
-        return createCustomMessage(entry.customType, entry.content, entry.display, entry.details, entry.timestamp);
-    }
-    if (entry.type === "branch_summary") {
-        return createBranchSummaryMessage(entry.summary, entry.fromId, entry.timestamp);
-    }
-    if (entry.type === "compaction") {
-        return createCompactionSummaryMessage(entry.summary, entry.tokensBefore, entry.timestamp);
-    }
-    return undefined;
-}
 function getMessageFromEntryForCompaction(entry) {
     if (entry.type === "compaction") {
         return undefined;
     }
-    return getMessageFromEntry(entry);
+    return sessionEntryToContextMessages(entry)[0];
+}
+function combineUsage(first, second) {
+    return {
+        input: first.input + second.input,
+        output: first.output + second.output,
+        cacheRead: first.cacheRead + second.cacheRead,
+        cacheWrite: first.cacheWrite + second.cacheWrite,
+        ...(first.cacheWrite1h !== undefined || second.cacheWrite1h !== undefined
+            ? { cacheWrite1h: (first.cacheWrite1h ?? 0) + (second.cacheWrite1h ?? 0) }
+            : {}),
+        ...(first.reasoning !== undefined || second.reasoning !== undefined
+            ? { reasoning: (first.reasoning ?? 0) + (second.reasoning ?? 0) }
+            : {}),
+        totalTokens: first.totalTokens + second.totalTokens,
+        cost: {
+            input: first.cost.input + second.cost.input,
+            output: first.cost.output + second.cost.output,
+            cacheRead: first.cost.cacheRead + second.cost.cacheRead,
+            cacheWrite: first.cost.cacheWrite + second.cost.cacheWrite,
+            total: first.cost.total + second.cost.total,
+        },
+    };
 }
 export const DEFAULT_COMPACTION_SETTINGS = {
     enabled: true,
@@ -73,7 +81,10 @@ export const DEFAULT_COMPACTION_SETTINGS = {
 // ============================================================================
 /**
  * Context-window occupancy from a turn's usage (prompt side only).
- * Excludes completion output; totalTokens is usually prompt+completion.
+ *
+ * Must NOT include completion `output`: that does not sit in the next prompt's
+ * window the same way, and `usage.totalTokens` is usually prompt+completion.
+ * Prefer input + cacheRead + cacheWrite (= provider prompt_tokens when split).
  */
 export function calculateContextTokens(usage) {
     const input = usage.input || 0;
@@ -82,6 +93,7 @@ export function calculateContextTokens(usage) {
     const promptSide = input + cacheRead + cacheWrite;
     if (promptSide > 0)
         return promptSide;
+    // Fallback when only totalTokens is filled (some proxies)
     const total = usage.totalTokens || 0;
     const output = usage.output || 0;
     if (total > output)
@@ -226,68 +238,67 @@ export function estimateTokens(message) {
     }
     return 0;
 }
+function isCutPointMessage(message) {
+    switch (message.role) {
+        case "user":
+        case "assistant":
+        case "bashExecution":
+        case "custom":
+        case "branchSummary":
+        case "compactionSummary":
+            return true;
+        case "toolResult":
+            return false;
+    }
+    return false;
+}
+function isTurnStartMessage(message) {
+    switch (message.role) {
+        case "user":
+        case "bashExecution":
+        case "custom":
+        case "branchSummary":
+        case "compactionSummary":
+            return true;
+        case "assistant":
+        case "toolResult":
+            return false;
+    }
+    return false;
+}
+function isTurnStartEntry(entry) {
+    if (entry.type === "compaction") {
+        return false;
+    }
+    return sessionEntryToContextMessages(entry).some(isTurnStartMessage);
+}
 /**
- * Find valid cut points: indices of user, assistant, custom, or bashExecution messages.
+ * Find valid cut points: indices of context-visible user-like or assistant messages.
  * Never cut at tool results (they must follow their tool call).
  * When we cut at an assistant message with tool calls, its tool results follow it
  * and will be kept.
- * BashExecutionMessage is treated like a user message (user-initiated context).
  */
 function findValidCutPoints(entries, startIndex, endIndex) {
     const cutPoints = [];
     for (let i = startIndex; i < endIndex; i++) {
         const entry = entries[i];
-        switch (entry.type) {
-            case "message": {
-                const role = entry.message.role;
-                switch (role) {
-                    case "bashExecution":
-                    case "custom":
-                    case "branchSummary":
-                    case "compactionSummary":
-                    case "user":
-                    case "assistant":
-                        cutPoints.push(i);
-                        break;
-                    case "toolResult":
-                        break;
-                }
-                break;
-            }
-            case "thinking_level_change":
-            case "model_change":
-            case "compaction":
-            case "branch_summary":
-            case "custom":
-            case "custom_message":
-            case "label":
-            case "session_info":
-                break;
+        if (entry.type === "compaction") {
+            continue;
         }
-        // branch_summary and custom_message are user-role messages, valid cut points
-        if (entry.type === "branch_summary" || entry.type === "custom_message") {
+        if (sessionEntryToContextMessages(entry).some(isCutPointMessage)) {
             cutPoints.push(i);
         }
     }
     return cutPoints;
 }
 /**
- * Find the user message (or bashExecution) that starts the turn containing the given entry index.
+ * Find the context-visible user-role message that starts the turn containing the given entry index.
  * Returns -1 if no turn start found before the index.
- * BashExecutionMessage is treated like a user message for turn boundaries.
  */
 export function findTurnStartIndex(entries, entryIndex, startIndex) {
     for (let i = entryIndex; i >= startIndex; i--) {
-        const entry = entries[i];
-        // branch_summary and custom_message are user-role messages, can start a turn
-        if (entry.type === "branch_summary" || entry.type === "custom_message") {
+        if (isTurnStartEntry(entries[i])) {
             return i;
-        }
-        if (entry.type === "message") {
-            const role = entry.message.role;
-            if (role === "user" || role === "bashExecution") {
-                return i;
-            }
         }
     }
     return -1;
@@ -318,10 +329,9 @@ export function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
     let cutIndex = cutPoints[0]; // Default: keep from first message (not header)
     for (let i = endIndex - 1; i >= startIndex; i--) {
         const entry = entries[i];
-        if (entry.type !== "message")
+        const messageTokens = sessionEntryToContextMessages(entry).reduce((sum, message) => sum + estimateTokens(message), 0);
+        if (messageTokens === 0)
             continue;
-        // Estimate this message's size
-        const messageTokens = estimateTokens(entry.message);
         accumulatedTokens += messageTokens;
         // Check if we've exceeded the budget
         if (accumulatedTokens >= keepRecentTokens) {
@@ -335,28 +345,23 @@ export function findCutPoint(entries, startIndex, endIndex, keepRecentTokens) {
             break;
         }
     }
-    // Scan backwards from cutIndex to include any non-message entries (bash, settings, etc.)
+    // Scan backwards from cutIndex to include adjacent metadata entries that do not affect context.
     while (cutIndex > startIndex) {
         const prevEntry = entries[cutIndex - 1];
-        // Stop at session header or compaction boundaries
-        if (prevEntry.type === "compaction") {
+        // Stop at compaction boundaries or context-visible entries.
+        if (prevEntry.type === "compaction" || sessionEntryToContextMessages(prevEntry).length > 0) {
             break;
         }
-        if (prevEntry.type === "message") {
-            // Stop if we hit any message
-            break;
-        }
-        // Include this non-message entry (bash, settings change, etc.)
         cutIndex--;
     }
     // Determine if this is a split turn
     const cutEntry = entries[cutIndex];
-    const isUserMessage = cutEntry.type === "message" && cutEntry.message.role === "user";
-    const turnStartIndex = isUserMessage ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
+    const startsTurn = isTurnStartEntry(cutEntry);
+    const turnStartIndex = startsTurn ? -1 : findTurnStartIndex(entries, cutIndex, startIndex);
     return {
         firstKeptEntryIndex: cutIndex,
         turnStartIndex,
-        isSplitTurn: !isUserMessage && turnStartIndex !== -1,
+        isSplitTurn: !startsTurn && turnStartIndex !== -1,
     };
 }
 // ============================================================================
@@ -394,9 +399,7 @@ Use this EXACT format:
 - [Or "(none)" if not applicable]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
-
-Update the existing structured summary with new information. RULES:
+const UPDATE_SUMMARIZATION_INSTRUCTIONS = `Update the existing structured summary with new information. RULES:
 - PRESERVE all existing information from the previous summary
 - ADD new progress, decisions, and context from the new messages
 - UPDATE the Progress section: move items from "In Progress" to "Done" when completed
@@ -432,25 +435,71 @@ Use this EXACT format:
 - [Preserve important context, add new if needed]
 
 Keep each section concise. Preserve exact file paths, function names, and error messages.`;
-function createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel) {
-    const options = { maxTokens, signal, apiKey, headers, env };
+const UPDATE_SUMMARIZATION_PROMPT = `The messages above are NEW conversation messages to incorporate into the existing summary provided in <previous-summary> tags.
+
+${UPDATE_SUMMARIZATION_INSTRUCTIONS}`;
+/**
+ * Returns an error message when a summarization response cannot safely be persisted.
+ * A length stop contains partial text and must not become a session checkpoint.
+ */
+export function getSummarizationFailure(response, label) {
+    if (response.stopReason === "error") {
+        return `${label} failed: ${response.errorMessage || "Unknown error"}`;
+    }
+    if (response.stopReason === "length") {
+        return `${label} failed: generation hit the token cap and the summary is incomplete`;
+    }
+    return undefined;
+}
+function createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId) {
+    const options = { maxTokens, signal, apiKey, headers, env, sessionId };
     if (model.reasoning && thinkingLevel && thinkingLevel !== "off") {
         options.reasoning = thinkingLevel;
     }
     return options;
 }
-async function completeSummarization(model, context, options, streamFn) {
-    if (!streamFn) {
-        return completeSimple(model, context, options);
-    }
-    const stream = await streamFn(model, context, options);
-    return stream.result();
+/**
+ * Shared choke point for every compaction/branch-summary summarization call. Wraps the
+ * single LLM call in {@link retryAssistantCall} so transient stream drops (e.g.
+ * `terminated`, socket close) honor the configured retry policy instead of failing
+ * the whole compaction on the first attempt. Deterministic errors and aborts return
+ * immediately (see {@link retryAssistantCall}).
+ */
+export async function completeSummarization(model, context, options, streamFn, retry, callbacks) {
+    // Avoid cache writes for one-off summaries. Reuse caller-supplied routing when available;
+    // callers without a session ID, including branch summaries, receive a fresh routing ID.
+    const requestOptions = {
+        ...options,
+        cacheRetention: "none",
+        sessionId: options.sessionId ?? uuidv7(),
+    };
+    const produce = async () => streamFn
+        ? (await streamFn(model, context, requestOptions)).result()
+        : completeSimple(model, context, requestOptions);
+    return retryAssistantCall(produce, retry, requestOptions.signal, callbacks);
 }
 /**
  * Generate a summary of the conversation using the LLM.
  * If previousSummary is provided, uses the update prompt to merge.
  */
-export async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env) {
+export async function generateSummary(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env, retry, callbacks, sessionId) {
+    return (await generateSummaryWithUsage(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env, retry, callbacks, sessionId)).text;
+}
+/** Build the provider context for a standalone summary request. */
+function buildSummarizationContext(promptText) {
+    return {
+        systemPrompt: SUMMARIZATION_SYSTEM_PROMPT,
+        messages: [
+            {
+                role: "user",
+                content: [{ type: "text", text: promptText }],
+                timestamp: Date.now(),
+            },
+        ],
+    };
+}
+/** Generate or update a conversation summary and return its provider usage. */
+export async function generateSummaryWithUsage(currentMessages, model, reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env, retry, callbacks, sessionId) {
     const maxTokens = Math.min(Math.floor(0.8 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY);
     // Use update prompt if we have a previous summary, otherwise initial prompt
     let basePrompt = previousSummary ? UPDATE_SUMMARIZATION_PROMPT : SUMMARIZATION_PROMPT;
@@ -467,23 +516,17 @@ export async function generateSummary(currentMessages, model, reserveTokens, api
         promptText += `<previous-summary>\n${previousSummary}\n</previous-summary>\n\n`;
     }
     promptText += basePrompt;
-    const summarizationMessages = [
-        {
-            role: "user",
-            content: [{ type: "text", text: promptText }],
-            timestamp: Date.now(),
-        },
-    ];
-    const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel);
-    const response = await completeSummarization(model, { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, completionOptions, streamFn);
-    if (response.stopReason === "error") {
-        throw new Error(`Summarization failed: ${response.errorMessage || "Unknown error"}`);
+    const completionOptions = createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId);
+    const response = await completeSummarization(model, buildSummarizationContext(promptText), completionOptions, streamFn, retry, callbacks);
+    const failure = getSummarizationFailure(response, "Summarization");
+    if (failure) {
+        throw new Error(failure);
     }
-    const textContent = response.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
-    return textContent;
+    if (response.content.some((block) => block.type === "toolCall")) {
+        throw new Error("Summarization attempted to call a tool");
+    }
+    const textContent = contentText(response.content);
+    return { text: textContent, usage: response.usage };
 }
 export function prepareCompaction(pathEntries, settings) {
     if (pathEntries.length > 0 && pathEntries[pathEntries.length - 1].type === "compaction") {
@@ -575,25 +618,31 @@ Be concise. Focus on what's needed to understand the kept suffix.`;
  *
  * @param preparation - Pre-calculated preparation from prepareCompaction()
  * @param customInstructions - Optional custom focus for the summary
+ * @param sessionId - Optional routing session ID forwarded without enabling prompt caching
  */
-export async function compact(preparation, model, apiKey, headers, customInstructions, signal, thinkingLevel, streamFn, env) {
+export async function compact(preparation, model, apiKey, headers, customInstructions, signal, thinkingLevel, streamFn, env, retry, callbacks, sessionId) {
     const { firstKeptEntryId, messagesToSummarize, turnPrefixMessages, isSplitTurn, tokensBefore, previousSummary, fileOps, settings, } = preparation;
-    // Generate summaries (can be parallel if both needed) and merge into one
+    // Generate summaries and merge into one
     let summary;
+    let summaryUsage;
     if (isSplitTurn && turnPrefixMessages.length > 0) {
-        // Generate both summaries in parallel
-        const [historyResult, turnPrefixResult] = await Promise.all([
-            messagesToSummarize.length > 0
-                ? generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env)
-                : Promise.resolve("No prior history."),
-            generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, headers, env, signal, thinkingLevel, streamFn),
-        ]);
+        let historyText = "No prior history.";
+        let historyUsage;
+        if (messagesToSummarize.length > 0) {
+            const historyResult = await generateSummaryWithUsage(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env, retry, callbacks, sessionId);
+            historyText = historyResult.text;
+            historyUsage = historyResult.usage;
+        }
+        const turnPrefixResult = await generateTurnPrefixSummary(turnPrefixMessages, model, settings.reserveTokens, apiKey, headers, env, signal, thinkingLevel, streamFn, retry, callbacks, sessionId);
         // Merge into single summary
-        summary = `${historyResult}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult}`;
+        summary = `${historyText}\n\n---\n\n**Turn Context (split turn):**\n\n${turnPrefixResult.text}`;
+        summaryUsage = historyUsage ? combineUsage(historyUsage, turnPrefixResult.usage) : turnPrefixResult.usage;
     }
     else {
         // Just generate history summary
-        summary = await generateSummary(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env);
+        const result = await generateSummaryWithUsage(messagesToSummarize, model, settings.reserveTokens, apiKey, headers, signal, customInstructions, previousSummary, thinkingLevel, streamFn, env, retry, callbacks, sessionId);
+        summary = result.text;
+        summaryUsage = result.usage;
     }
     // Compute file lists and append to summary
     const { readFiles, modifiedFiles } = computeFileLists(fileOps);
@@ -605,31 +654,29 @@ export async function compact(preparation, model, apiKey, headers, customInstruc
         summary,
         firstKeptEntryId,
         tokensBefore,
+        usage: summaryUsage,
         details: { readFiles, modifiedFiles },
     };
 }
 /**
  * Generate a summary for a turn prefix (when splitting a turn).
  */
-async function generateTurnPrefixSummary(messages, model, reserveTokens, apiKey, headers, env, signal, thinkingLevel, streamFn) {
+async function generateTurnPrefixSummary(messages, model, reserveTokens, apiKey, headers, env, signal, thinkingLevel, streamFn, retry, callbacks, sessionId) {
     const maxTokens = Math.min(Math.floor(0.5 * reserveTokens), model.maxTokens > 0 ? model.maxTokens : Number.POSITIVE_INFINITY); // Smaller budget for turn prefix
     const llmMessages = convertToLlm(messages);
     const conversationText = serializeConversation(llmMessages);
     const promptText = `<conversation>\n${conversationText}\n</conversation>\n\n${TURN_PREFIX_SUMMARIZATION_PROMPT}`;
-    const summarizationMessages = [
-        {
-            role: "user",
-            content: [{ type: "text", text: promptText }],
-            timestamp: Date.now(),
-        },
-    ];
-    const response = await completeSummarization(model, { systemPrompt: SUMMARIZATION_SYSTEM_PROMPT, messages: summarizationMessages }, createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel), streamFn);
-    if (response.stopReason === "error") {
-        throw new Error(`Turn prefix summarization failed: ${response.errorMessage || "Unknown error"}`);
+    const response = await completeSummarization(model, buildSummarizationContext(promptText), createSummarizationOptions(model, maxTokens, apiKey, headers, env, signal, thinkingLevel, sessionId), streamFn, retry, callbacks);
+    const failure = getSummarizationFailure(response, "Turn prefix summarization");
+    if (failure) {
+        throw new Error(failure);
     }
-    return response.content
-        .filter((c) => c.type === "text")
-        .map((c) => c.text)
-        .join("\n");
+    if (response.content.some((block) => block.type === "toolCall")) {
+        throw new Error("Turn prefix summarization attempted to call a tool");
+    }
+    return {
+        text: contentText(response.content),
+        usage: response.usage,
+    };
 }
 //# sourceMappingURL=compaction.js.map

@@ -7,6 +7,7 @@ import { Compile } from "typebox/compile";
 import { getCustomThemesDir, getThemesDir } from "../../../config.js";
 import { closeWatcher, watchWithErrorHandler } from "../../../utils/fs-watch.js";
 import { highlight, supportsLanguage } from "../../../utils/syntax-highlight.js";
+import { stripBom } from "../../../utils/text.js";
 // ============================================================================
 // Types & Schema
 // ============================================================================
@@ -31,8 +32,11 @@ const ThemeJsonSchema = Type.Object({
         dim: ColorValueSchema,
         text: ColorValueSchema,
         thinkingText: ColorValueSchema,
-        // Backgrounds & Content Text (11 colors)
+        // Backgrounds & Content Text (11 required, 3 optional)
         selectedBg: ColorValueSchema,
+        scrollbarThumb: Type.Optional(ColorValueSchema),
+        searchMatchBg: Type.Optional(ColorValueSchema),
+        searchMatchText: Type.Optional(ColorValueSchema),
         userMessageBg: ColorValueSchema,
         userMessageText: ColorValueSchema,
         customMessageBg: ColorValueSchema,
@@ -75,6 +79,7 @@ const ThemeJsonSchema = Type.Object({
         thinkingMedium: ColorValueSchema,
         thinkingHigh: ColorValueSchema,
         thinkingXhigh: ColorValueSchema,
+        thinkingMax: Type.Optional(ColorValueSchema),
         // Bash Mode (1 color)
         bashMode: ColorValueSchema,
     }),
@@ -222,6 +227,15 @@ function resolveThemeColors(colors, vars = {}) {
     }
     return resolved;
 }
+function withThemeColorFallbacks(colors) {
+    return {
+        ...colors,
+        thinkingMax: colors.thinkingMax ?? colors.thinkingXhigh,
+        scrollbarThumb: colors.scrollbarThumb ?? colors.selectedBg,
+        searchMatchBg: colors.searchMatchBg ?? colors.selectedBg,
+        searchMatchText: colors.searchMatchText ?? colors.text,
+    };
+}
 // ============================================================================
 // Theme Class
 // ============================================================================
@@ -238,11 +252,21 @@ export class Theme {
         this.sourceInfo = options.sourceInfo;
         this.mode = mode;
         this.fgColors = new Map();
-        for (const [key, value] of Object.entries(fgColors)) {
+        const colors = {
+            ...fgColors,
+            thinkingMax: fgColors.thinkingMax ?? fgColors.thinkingXhigh,
+            searchMatchText: fgColors.searchMatchText ?? fgColors.text,
+        };
+        for (const [key, value] of Object.entries(colors)) {
             this.fgColors.set(key, fgAnsi(value, mode));
         }
         this.bgColors = new Map();
-        for (const [key, value] of Object.entries(bgColors)) {
+        const backgrounds = {
+            ...bgColors,
+            scrollbarThumb: bgColors.scrollbarThumb ?? bgColors.selectedBg,
+            searchMatchBg: bgColors.searchMatchBg ?? bgColors.selectedBg,
+        };
+        for (const [key, value] of Object.entries(backgrounds)) {
             this.bgColors.set(key, bgAnsi(value, mode));
         }
     }
@@ -303,6 +327,8 @@ export class Theme {
                 return (str) => this.fg("thinkingHigh", str);
             case "xhigh":
                 return (str) => this.fg("thinkingXhigh", str);
+            case "max":
+                return (str) => this.fg("thinkingMax", str);
             default:
                 return (str) => this.fg("thinkingOff", str);
         }
@@ -321,8 +347,8 @@ function getBuiltinThemes() {
         const darkPath = path.join(themesDir, "dark.json");
         const lightPath = path.join(themesDir, "light.json");
         BUILTIN_THEMES = {
-            dark: JSON.parse(fs.readFileSync(darkPath, "utf-8")),
-            light: JSON.parse(fs.readFileSync(lightPath, "utf-8")),
+            dark: JSON.parse(stripBom(fs.readFileSync(darkPath, "utf-8"))),
+            light: JSON.parse(stripBom(fs.readFileSync(lightPath, "utf-8"))),
         };
     }
     return BUILTIN_THEMES;
@@ -421,7 +447,7 @@ function parseThemeJson(label, json) {
 function parseThemeJsonContent(label, content) {
     let json;
     try {
-        json = JSON.parse(content);
+        json = JSON.parse(stripBom(content));
     }
     catch (error) {
         throw new Error(`Failed to parse theme ${label}: ${error}`);
@@ -451,11 +477,13 @@ function loadThemeJson(name) {
 }
 function createTheme(themeJson, mode, sourcePath) {
     const colorMode = mode ?? (getCapabilities().trueColor ? "truecolor" : "256color");
-    const resolvedColors = resolveThemeColors(themeJson.colors, themeJson.vars);
+    const resolvedColors = resolveThemeColors(withThemeColorFallbacks(themeJson.colors), themeJson.vars);
     const fgColors = {};
     const bgColors = {};
     const bgColorKeys = new Set([
         "selectedBg",
+        "scrollbarThumb",
+        "searchMatchBg",
         "userMessageBg",
         "customMessageBg",
         "toolPendingBg",
@@ -581,15 +609,23 @@ export async function detectTerminalBackgroundTheme({ ui, timeoutMs, env, }) {
     return detectTerminalBackgroundFromEnv({ env });
 }
 export async function detectTerminalThemeForAuto({ ui, timeoutMs, env, }) {
+    let colorSchemePromise;
     try {
-        const colorScheme = await ui.queryTerminalColorScheme?.({ timeoutMs });
+        colorSchemePromise = ui.queryTerminalColorScheme?.({ timeoutMs });
+    }
+    catch {
+        // Fall back to OSC 11 / COLORFGBG detection when starting the color-scheme query fails.
+    }
+    const backgroundThemePromise = detectTerminalBackgroundTheme({ ui, timeoutMs, env });
+    try {
+        const colorScheme = await colorSchemePromise;
         if (colorScheme)
             return colorScheme;
     }
     catch {
-        // Fall back to OSC 11 / COLORFGBG detection when color-scheme DSR is unsupported.
+        // Fall back to the concurrently queried OSC 11 / COLORFGBG detection.
     }
-    return (await detectTerminalBackgroundTheme({ ui, timeoutMs, env })).theme;
+    return (await backgroundThemePromise).theme;
 }
 export function getDefaultTheme() {
     return detectTerminalBackgroundFromEnv().theme;
@@ -801,7 +837,7 @@ export function getResolvedThemeColors(themeName) {
     const name = themeName ?? currentThemeName ?? getDefaultTheme();
     const isLight = name === "light";
     const themeJson = loadThemeJson(name);
-    const resolved = resolveThemeColors(themeJson.colors, themeJson.vars);
+    const resolved = resolveThemeColors(withThemeColorFallbacks(themeJson.colors), themeJson.vars);
     // Default text color for empty values (terminal uses default fg color)
     const defaultText = isLight ? "#000000" : "#e5e5e7";
     const cssColors = {};

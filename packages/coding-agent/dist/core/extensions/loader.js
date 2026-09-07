@@ -9,6 +9,7 @@ import { fileURLToPath } from "node:url";
 import * as _bundledPiAgentCore from "@liyuan/agent-core";
 import * as _bundledPiAiCompat from "@liyuan/ai/compat";
 import * as _bundledPiAiOauth from "@liyuan/ai/oauth";
+import * as _bundledPiAiProviders from "@liyuan/ai/providers/all";
 import * as _bundledPiTui from "@liyuan/tui";
 import { createJiti } from "jiti/static";
 // Static imports of packages that extensions may use.
@@ -24,9 +25,10 @@ import * as _bundledPiCodingAgent from "../../index.js";
 import { resolvePath } from "../../utils/paths.js";
 import { createEventBus } from "../event-bus.js";
 import { execCommand } from "../exec.js";
+import { readPiManifest } from "../pi-manifest.js";
 import { createSyntheticSourceInfo } from "../source-info.js";
 import { time } from "../timings.js";
-/** Modules available to extensions via virtualModules (for compiled Bun binary) */
+/** Modules available to extensions via virtualModules (for compiled binaries) */
 const VIRTUAL_MODULES = {
     typebox: _bundledTypebox,
     "typebox/compile": _bundledTypeboxCompile,
@@ -42,18 +44,24 @@ const VIRTUAL_MODULES = {
     "@liyuan/ai": _bundledPiAiCompat,
     "@liyuan/ai/compat": _bundledPiAiCompat,
     "@liyuan/ai/oauth": _bundledPiAiOauth,
+    "@liyuan/ai/providers/all": _bundledPiAiProviders,
     "@liyuan/agent-runtime": _bundledPiCodingAgent,
     "@mariozechner/pi-agent-core": _bundledPiAgentCore,
     "@mariozechner/pi-tui": _bundledPiTui,
     "@mariozechner/pi-ai": _bundledPiAiCompat,
     "@mariozechner/pi-ai/compat": _bundledPiAiCompat,
     "@mariozechner/pi-ai/oauth": _bundledPiAiOauth,
+    "@mariozechner/pi-ai/providers/all": _bundledPiAiProviders,
     "@mariozechner/pi-coding-agent": _bundledPiCodingAgent,
 };
 const require = createRequire(import.meta.url);
+const isNodeSeaBinary = ("sea" in process.features && process.features.sea === true) ||
+    process.getBuiltinModule("node:sea")?.isSea() === true;
+const isBundledNode = typeof PI_BUNDLED_NODE !== "undefined" && PI_BUNDLED_NODE;
+const isTypeScriptSourceRuntime = !isBunBinary && path.extname(fileURLToPath(import.meta.url)) === ".ts";
 /**
- * Get aliases for jiti (used in Node.js/development mode).
- * In Bun binary mode, virtualModules is used instead.
+ * Get aliases for jiti (used in built Node.js mode).
+ * In compiled binary mode, virtualModules is used instead.
  */
 let _aliases = null;
 function getAliases() {
@@ -80,19 +88,22 @@ function getAliases() {
     // global API keep working at runtime until compat is removed.
     const piAiCompatEntry = resolveWorkspaceOrImport("ai/dist/compat.js", "@liyuan/ai/compat");
     const piAiOauthEntry = resolveWorkspaceOrImport("ai/dist/oauth.js", "@liyuan/ai/oauth");
+    const piAiProvidersEntry = resolveWorkspaceOrImport("ai/dist/providers/all.js", "@liyuan/ai/providers/all");
     _aliases = {
         "@liyuan/agent-runtime": piCodingAgentEntry,
         "@liyuan/agent-core": piAgentCoreEntry,
         "@liyuan/tui": piTuiEntry,
-        "@liyuan/ai": piAiCompatEntry,
+        "@liyuan/ai/providers/all": piAiProvidersEntry,
         "@liyuan/ai/compat": piAiCompatEntry,
         "@liyuan/ai/oauth": piAiOauthEntry,
+        "@liyuan/ai": piAiCompatEntry,
         "@mariozechner/pi-coding-agent": piCodingAgentEntry,
         "@mariozechner/pi-agent-core": piAgentCoreEntry,
         "@mariozechner/pi-tui": piTuiEntry,
-        "@mariozechner/pi-ai": piAiCompatEntry,
+        "@mariozechner/pi-ai/providers/all": piAiProvidersEntry,
         "@mariozechner/pi-ai/compat": piAiCompatEntry,
         "@mariozechner/pi-ai/oauth": piAiOauthEntry,
+        "@mariozechner/pi-ai": piAiCompatEntry,
         typebox: typeboxEntry,
         "typebox/compile": typeboxCompileEntry,
         "typebox/value": typeboxValueEntry,
@@ -127,6 +138,7 @@ export function createExtensionRuntime() {
         throw new Error("Extension runtime not initialized. Action methods cannot be called during extension loading.");
     };
     const state = {};
+    const eventBusUnsubscribers = new Set();
     const assertActive = () => {
         if (state.staleMessage) {
             throw new Error(state.staleMessage);
@@ -150,19 +162,41 @@ export function createExtensionRuntime() {
         setThinkingLevel: notInitialized,
         flagValues: new Map(),
         pendingProviderRegistrations: [],
+        pendingNativeProviderRegistrations: [],
         assertActive,
         invalidate: (message) => {
-            state.staleMessage ??=
+            if (state.staleMessage)
+                return;
+            state.staleMessage =
                 message ??
                     "This extension ctx is stale after session replacement or reload. Do not use a captured pi or command ctx after ctx.newSession(), ctx.fork(), ctx.switchSession(), or ctx.reload(). For newSession, fork, and switchSession, move post-replacement work into withSession and use the ctx passed to withSession. For reload, do not use the old ctx after await ctx.reload().";
+            for (const unsubscribe of eventBusUnsubscribers)
+                unsubscribe();
+            eventBusUnsubscribers.clear();
+        },
+        trackEventBusSubscription: (unsubscribe) => {
+            let active = true;
+            const trackedUnsubscribe = () => {
+                if (!active)
+                    return;
+                active = false;
+                eventBusUnsubscribers.delete(trackedUnsubscribe);
+                unsubscribe();
+            };
+            eventBusUnsubscribers.add(trackedUnsubscribe);
+            return trackedUnsubscribe;
         },
         // Pre-bind: queue registrations so bindCore() can flush them once the
         // model registry is available. bindCore() replaces both with direct calls.
         registerProvider: (name, config, extensionPath = "<unknown>") => {
             runtime.pendingProviderRegistrations.push({ name, config, extensionPath });
         },
+        registerNativeProvider: (provider, extensionPath = "<unknown>") => {
+            runtime.pendingNativeProviderRegistrations.push({ provider, extensionPath });
+        },
         unregisterProvider: (name) => {
             runtime.pendingProviderRegistrations = runtime.pendingProviderRegistrations.filter((r) => r.name !== name);
+            runtime.pendingNativeProviderRegistrations = runtime.pendingNativeProviderRegistrations.filter((r) => r.provider.id !== name);
         },
     };
     return runtime;
@@ -173,16 +207,37 @@ export function createExtensionRuntime() {
  * Action methods delegate to the shared runtime.
  */
 function createExtensionAPI(extension, runtime, cwd, eventBus) {
+    const pendingFlagValues = new Map();
+    const pendingRuntimeChanges = [];
+    const loadingUnsubscribers = [];
+    let state = "loading";
+    const assertActive = () => {
+        if (state === "failed") {
+            throw new Error(`Extension "${extension.path}" failed to load and its API is no longer active.`);
+        }
+        runtime.assertActive();
+    };
+    const applyRuntimeChange = (change) => {
+        if (state === "loading")
+            pendingRuntimeChanges.push(change);
+        else
+            change();
+    };
+    const clearPending = () => {
+        pendingFlagValues.clear();
+        pendingRuntimeChanges.length = 0;
+        loadingUnsubscribers.length = 0;
+    };
     const api = {
         // Registration methods - write to extension
         on(event, handler) {
-            runtime.assertActive();
+            assertActive();
             const list = extension.handlers.get(event) ?? [];
             list.push(handler);
             extension.handlers.set(event, list);
         },
         registerTool(tool) {
-            runtime.assertActive();
+            assertActive();
             extension.tools.set(tool.name, {
                 definition: tool,
                 sourceInfo: extension.sourceInfo,
@@ -190,7 +245,7 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
             runtime.refreshTools();
         },
         registerCommand(name, options) {
-            runtime.assertActive();
+            assertActive();
             extension.commands.set(name, {
                 name,
                 sourceInfo: extension.sourceInfo,
@@ -198,95 +253,154 @@ function createExtensionAPI(extension, runtime, cwd, eventBus) {
             });
         },
         registerShortcut(shortcut, options) {
-            runtime.assertActive();
+            assertActive();
             extension.shortcuts.set(shortcut, { shortcut, extensionPath: extension.path, ...options });
         },
         registerFlag(name, options) {
-            runtime.assertActive();
+            assertActive();
+            if (options.default !== undefined && typeof options.default !== options.type) {
+                throw new Error(`Invalid default for flag "${name}": expected ${options.type}, got ${typeof options.default}`);
+            }
             extension.flags.set(name, { name, extensionPath: extension.path, ...options });
             if (options.default !== undefined && !runtime.flagValues.has(name)) {
-                runtime.flagValues.set(name, options.default);
+                if (state === "loading") {
+                    if (!pendingFlagValues.has(name))
+                        pendingFlagValues.set(name, options.default);
+                }
+                else {
+                    runtime.flagValues.set(name, options.default);
+                }
             }
         },
         registerMessageRenderer(customType, renderer) {
-            runtime.assertActive();
+            assertActive();
             extension.messageRenderers.set(customType, renderer);
+        },
+        registerMarkdownTransformer(transformer) {
+            assertActive();
+            extension.markdownTransformer = transformer;
+        },
+        registerEntryRenderer(customType, renderer) {
+            assertActive();
+            extension.entryRenderers ??= new Map();
+            extension.entryRenderers.set(customType, renderer);
         },
         // Flag access - checks extension registered it, reads from runtime
         getFlag(name) {
-            runtime.assertActive();
+            assertActive();
             if (!extension.flags.has(name))
                 return undefined;
-            return runtime.flagValues.get(name);
+            return runtime.flagValues.has(name) ? runtime.flagValues.get(name) : pendingFlagValues.get(name);
         },
         // Action methods - delegate to shared runtime
         sendMessage(message, options) {
-            runtime.assertActive();
+            assertActive();
             runtime.sendMessage(message, options);
         },
         sendUserMessage(content, options) {
-            runtime.assertActive();
+            assertActive();
             runtime.sendUserMessage(content, options);
         },
         appendEntry(customType, data) {
-            runtime.assertActive();
+            assertActive();
             runtime.appendEntry(customType, data);
         },
         setSessionName(name) {
-            runtime.assertActive();
+            assertActive();
             runtime.setSessionName(name);
         },
         getSessionName() {
-            runtime.assertActive();
+            assertActive();
             return runtime.getSessionName();
         },
         setLabel(entryId, label) {
-            runtime.assertActive();
+            assertActive();
             runtime.setLabel(entryId, label);
         },
         exec(command, args, options) {
-            runtime.assertActive();
+            assertActive();
             return execCommand(command, args, options?.cwd ?? cwd, options);
         },
         getActiveTools() {
-            runtime.assertActive();
+            assertActive();
             return runtime.getActiveTools();
         },
         getAllTools() {
-            runtime.assertActive();
+            assertActive();
             return runtime.getAllTools();
         },
         setActiveTools(toolNames) {
-            runtime.assertActive();
+            assertActive();
             runtime.setActiveTools(toolNames);
         },
         getCommands() {
-            runtime.assertActive();
+            assertActive();
             return runtime.getCommands();
         },
         setModel(model) {
-            runtime.assertActive();
+            assertActive();
             return runtime.setModel(model);
         },
         getThinkingLevel() {
-            runtime.assertActive();
+            assertActive();
             return runtime.getThinkingLevel();
         },
         setThinkingLevel(level) {
-            runtime.assertActive();
+            assertActive();
             runtime.setThinkingLevel(level);
         },
-        registerProvider(name, config) {
-            runtime.assertActive();
-            runtime.registerProvider(name, config, extension.path);
+        registerProvider(providerOrName, config) {
+            assertActive();
+            if (typeof providerOrName === "string") {
+                if (!config)
+                    throw new Error("Provider config is required when registering by name");
+                applyRuntimeChange(() => runtime.registerProvider(providerOrName, config, extension.path));
+                return;
+            }
+            applyRuntimeChange(() => runtime.registerNativeProvider(providerOrName, extension.path));
         },
         unregisterProvider(name) {
-            runtime.assertActive();
-            runtime.unregisterProvider(name, extension.path);
+            assertActive();
+            applyRuntimeChange(() => runtime.unregisterProvider(name, extension.path));
         },
-        events: eventBus,
+        events: {
+            emit(channel, data) {
+                assertActive();
+                eventBus.emit(channel, data);
+            },
+            on(channel, handler) {
+                assertActive();
+                const unsubscribe = runtime.trackEventBusSubscription(eventBus.on(channel, handler));
+                if (state === "loading")
+                    loadingUnsubscribers.push(unsubscribe);
+                return unsubscribe;
+            },
+        },
     };
-    return api;
+    return {
+        api,
+        commit: () => {
+            if (state !== "loading")
+                return;
+            runtime.assertActive();
+            for (const [name, value] of pendingFlagValues) {
+                if (!runtime.flagValues.has(name))
+                    runtime.flagValues.set(name, value);
+            }
+            for (const apply of pendingRuntimeChanges)
+                apply();
+            state = "active";
+            clearPending();
+        },
+        discard: () => {
+            if (state !== "loading")
+                return;
+            state = "failed";
+            for (const unsubscribe of loadingUnsubscribers)
+                unsubscribe();
+            clearPending();
+        },
+    };
 }
 function isCurrentCacheToken(cacheToken) {
     return (cacheToken !== undefined &&
@@ -302,10 +416,14 @@ async function loadExtensionModule(extensionPath, cacheToken) {
     }
     const jiti = createJiti(import.meta.url, {
         moduleCache: false,
-        // In Bun binary: use virtualModules for bundled packages (no filesystem resolution)
-        // Also disable tryNative so jiti handles ALL imports (not just the entry point)
-        // In Node.js/dev: use aliases to resolve to node_modules paths
-        ...(isBunBinary ? { virtualModules: VIRTUAL_MODULES, tryNative: false } : { alias: getAliases() }),
+        // Compiled binaries and the bundled Node distribution use embedded modules.
+        // Source TypeScript reuses host modules and root tsconfig paths. Unbundled
+        // Node builds use dist aliases.
+        ...(isBunBinary || isNodeSeaBinary || isBundledNode
+            ? { virtualModules: VIRTUAL_MODULES, tryNative: false }
+            : isTypeScriptSourceRuntime
+                ? { virtualModules: VIRTUAL_MODULES, tsconfigPaths: true }
+                : { alias: getAliases() }),
     });
     const module = await jiti.import(extensionPath, { default: true });
     const factory = module;
@@ -332,10 +450,25 @@ function createExtension(extensionPath, resolvedPath) {
         handlers: new Map(),
         tools: new Map(),
         messageRenderers: new Map(),
+        entryRenderers: new Map(),
         commands: new Map(),
         flags: new Map(),
         shortcuts: new Map(),
     };
+}
+async function initializeExtension(factory, extensionPath, resolvedPath, cwd, eventBus, runtime) {
+    const extension = createExtension(extensionPath, resolvedPath);
+    const load = createExtensionAPI(extension, runtime, cwd, eventBus);
+    try {
+        await factory(load.api);
+        load.commit();
+    }
+    catch (error) {
+        load.discard();
+        throw error;
+    }
+    time(`${extensionPath} factory`, "extensions");
+    return extension;
 }
 async function loadExtension(extensionPath, cwd, eventBus, runtime, cacheToken) {
     const resolvedPath = resolvePath(extensionPath, cwd, { normalizeUnicodeSpaces: true });
@@ -345,10 +478,7 @@ async function loadExtension(extensionPath, cwd, eventBus, runtime, cacheToken) 
         if (!factory) {
             return { extension: null, error: `Extension does not export a valid factory function: ${extensionPath}` };
         }
-        const extension = createExtension(extensionPath, resolvedPath);
-        const api = createExtensionAPI(extension, runtime, cwd, eventBus);
-        await factory(api);
-        time(`${extensionPath} factory`, "extensions");
+        const extension = await initializeExtension(factory, extensionPath, resolvedPath, cwd, eventBus, runtime);
         return { extension, error: null };
     }
     catch (err) {
@@ -360,12 +490,8 @@ async function loadExtension(extensionPath, cwd, eventBus, runtime, cacheToken) 
  * Create an Extension from an inline factory function.
  */
 export async function loadExtensionFromFactory(factory, cwd, eventBus, runtime, extensionPath = "<inline>") {
-    const extension = createExtension(extensionPath, extensionPath);
     const resolvedCwd = resolvePath(cwd);
-    const api = createExtensionAPI(extension, runtime, resolvedCwd, eventBus);
-    await factory(api);
-    time(`${extensionPath} factory`, "extensions");
-    return extension;
+    return initializeExtension(factory, extensionPath, extensionPath, resolvedCwd, eventBus, runtime);
 }
 /**
  * Load extensions from paths.
@@ -398,19 +524,6 @@ export async function loadExtensions(paths, cwd, eventBus, runtime) {
 }
 export async function loadExtensionsCached(paths, cwd, eventBus, runtime) {
     return loadExtensionsInternal(paths, cwd, eventBus, runtime, true);
-}
-function readPiManifest(packageJsonPath) {
-    try {
-        const content = fs.readFileSync(packageJsonPath, "utf-8");
-        const pkg = JSON.parse(content);
-        if (pkg.pi && typeof pkg.pi === "object") {
-            return pkg.pi;
-        }
-        return null;
-    }
-    catch {
-        return null;
-    }
 }
 function isExtensionFile(name) {
     return name.endsWith(".ts") || name.endsWith(".js");

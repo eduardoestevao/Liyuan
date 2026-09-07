@@ -11,11 +11,13 @@ export class CustomMessageComponent extends Container {
     customComponent;
     markdownTheme;
     _expanded = false;
-    constructor(message, customRenderer, markdownTheme = getMarkdownTheme()) {
+    outputPad;
+    constructor(message, customRenderer, markdownTheme = getMarkdownTheme(), outputPad = 1) {
         super();
         this.message = message;
         this.customRenderer = customRenderer;
         this.markdownTheme = markdownTheme;
+        this.outputPad = outputPad;
         this.addChild(new Spacer(1));
         // Create box with purple background (used for default rendering)
         this.box = new Box(1, 1, (t) => theme.bg("customMessageBg", t));
@@ -24,6 +26,12 @@ export class CustomMessageComponent extends Container {
     setExpanded(expanded) {
         if (this._expanded !== expanded) {
             this._expanded = expanded;
+            this.rebuild();
+        }
+    }
+    setOutputPad(outputPad) {
+        if (this.outputPad !== outputPad) {
+            this.outputPad = outputPad;
             this.rebuild();
         }
     }
@@ -41,7 +49,7 @@ export class CustomMessageComponent extends Container {
         // Try custom renderer first - it handles its own styling
         if (this.customRenderer) {
             try {
-                const component = this.customRenderer(this.message, { expanded: this._expanded }, theme);
+                const component = this.customRenderer(this.message, { expanded: this._expanded, outputPad: this.outputPad }, theme);
                 if (component) {
                     // Custom renderer provides its own styled component
                     this.customComponent = component;

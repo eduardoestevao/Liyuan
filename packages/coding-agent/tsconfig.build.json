@@ -7,6 +7,8 @@
 			"@liyuan/agent-core/*": ["../agent/dist/*.d.ts"],
 			"@liyuan/ai": ["../ai/dist/index.d.ts"],
 			"@liyuan/ai/*": ["../ai/dist/*.d.ts", "../ai/dist/providers/*.d.ts"],
+			"@liyuan/client": ["../client/dist/index.d.ts"],
+			"@liyuan/protocol": ["../protocol/dist/index.d.ts"],
 			"@liyuan/tui": ["../tui/dist/index.d.ts"],
 			"@liyuan/tui/*": ["../tui/dist/*.d.ts", "../tui/dist/components/*.d.ts"]
 		},

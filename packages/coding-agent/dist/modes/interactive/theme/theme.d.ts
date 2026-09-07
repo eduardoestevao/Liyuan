@@ -1,7 +1,10 @@
+import type { ThinkingLevel } from "@liyuan/agent-core";
 import { type EditorTheme, type MarkdownTheme, type RgbColor, type SelectListTheme, type SettingsListTheme } from "@liyuan/tui";
 import type { SourceInfo } from "../../../core/source-info.ts";
-export type ThemeColor = "accent" | "border" | "borderAccent" | "borderMuted" | "success" | "error" | "warning" | "muted" | "dim" | "text" | "thinkingText" | "userMessageText" | "customMessageText" | "customMessageLabel" | "toolTitle" | "toolOutput" | "mdHeading" | "mdLink" | "mdLinkUrl" | "mdCode" | "mdCodeBlock" | "mdCodeBlockBorder" | "mdQuote" | "mdQuoteBorder" | "mdHr" | "mdListBullet" | "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext" | "syntaxComment" | "syntaxKeyword" | "syntaxFunction" | "syntaxVariable" | "syntaxString" | "syntaxNumber" | "syntaxType" | "syntaxOperator" | "syntaxPunctuation" | "thinkingOff" | "thinkingMinimal" | "thinkingLow" | "thinkingMedium" | "thinkingHigh" | "thinkingXhigh" | "bashMode";
-export type ThemeBg = "selectedBg" | "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
+export type ThemeColor = "accent" | "border" | "borderAccent" | "borderMuted" | "success" | "error" | "warning" | "muted" | "dim" | "text" | "thinkingText" | "searchMatchText" | "userMessageText" | "customMessageText" | "customMessageLabel" | "toolTitle" | "toolOutput" | "mdHeading" | "mdLink" | "mdLinkUrl" | "mdCode" | "mdCodeBlock" | "mdCodeBlockBorder" | "mdQuote" | "mdQuoteBorder" | "mdHr" | "mdListBullet" | "toolDiffAdded" | "toolDiffRemoved" | "toolDiffContext" | "syntaxComment" | "syntaxKeyword" | "syntaxFunction" | "syntaxVariable" | "syntaxString" | "syntaxNumber" | "syntaxType" | "syntaxOperator" | "syntaxPunctuation" | "thinkingOff" | "thinkingMinimal" | "thinkingLow" | "thinkingMedium" | "thinkingHigh" | "thinkingXhigh" | "thinkingMax" | "bashMode";
+export type ThemeBg = "selectedBg" | "scrollbarThumb" | "searchMatchBg" | "userMessageBg" | "customMessageBg" | "toolPendingBg" | "toolSuccessBg" | "toolErrorBg";
+type OptionalThemeColor = "thinkingMax" | "searchMatchText";
+type OptionalThemeBg = "scrollbarThumb" | "searchMatchBg";
 type ColorMode = "truecolor" | "256color";
 export declare class Theme {
     readonly name?: string;
@@ -10,7 +13,7 @@ export declare class Theme {
     private fgColors;
     private bgColors;
     private mode;
-    constructor(fgColors: Record<ThemeColor, string | number>, bgColors: Record<ThemeBg, string | number>, mode: ColorMode, options?: {
+    constructor(fgColors: Record<Exclude<ThemeColor, OptionalThemeColor>, string | number> & Partial<Record<OptionalThemeColor, string | number>>, bgColors: Record<Exclude<ThemeBg, OptionalThemeBg>, string | number> & Partial<Record<OptionalThemeBg, string | number>>, mode: ColorMode, options?: {
         name?: string;
         sourcePath?: string;
         sourceInfo?: SourceInfo;
@@ -25,7 +28,7 @@ export declare class Theme {
     getFgAnsi(color: ThemeColor): string;
     getBgAnsi(color: ThemeBg): string;
     getColorMode(): ColorMode;
-    getThinkingBorderColor(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): (str: string) => string;
+    getThinkingBorderColor(level: ThinkingLevel): (str: string) => string;
     getBashModeBorderColor(): (str: string) => string;
 }
 export declare function getAvailableThemes(): string[];
@@ -71,8 +74,8 @@ export interface TerminalAutoThemeDetectionOptions extends TerminalThemeDetectio
 }
 export declare function getThemeForRgbColor(rgb: RgbColor): TerminalTheme;
 export declare function detectTerminalBackgroundFromEnv(options?: TerminalThemeDetectionOptions): TerminalThemeDetection;
-export declare function detectTerminalBackgroundTheme({ ui, timeoutMs, env }: TerminalBackgroundThemeDetectionOptions): Promise<TerminalThemeDetection>;
-export declare function detectTerminalThemeForAuto({ ui, timeoutMs, env }: TerminalAutoThemeDetectionOptions): Promise<TerminalTheme>;
+export declare function detectTerminalBackgroundTheme({ ui, timeoutMs, env, }: TerminalBackgroundThemeDetectionOptions): Promise<TerminalThemeDetection>;
+export declare function detectTerminalThemeForAuto({ ui, timeoutMs, env, }: TerminalAutoThemeDetectionOptions): Promise<TerminalTheme>;
 export declare function getDefaultTheme(): string;
 export declare const theme: Theme;
 export declare function setRegisteredThemes(themes: Theme[]): void;

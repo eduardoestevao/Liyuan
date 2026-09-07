@@ -20,6 +20,7 @@ declare class TreeList implements Component {
     private foldedNodes;
     onSelect?: (entryId: string) => void;
     onCancel?: () => void;
+    onCopy?: (text: string | undefined) => void;
     onLabelEdit?: (entryId: string, currentLabel: string | undefined) => void;
     constructor(tree: SessionTreeNode[], currentLeafId: string | null, maxVisibleLines: number, initialSelectedId?: string, initialFilterMode?: FilterMode);
     /**
@@ -43,12 +44,15 @@ declare class TreeList implements Component {
     invalidate(): void;
     getSearchQuery(): string;
     getSelectedNode(): SessionTreeNode | undefined;
+    copySelected(): void;
     updateNodeLabel(entryId: string, label: string | undefined, labelTimestamp?: string): void;
     private getStatusLabels;
     render(width: number): string[];
     private getEntryDisplayText;
     private formatLabelTimestamp;
     private extractContent;
+    private extractFullContent;
+    private getEntryCopyText;
     private hasTextContent;
     private formatToolCall;
     handleInput(keyData: string): void;
@@ -76,6 +80,7 @@ export declare class TreeSelectorComponent extends Container implements Focusabl
     private labelInputContainer;
     private treeContainer;
     private onLabelChangeCallback?;
+    onCopy?: (text: string | undefined) => void;
     private _focused;
     get focused(): boolean;
     set focused(value: boolean);

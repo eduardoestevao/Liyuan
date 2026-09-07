@@ -1,9 +1,9 @@
 /**
  * List available models with optional fuzzy search
  */
-import type { ModelRegistry } from "../core/model-registry.ts";
+import type { ModelRuntime } from "../core/model-runtime.ts";
 /**
  * List available models, optionally filtered by search pattern
  */
-export declare function listModels(modelRegistry: ModelRegistry, searchPattern?: string): Promise<void>;
+export declare function listModels(modelRuntime: ModelRuntime, searchPattern?: string, signal?: AbortSignal): Promise<void>;
 //# sourceMappingURL=list-models.d.ts.map

@@ -10,19 +10,22 @@ import { useCallback, useEffect, useState } from "react";
 import { apiDelete, apiGet, apiPost } from "../api.ts";
 import { ConfirmButton, Toggle } from "./kit.tsx";
 
-type StageSkill = { dir: string; name: string; description: string; chars: number; body: string; disabled: boolean };
-type EditState = { dir: string | null; name: string; description: string; body: string };
+type Scope = "global" | "card";
+type StageSkill = { dir: string; name: string; description: string; chars: number; body: string; disabled: boolean; scope: Scope; shadowed?: boolean };
+type EditState = { dir: string | null; name: string; description: string; body: string; scope: Scope };
 
 export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
 	const [skills, setSkills] = useState<StageSkill[] | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [edit, setEdit] = useState<EditState | null>(null);
 	const [busy, setBusy] = useState(false);
+	const [defaultScope, setDefaultScope] = useState<Scope>("global");
 
 	const reload = useCallback(async () => {
 		try {
-			const r = await apiGet<{ skills: StageSkill[] }>("/api/stage-skills");
+			const r = await apiGet<{ skills: StageSkill[]; defaultScope: Scope }>("/api/stage-skills");
 			setSkills(r.skills);
+			setDefaultScope(r.defaultScope);
 			setError(null);
 		} catch (e) {
 			setError(e instanceof Error ? e.message : String(e));
@@ -38,6 +41,7 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 		try {
 			await apiPost("/api/stage-skills", {
 				dir: edit.dir ?? undefined,
+				scope: edit.scope,
 				name: edit.name,
 				description: edit.description,
 				body: edit.body,
@@ -58,6 +62,7 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 		try {
 			await apiPost("/api/stage-skills", {
 				dir: s.dir,
+				scope: s.scope,
 				name: s.name,
 				description: s.description,
 				body: s.body,
@@ -71,12 +76,12 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 		}
 	};
 
-	const remove = async (dir: string) => {
+	const remove = async (dir: string, scope: Scope) => {
 		setBusy(true);
 		try {
-			await apiDelete(`/api/stage-skills?dir=${encodeURIComponent(dir)}`);
+			await apiDelete(`/api/stage-skills?dir=${encodeURIComponent(dir)}&scope=${scope}`);
 			toast("info", `已删除「${dir}」`);
-			if (edit?.dir === dir) setEdit(null);
+			if (edit?.dir === dir && edit.scope === scope) setEdit(null);
 			await reload();
 		} catch (e) {
 			toast("error", e instanceof Error ? e.message : String(e));
@@ -89,6 +94,11 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 		if (!edit) return null;
 		return (
 			<div className="skill-edit-form">
+				<label className="field-label">适用范围</label>
+				<select aria-label="技能适用范围" value={edit.scope} disabled={busy || edit.dir !== null} onChange={(e) => setEdit({ ...edit, scope: e.target.value as Scope })}>
+					{defaultScope === "card" && <option value="card">当前角色卡</option>}
+					<option value="global">所有角色卡</option>
+				</select>
 				<label className="field-label">名称（模型用它点名 skill_read）</label>
 				<input
 					className="panel-search"
@@ -137,7 +147,7 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 				<button
 					className="drawer-btn"
 					disabled={busy || !!edit}
-					onClick={() => setEdit({ dir: null, name: "", description: "", body: "" })}
+						onClick={() => setEdit({ dir: null, name: "", description: "", body: "", scope: defaultScope })}
 				>
 					＋ 新建 skill
 				</button>
@@ -149,16 +159,16 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 			{/* 新建表单在顶部；编辑既有项时表单内联到那一行的位置（不用翻回顶部） */}
 			{edit && edit.dir === null && renderForm()}
 			{skills?.map((s) =>
-				edit && edit.dir === s.dir ? (
-					<div key={s.dir}>{renderForm()}</div>
-				) : (
-					<div key={s.dir} className="skill-lib-row">
+					edit && edit.dir === s.dir && edit.scope === s.scope ? (
+						<div key={`${s.scope}:${s.dir}`}>{renderForm()}</div>
+					) : (
+						<div key={`${s.scope}:${s.dir}`} className="skill-lib-row">
 						<div className="skill-lib-main">
 							<span className="lore-title">
 								{s.name}
 							</span>
 							<span className="lore-meta">
-								{s.description} · {s.chars.toLocaleString()} 字
+									{s.scope === "card" ? "当前卡" : "全局"}{s.shadowed ? " · 当前卡已覆盖" : ""} · {s.description} · {s.chars.toLocaleString()} 字
 							</span>
 						</div>
 						<label className="expose-toggle" title="开＝名字与说明上 skill_read 清单，剧情模型按需读；关＝对模型隐身（本页仍在，随时开回来）">
@@ -169,11 +179,11 @@ export function SkillLibrary({ toast }: { toast: (level: "info" | "warning" | "e
 							<button
 								className="act"
 								disabled={busy || !!edit}
-								onClick={() => setEdit({ dir: s.dir, name: s.name, description: s.description, body: s.body })}
+									onClick={() => setEdit({ dir: s.dir, name: s.name, description: s.description, body: s.body, scope: s.scope })}
 							>
 								编辑
 							</button>
-							<ConfirmButton className="act" disabled={busy || !!edit} confirmText="确认删除" onConfirm={() => void remove(s.dir)}>
+								<ConfirmButton className="act" disabled={busy || !!edit} confirmText="确认删除" onConfirm={() => void remove(s.dir, s.scope)}>
 								删除
 							</ConfirmButton>
 						</div>

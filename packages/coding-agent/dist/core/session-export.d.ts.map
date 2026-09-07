@@ -1,0 +1,1 @@
+{"version":3,"file":"session-export.d.ts","sourceRoot":"","sources":["../../src/core/session-export.ts"],"names":[],"mappings":"AAGA,OAAO,EAA+C,KAAK,cAAc,EAAE,MAAM,sBAAsB,CAAC;AAExG,2FAA2F;AAC3F,wBAAgB,oBAAoB,CACnC,cAAc,EAAE,cAAc,EAC9B,UAAU,CAAC,EAAE,MAAM,EACnB,qBAAqB,CAAC,EAAE,CAAC,QAAQ,EAAE,MAAM,GAAG,IAAI,EAAE,SAAS,EAAE,MAAM,KAAK,SAAS,MAAM,EAAE,GACvF,MAAM,CA+BR"}

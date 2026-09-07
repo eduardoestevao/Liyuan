@@ -2,6 +2,16 @@
 
 > 2026-09-05 立。**本档是执行计划，问题底账在 `docs/FINDINGS-PI-RETURN.md`。**
 >
+> **2026-09-08 进度**：卡项目化与跨会话记忆已先行完成；第一刀使主模型与工具循环改走 AgentSession，
+> 第二刀已完成 **0.80.3 → 0.84.4**。见 [第一刀记录](PI-RETURN-KNIFE1.md)、[第二刀记录](PI-RETURN-KNIFE2.md)。
+> 本档以下保留早期方案；当前采用固定 cwd、显式 sessionDir，coding-agent 会话仍为 v3 JSONL。
+> 第三刀已补齐本拍稿件、计划、原文取证、卡级技能与记忆纠错，见 [工具与验证记录](PI-RETURN-KNIFE3.md)。
+> 无预设下的 [DeepSeek 自主验收](PI-RETURN-AUTONOMY-DEEPSEEK.md) 已证明拍内闭环。
+> 随后按用户限定的**上一拍**范围，补齐定位、版本事务、历史投影与 ask 回答的跨拍归属；
+> 官方 DeepSeek 三次回改复验通过，见 [上一拍修订记录](PI-RETURN-PREVIOUS-DRAFT.md)。
+> 任意章节的修改另归 [小说创作模式](PLAN-NOVEL-MODE.md)，延期设计。
+> 用户补充的复杂卡制作维度另记于 [角色卡制作与修改](PLAN-CARD-AUTHORING.md)，尚未开工。
+>
 > **前置定案（用户 2026-09-05，高于本档一切内容）**
 > 1. 「现在的梨园不能再修修补补了」——它对比酒馆成熟自洽，但**不是 agent**；在现有框架里思考
 >    得不到想要的结果。

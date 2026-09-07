@@ -6,7 +6,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -21,7 +21,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -36,7 +36,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -51,7 +51,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -66,7 +66,37 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "bytedance-seed/seedream-5-0-lite": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "bytedance-seed/seedream-5-0-pro": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -81,8 +111,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -96,8 +126,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -111,8 +141,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -126,8 +156,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -141,8 +171,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -156,8 +186,68 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "krea/krea-2-large": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "krea/krea-2-medium": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "krea/krea-2-medium-turbo": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "meta/muse-image": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
             cost: {
                 input: number;
                 output: number;
@@ -171,7 +261,22 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "microsoft/mai-image-2.5-pro": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -186,8 +291,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -201,8 +306,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -216,8 +321,8 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
             cost: {
                 input: number;
                 output: number;
@@ -231,7 +336,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -246,7 +351,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -261,7 +366,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -276,8 +381,53 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
-            output: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "openrouter/auto-beta": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: ("text" | "image")[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "qwen/qwen-image-3": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "qwen/qwen-image-3-pro": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
             cost: {
                 input: number;
                 output: number;
@@ -291,7 +441,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -306,7 +456,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -321,7 +471,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -336,7 +486,67 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "recraft/recraft-v4-styles": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "recraft/recraft-v4-styles-pro": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "recraft/recraft-v4-styles-pro-vector": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "recraft/recraft-v4-styles-vector": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -351,7 +561,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -366,7 +576,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -381,7 +591,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -396,7 +606,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -411,7 +621,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -426,7 +636,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -441,7 +651,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -456,7 +666,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -471,7 +681,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -486,7 +696,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -501,7 +711,22 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
+            output: "image"[];
+            cost: {
+                input: number;
+                output: number;
+                cacheRead: number;
+                cacheWrite: number;
+            };
+        };
+        readonly "x-ai/grok-imagine-image-2.0": {
+            id: string;
+            name: string;
+            api: "openrouter-images";
+            provider: string;
+            baseUrl: string;
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;
@@ -516,7 +741,7 @@ export declare const IMAGE_MODELS: {
             api: "openrouter-images";
             provider: string;
             baseUrl: string;
-            input: ("image" | "text")[];
+            input: ("text" | "image")[];
             output: "image"[];
             cost: {
                 input: number;

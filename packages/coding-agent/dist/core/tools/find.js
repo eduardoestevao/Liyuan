@@ -9,8 +9,12 @@ import { pathExists, resolveToCwd } from "./path-utils.js";
 import { getTextOutput, invalidArgText, shortenPath, str } from "./render-utils.js";
 import { wrapToolDefinition } from "./tool-definition-wrapper.js";
 import { DEFAULT_MAX_BYTES, formatSize, truncateHead } from "./truncate.js";
-function toPosixPath(value) {
-    return value.split(path.sep).join("/");
+/** Relativize a find result against the search root and normalize it to posix separators. */
+export function relativizeFindResultPath(resultPath, searchPath, pathModule = path) {
+    const hadTrailingSeparator = resultPath.endsWith(pathModule.sep) || (pathModule.sep === "\\" && resultPath.endsWith("/"));
+    const relativePath = pathModule.isAbsolute(resultPath) ? pathModule.relative(searchPath, resultPath) : resultPath;
+    const posixPath = relativePath.split(pathModule.sep).join("/");
+    return hadTrailingSeparator && !posixPath.endsWith("/") ? `${posixPath}/` : posixPath;
 }
 const findSchema = Type.Object({
     pattern: Type.String({
@@ -19,6 +23,10 @@ const findSchema = Type.Object({
     path: Type.Optional(Type.String({ description: "Directory to search in (default: current directory)" })),
     limit: Type.Optional(Type.Number({ description: "Maximum number of results (default: 1000)" })),
 });
+export const findToolSystemPromptContribution = {
+    snippet: "Find files by glob pattern (respects .gitignore)",
+    guidelines: [],
+};
 const DEFAULT_LIMIT = 1000;
 const defaultFindOperations = {
     exists: pathExists,
@@ -71,7 +79,7 @@ export function createFindToolDefinition(cwd, options) {
         name: "find",
         label: "find",
         description: `Search for files by glob pattern. Returns matching file paths relative to the search directory. Respects .gitignore. Output is truncated to ${DEFAULT_LIMIT} results or ${DEFAULT_MAX_BYTES / 1024}KB (whichever is hit first).`,
-        promptSnippet: "Find files by glob pattern (respects .gitignore)",
+        promptSnippet: findToolSystemPromptContribution.snippet,
         parameters: findSchema,
         async execute(_toolCallId, { pattern, path: searchDir, limit }, signal, _onUpdate, _ctx) {
             return new Promise((resolve, reject) => {
@@ -125,11 +133,7 @@ export function createFindToolDefinition(cwd, options) {
                                 return;
                             }
                             // Relativize paths against the search root for stable output.
-                            const relativized = results.map((p) => {
-                                if (p.startsWith(searchPath))
-                                    return toPosixPath(p.slice(searchPath.length + 1));
-                                return toPosixPath(path.relative(searchPath, p));
-                            });
+                            const relativized = results.map((p) => relativizeFindResultPath(p, searchPath));
                             const resultLimitReached = relativized.length >= effectiveLimit;
                             const rawOutput = relativized.join("\n");
                             const truncation = truncateHead(rawOutput, { maxLines: Number.MAX_SAFE_INTEGER });
@@ -154,7 +158,7 @@ export function createFindToolDefinition(cwd, options) {
                             return;
                         }
                         // Default implementation uses fd.
-                        const fdPath = await ensureTool("fd", true);
+                        const fdPath = await ensureTool("fd");
                         if (signal?.aborted) {
                             settle(() => reject(new Error("Operation aborted")));
                             return;
@@ -191,6 +195,9 @@ export function createFindToolDefinition(cwd, options) {
                             if (!pattern.startsWith("/") && !pattern.startsWith("**/") && pattern !== "**") {
                                 effectivePattern = `**/${pattern}`;
                             }
+                            // fd matches full paths using native separators on Windows.
+                            if (process.platform === "win32")
+                                effectivePattern = effectivePattern.replaceAll("/", String.raw `[/\\]`);
                         }
                         args.push("--", effectivePattern, searchPath);
                         const child = spawn(fdPath, args, { stdio: ["ignore", "pipe", "pipe"] });
@@ -241,17 +248,7 @@ export function createFindToolDefinition(cwd, options) {
                                 const line = rawLine.replace(/\r$/, "").trim();
                                 if (!line)
                                     continue;
-                                const hadTrailingSlash = line.endsWith("/") || line.endsWith("\\");
-                                let relativePath = line;
-                                if (line.startsWith(searchPath)) {
-                                    relativePath = line.slice(searchPath.length + 1);
-                                }
-                                else {
-                                    relativePath = path.relative(searchPath, line);
-                                }
-                                if (hadTrailingSlash && !relativePath.endsWith("/"))
-                                    relativePath += "/";
-                                relativized.push(toPosixPath(relativePath));
+                                relativized.push(relativizeFindResultPath(line, searchPath));
                             }
                             const resultLimitReached = relativized.length >= effectiveLimit;
                             const rawOutput = relativized.join("\n");

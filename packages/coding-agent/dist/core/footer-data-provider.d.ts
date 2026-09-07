@@ -1,6 +1,16 @@
+export type GitPaths = {
+    repoDir: string;
+    commonGitDir: string;
+    headPath: string;
+};
+/**
+ * Find git metadata paths by walking up from cwd.
+ * Handles both regular git repos (.git is a directory) and worktrees (.git is a file).
+ */
+export declare function findGitPaths(cwd: string): GitPaths | null;
 /**
  * Provides git branch and extension statuses - data not otherwise accessible to extensions.
- * Token stats, model info available via ctx.sessionManager and ctx.model.
+ * Context usage on ctx.getContextUsage(), token stats on ctx.sessionManager.getEntries(), model info on ctx.model.
  */
 export declare class FooterDataProvider {
     private cwd;

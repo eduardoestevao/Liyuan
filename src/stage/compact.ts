@@ -27,6 +27,7 @@ import {
 } from "./assemble.ts";
 import { buildRpSummaryPrompt } from "../scribe.ts";
 import { formatState } from "../state.ts";
+import { applyDraftRevisions } from "./draft-projection.ts";
 import type { WorldState } from "../types.ts";
 
 export { SUMMARY_ENTRY_TYPE };
@@ -91,6 +92,7 @@ export function serializeForSummary(entries: BranchEntryLike[], userName: string
  * 返回 null = 本拍不压缩。
  */
 export function planCompaction(branch: BranchEntryLike[], opts: PlanCompactionOptions): CompactPlan | null {
+	branch = applyDraftRevisions(branch, { omitEditRequests: true });
 	const keep = opts.keepRecentBeats ?? KEEP_RECENT_BEATS;
 	const minChars = opts.minChars ?? MIN_COMPACT_CHARS;
 	if (!Number.isFinite(opts.everyNTurns) || opts.everyNTurns <= 0) return null;

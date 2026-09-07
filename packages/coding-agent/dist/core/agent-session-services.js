@@ -1,8 +1,7 @@
 import { join } from "node:path";
 import { getAgentDir } from "../config.js";
 import { resolvePath } from "../utils/paths.js";
-import { AuthStorage } from "./auth-storage.js";
-import { ModelRegistry } from "./model-registry.js";
+import { ModelRuntime } from "./model-runtime.js";
 import { DefaultResourceLoader, } from "./resource-loader.js";
 import { createAgentSession } from "./sdk.js";
 import { SettingsManager } from "./settings-manager.js";
@@ -54,9 +53,13 @@ function applyExtensionFlagValues(resourceLoader, extensionFlagValues) {
 export async function createAgentSessionServices(options) {
     const cwd = resolvePath(options.cwd);
     const agentDir = options.agentDir ? resolvePath(options.agentDir) : getAgentDir();
-    const authStorage = options.authStorage ?? AuthStorage.create(join(agentDir, "auth.json"));
+    const modelRuntime = options.modelRuntime ??
+        (await ModelRuntime.create({
+            authPath: join(agentDir, "auth.json"),
+            modelsPath: join(agentDir, "models.json"),
+            signal: options.modelRuntimeSignal,
+        }));
     const settingsManager = options.settingsManager ?? SettingsManager.create(cwd, agentDir);
-    const modelRegistry = options.modelRegistry ?? ModelRegistry.create(authStorage, join(agentDir, "models.json"));
     const resourceLoader = new DefaultResourceLoader({
         ...(options.resourceLoaderOptions ?? {}),
         cwd,
@@ -68,7 +71,7 @@ export async function createAgentSessionServices(options) {
     const extensionsResult = resourceLoader.getExtensions();
     for (const { name, config, extensionPath } of extensionsResult.runtime.pendingProviderRegistrations) {
         try {
-            modelRegistry.registerProvider(name, config);
+            modelRuntime.registerProvider(name, config);
         }
         catch (error) {
             const message = error instanceof Error ? error.message : String(error);
@@ -79,13 +82,26 @@ export async function createAgentSessionServices(options) {
         }
     }
     extensionsResult.runtime.pendingProviderRegistrations = [];
+    for (const { provider, extensionPath } of extensionsResult.runtime.pendingNativeProviderRegistrations) {
+        try {
+            modelRuntime.registerNativeProvider(provider);
+        }
+        catch (error) {
+            const message = error instanceof Error ? error.message : String(error);
+            diagnostics.push({
+                type: "error",
+                message: `Extension "${extensionPath}" error: ${message}`,
+            });
+        }
+    }
+    extensionsResult.runtime.pendingNativeProviderRegistrations = [];
+    await modelRuntime.refresh({ allowNetwork: false });
     diagnostics.push(...applyExtensionFlagValues(resourceLoader, options.extensionFlagValues));
     return {
         cwd,
         agentDir,
-        authStorage,
+        modelRuntime,
         settingsManager,
-        modelRegistry,
         resourceLoader,
         diagnostics,
     };
@@ -101,9 +117,8 @@ export async function createAgentSessionFromServices(options) {
     return createAgentSession({
         cwd: options.services.cwd,
         agentDir: options.services.agentDir,
-        authStorage: options.services.authStorage,
+        modelRuntime: options.services.modelRuntime,
         settingsManager: options.services.settingsManager,
-        modelRegistry: options.services.modelRegistry,
         resourceLoader: options.services.resourceLoader,
         sessionManager: options.sessionManager,
         model: options.model,

@@ -1,19 +1,19 @@
-import { Container, getCapabilities, SelectList, SettingsList, Spacer, Text, } from "@liyuan/tui";
+import { getSupportedThinkingLevels } from "@liyuan/ai";
+import { Container, getCapabilities, SettingsList, Spacer, Text, } from "@liyuan/tui";
 import { formatHttpIdleTimeoutMs, HTTP_IDLE_TIMEOUT_CHOICES } from "../../../core/http-dispatcher.js";
-import { getSelectListTheme, getSettingsListTheme, parseAutoThemeSetting, theme, } from "../theme/theme.js";
+import { getSettingsListTheme, parseAutoThemeSetting, theme } from "../theme/theme.js";
 import { DynamicBorder } from "./dynamic-border.js";
 import { keyDisplayText } from "./keybinding-hints.js";
-const SETTINGS_SUBMENU_SELECT_LIST_LAYOUT = {
-    minPrimaryColumnWidth: 12,
-    maxPrimaryColumnWidth: 32,
-};
+import { SelectSubmenu, SteppedSubmenu } from "./settings-submenu.js";
+const MODEL_PICKER_LAYOUT = { minPrimaryColumnWidth: 12, maxPrimaryColumnWidth: 46 };
 const THINKING_DESCRIPTIONS = {
     off: "No reasoning",
     minimal: "Very brief reasoning (~1k tokens)",
     low: "Light reasoning (~2k tokens)",
     medium: "Moderate reasoning (~8k tokens)",
     high: "Deep reasoning (~16k tokens)",
-    xhigh: "Maximum reasoning (~32k tokens)",
+    xhigh: "Extra-high reasoning (~32k tokens)",
+    max: "Maximum reasoning",
 };
 const DEFAULT_PROJECT_TRUST_LABELS = {
     ask: "Ask",
@@ -53,43 +53,21 @@ class WarningSettingsSubmenu extends Container {
         this.settingsList.handleInput(data);
     }
 }
-class SelectSubmenu extends Container {
-    selectList;
-    constructor(title, description, options, currentValue, onSelect, onCancel, onSelectionChange) {
-        super();
-        // Title
-        this.addChild(new Text(theme.bold(theme.fg("accent", title)), 0, 0));
-        // Description
-        if (description) {
-            this.addChild(new Spacer(1));
-            this.addChild(new Text(theme.fg("muted", description), 0, 0));
-        }
-        // Spacer
-        this.addChild(new Spacer(1));
-        // Select list
-        this.selectList = new SelectList(options, Math.min(options.length, 10), getSelectListTheme(), SETTINGS_SUBMENU_SELECT_LIST_LAYOUT);
-        // Pre-select current value
-        const currentIndex = options.findIndex((o) => o.value === currentValue);
-        if (currentIndex !== -1) {
-            this.selectList.setSelectedIndex(currentIndex);
-        }
-        this.selectList.onSelect = (item) => {
-            onSelect(item.value);
-        };
-        this.selectList.onCancel = onCancel;
-        if (onSelectionChange) {
-            this.selectList.onSelectionChange = (item) => {
-                onSelectionChange(item.value);
-            };
-        }
-        this.addChild(this.selectList);
-        // Hint
-        this.addChild(new Spacer(1));
-        this.addChild(new Text(theme.fg("dim", "  Enter to select · Esc to go back"), 0, 0));
-    }
-    handleInput(data) {
-        this.selectList.handleInput(data);
-    }
+const CLEAR_OVERRIDE_VALUE = "__clear__";
+function modelSettingKey(model) {
+    return `${model.provider}/${model.id}`;
+}
+function modelDisplayLabel(model) {
+    return `${model.id} [${model.provider}]`;
+}
+function modelThinkingOverridesSummary(overrides) {
+    const count = Object.keys(overrides).length;
+    if (count === 0)
+        return "none";
+    return `${count} configured`;
+}
+function modelItemLabel(model) {
+    return `${model.id} ${theme.fg("muted", `[${model.provider}]`)}`;
 }
 function themeItems(availableThemes) {
     return availableThemes.map((name) => ({ value: name, label: name }));
@@ -270,7 +248,12 @@ export class SettingsSelectorComponent extends Container {
         super();
         const supportsImages = getCapabilities().images;
         const followUpKey = keyDisplayText("app.message.followUp");
+        const cycleThinkingKey = keyDisplayText("app.thinking.cycle");
         let currentWarnings = { ...config.warnings };
+        const currentModelThinkingLevels = { ...config.modelThinkingLevels };
+        const defaultModelByValue = new Map(config.availableDefaultModels.map((model) => [modelSettingKey(model), model]));
+        const currentDefaultModelKey = defaultModelByValue.has(config.defaultModel) ? config.defaultModel : undefined;
+        const currentModelKey = config.currentModel ? modelSettingKey(config.currentModel) : undefined;
         const items = [
             {
                 id: "autocompact",
@@ -312,6 +295,20 @@ export class SettingsSelectorComponent extends Container {
                 label: "Hide thinking",
                 description: "Hide thinking blocks in assistant responses",
                 currentValue: config.hideThinkingBlock ? "true" : "false",
+                values: ["true", "false"],
+            },
+            {
+                id: "mermaid-rendering",
+                label: "Mermaid diagrams",
+                description: "Render Mermaid code blocks as Unicode diagrams",
+                currentValue: config.mermaidRenderingMode,
+                values: ["off", "final", "streaming"],
+            },
+            {
+                id: "cache-miss-notices",
+                label: "Cache miss notices",
+                description: "Show transcript notices for significant prompt-cache misses and compaction costs",
+                currentValue: config.showCacheMissNotices ? "true" : "false",
                 values: ["true", "false"],
             },
             {
@@ -367,18 +364,126 @@ export class SettingsSelectorComponent extends Container {
                 }, () => done()),
             },
             {
-                id: "thinking",
-                label: "Thinking level",
-                description: "Reasoning depth for thinking-capable models",
-                currentValue: config.thinkingLevel,
-                submenu: (currentValue, done) => new SelectSubmenu("Thinking Level", "Select reasoning depth for thinking-capable models", config.availableThinkingLevels.map((level) => ({
-                    value: level,
-                    label: level,
-                    description: THINKING_DESCRIPTIONS[level],
-                })), currentValue, (value) => {
-                    callbacks.onThinkingLevelChange(value);
-                    done(value);
-                }, () => done()),
+                id: "model-thinking",
+                label: "Default thinking level per model",
+                description: `Override the default thinking level for specific models. ${cycleThinkingKey} cycles in-session.`,
+                currentValue: modelThinkingOverridesSummary(currentModelThinkingLevels),
+                submenu: (_currentValue, done) => {
+                    const steps = [
+                        {
+                            key: "model",
+                            title: "Per-Model Thinking Level",
+                            description: "Select a model to configure",
+                            options: () => {
+                                const sorted = [...config.availableDefaultModels].sort((a, b) => {
+                                    const aKey = modelSettingKey(a);
+                                    const bKey = modelSettingKey(b);
+                                    if (aKey === currentModelKey)
+                                        return -1;
+                                    if (bKey === currentModelKey)
+                                        return 1;
+                                    if (aKey === currentDefaultModelKey)
+                                        return -1;
+                                    if (bKey === currentDefaultModelKey)
+                                        return 1;
+                                    return a.provider.localeCompare(b.provider);
+                                });
+                                const items = sorted.map((model) => {
+                                    const key = modelSettingKey(model);
+                                    const override = currentModelThinkingLevels[key];
+                                    return {
+                                        value: key,
+                                        label: modelItemLabel(model),
+                                        description: override ?? undefined,
+                                    };
+                                });
+                                if (items.length === 0) {
+                                    items.push({
+                                        value: "__none__",
+                                        label: "No models available",
+                                        description: "Log in to a provider or configure an API key first",
+                                    });
+                                }
+                                return items;
+                            },
+                            preselect: () => currentModelKey ?? currentDefaultModelKey,
+                            searchable: true,
+                            layout: MODEL_PICKER_LAYOUT,
+                        },
+                        {
+                            key: "level",
+                            title: (ctx) => {
+                                const m = defaultModelByValue.get(ctx.model);
+                                return `Thinking Level for ${m ? modelDisplayLabel(m) : ctx.model}`;
+                            },
+                            description: "Select default thinking level for this model",
+                            options: (ctx) => {
+                                const model = defaultModelByValue.get(ctx.model);
+                                if (!model)
+                                    return [];
+                                const levels = (model.reasoning ? getSupportedThinkingLevels(model) : ["off"]);
+                                const items = levels.map((level) => ({
+                                    value: level,
+                                    label: level,
+                                    description: THINKING_DESCRIPTIONS[level],
+                                }));
+                                if (currentModelThinkingLevels[ctx.model] !== undefined) {
+                                    items.push({
+                                        value: CLEAR_OVERRIDE_VALUE,
+                                        label: "(clear override)",
+                                        description: `Revert to global default (${config.thinkingLevel})`,
+                                    });
+                                }
+                                return items;
+                            },
+                            preselect: (ctx) => currentModelThinkingLevels[ctx.model],
+                        },
+                    ];
+                    const summary = () => modelThinkingOverridesSummary(currentModelThinkingLevels);
+                    return new SteppedSubmenu(steps, (selections) => {
+                        const model = defaultModelByValue.get(selections.model);
+                        if (!model)
+                            return;
+                        if (selections.level === CLEAR_OVERRIDE_VALUE) {
+                            callbacks.onModelThinkingLevelRemove(model.provider, model.id);
+                            delete currentModelThinkingLevels[selections.model];
+                        }
+                        else {
+                            callbacks.onModelThinkingLevelChange(model.provider, model.id, selections.level);
+                            currentModelThinkingLevels[selections.model] = selections.level;
+                        }
+                    }, () => {
+                        done(summary());
+                    }, { loop: true });
+                },
+            },
+            {
+                id: "tui-mode",
+                label: "TUI mode",
+                description: "Interface layout; fullscreen mode is experimental",
+                currentValue: config.tuiMode,
+                values: ["regular", "fullscreen"],
+            },
+            {
+                id: "fullscreen-exit-output",
+                label: "Fullscreen exit output",
+                description: "Print the transcript or only a session resume hint when exiting fullscreen mode",
+                currentValue: config.fullscreenExitOutput,
+                values: ["transcript", "resume-hint"],
+            },
+            {
+                id: "fullscreen-scrollbar",
+                label: "Fullscreen scrollbar",
+                description: "Scrollbar behavior in fullscreen mode; has no effect in regular mode",
+                currentValue: config.fullscreenScrollbar,
+                values: ["auto", "always", "hidden"],
+            },
+            {
+                id: "fullscreen-copy-on-select",
+                label: "Fullscreen copy on select",
+                description: "Automatically copy selected text in fullscreen mode; disable to copy selections with Ctrl+X",
+                currentValue: config.fullscreenCopyOnSelect ? "true" : "false",
+                values: ["true", "false"],
             },
             {
                 id: "theme",
@@ -527,6 +632,12 @@ export class SettingsSelectorComponent extends Container {
                 case "hide-thinking":
                     callbacks.onHideThinkingBlockChange(newValue === "true");
                     break;
+                case "mermaid-rendering":
+                    callbacks.onMermaidRenderingModeChange(newValue);
+                    break;
+                case "cache-miss-notices":
+                    callbacks.onShowCacheMissNoticesChange(newValue === "true");
+                    break;
                 case "collapse-changelog":
                     callbacks.onCollapseChangelogChange(newValue === "true");
                     break;
@@ -566,6 +677,18 @@ export class SettingsSelectorComponent extends Container {
                     break;
                 case "terminal-progress":
                     callbacks.onShowTerminalProgressChange(newValue === "true");
+                    break;
+                case "tui-mode":
+                    callbacks.onTuiModeChange(newValue);
+                    break;
+                case "fullscreen-exit-output":
+                    callbacks.onFullscreenExitOutputChange(newValue);
+                    break;
+                case "fullscreen-scrollbar":
+                    callbacks.onFullscreenScrollbarChange(newValue);
+                    break;
+                case "fullscreen-copy-on-select":
+                    callbacks.onFullscreenCopyOnSelectChange(newValue === "true");
                     break;
                 case "theme":
                     callbacks.onThemeChange(newValue);

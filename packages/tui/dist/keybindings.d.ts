@@ -6,6 +6,8 @@ import { type KeyId } from "./keys.ts";
 export interface Keybindings {
     "tui.editor.cursorUp": true;
     "tui.editor.cursorDown": true;
+    "tui.editor.historyPrevious": true;
+    "tui.editor.historyNext": true;
     "tui.editor.cursorLeft": true;
     "tui.editor.cursorRight": true;
     "tui.editor.cursorWordLeft": true;
@@ -35,6 +37,20 @@ export interface Keybindings {
     "tui.select.pageDown": true;
     "tui.select.confirm": true;
     "tui.select.cancel": true;
+    "tui.altScreen.pageUp": true;
+    "tui.altScreen.pageDown": true;
+    "tui.altScreen.halfPageUp": true;
+    "tui.altScreen.halfPageDown": true;
+    "tui.altScreen.lineUp": true;
+    "tui.altScreen.lineDown": true;
+    "tui.altScreen.previousPrompt": true;
+    "tui.altScreen.nextPrompt": true;
+    "tui.altScreen.search": true;
+    "tui.altScreen.searchNext": true;
+    "tui.altScreen.searchPrevious": true;
+    "tui.altScreen.searchClose": true;
+    "tui.altScreen.top": true;
+    "tui.altScreen.bottom": true;
 }
 export type Keybinding = keyof Keybindings;
 export interface KeybindingDefinition {
@@ -51,6 +67,14 @@ export declare const TUI_KEYBINDINGS: {
     readonly "tui.editor.cursorDown": {
         readonly defaultKeys: "down";
         readonly description: "Move cursor down";
+    };
+    readonly "tui.editor.historyPrevious": {
+        readonly defaultKeys: [];
+        readonly description: "Select previous prompt history entry";
+    };
+    readonly "tui.editor.historyNext": {
+        readonly defaultKeys: [];
+        readonly description: "Select next prompt history entry";
     };
     readonly "tui.editor.cursorLeft": {
         readonly defaultKeys: ["left", "ctrl+b"];
@@ -69,11 +93,11 @@ export declare const TUI_KEYBINDINGS: {
         readonly description: "Move cursor word right";
     };
     readonly "tui.editor.cursorLineStart": {
-        readonly defaultKeys: ["home", "ctrl+a"];
+        readonly defaultKeys: ["home", "ctrl+home", "ctrl+a"];
         readonly description: "Move to line start";
     };
     readonly "tui.editor.cursorLineEnd": {
-        readonly defaultKeys: ["end", "ctrl+e"];
+        readonly defaultKeys: ["end", "ctrl+end", "ctrl+e"];
         readonly description: "Move to line end";
     };
     readonly "tui.editor.jumpForward": {
@@ -85,11 +109,11 @@ export declare const TUI_KEYBINDINGS: {
         readonly description: "Jump backward to character";
     };
     readonly "tui.editor.pageUp": {
-        readonly defaultKeys: "pageUp";
+        readonly defaultKeys: ["pageUp", "ctrl+pageUp"];
         readonly description: "Page up";
     };
     readonly "tui.editor.pageDown": {
-        readonly defaultKeys: "pageDown";
+        readonly defaultKeys: ["pageDown", "ctrl+pageDown"];
         readonly description: "Page down";
     };
     readonly "tui.editor.deleteCharBackward": {
@@ -167,6 +191,62 @@ export declare const TUI_KEYBINDINGS: {
     readonly "tui.select.cancel": {
         readonly defaultKeys: ["escape", "ctrl+c"];
         readonly description: "Cancel selection";
+    };
+    readonly "tui.altScreen.pageUp": {
+        readonly defaultKeys: "pageUp";
+        readonly description: "Scroll viewport up one page";
+    };
+    readonly "tui.altScreen.pageDown": {
+        readonly defaultKeys: "pageDown";
+        readonly description: "Scroll viewport down one page";
+    };
+    readonly "tui.altScreen.halfPageUp": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport up half a page";
+    };
+    readonly "tui.altScreen.halfPageDown": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport down half a page";
+    };
+    readonly "tui.altScreen.lineUp": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport up one line";
+    };
+    readonly "tui.altScreen.lineDown": {
+        readonly defaultKeys: [];
+        readonly description: "Scroll viewport down one line";
+    };
+    readonly "tui.altScreen.previousPrompt": {
+        readonly defaultKeys: ["ctrl+shift+up", "ctrl+up"];
+        readonly description: "Jump to previous semantic prompt";
+    };
+    readonly "tui.altScreen.nextPrompt": {
+        readonly defaultKeys: ["ctrl+shift+down", "ctrl+down"];
+        readonly description: "Jump to next semantic prompt";
+    };
+    readonly "tui.altScreen.search": {
+        readonly defaultKeys: "ctrl+shift+f";
+        readonly description: "Search the primary scroll view";
+    };
+    readonly "tui.altScreen.searchNext": {
+        readonly defaultKeys: ["enter", "ctrl+g"];
+        readonly description: "Select the next search match";
+    };
+    readonly "tui.altScreen.searchPrevious": {
+        readonly defaultKeys: ["shift+enter", "ctrl+shift+g"];
+        readonly description: "Select the previous search match";
+    };
+    readonly "tui.altScreen.searchClose": {
+        readonly defaultKeys: "escape";
+        readonly description: "Close transcript search";
+    };
+    readonly "tui.altScreen.top": {
+        readonly defaultKeys: "home";
+        readonly description: "Scroll viewport to top";
+    };
+    readonly "tui.altScreen.bottom": {
+        readonly defaultKeys: "end";
+        readonly description: "Scroll viewport to bottom";
     };
 };
 export interface KeybindingConflict {

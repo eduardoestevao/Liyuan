@@ -1,4 +1,4 @@
-import { type OAuthDeviceCodeInfo } from "@liyuan/ai/oauth";
+import type { AuthInfoLink, OAuthDeviceCodeInfo } from "@liyuan/ai";
 import { Container, type Focusable, type TUI } from "@liyuan/tui";
 /**
  * Login dialog component - replaces editor during OAuth login flow
@@ -35,10 +35,10 @@ export declare class LoginDialogComponent extends Container implements Focusable
      * Note: Does NOT clear content, appends to existing (preserves URL from showAuth)
      */
     showPrompt(message: string, placeholder?: string): Promise<string>;
-    /**
-     * Show informational text without prompting for input.
-     */
-    showInfo(lines: string[]): void;
+    /** Show informational text before another login step. */
+    showDetails(lines: string[]): void;
+    /** Show provider-owned information and links without starting an auth callback flow. */
+    showInfo(message: string, links?: readonly AuthInfoLink[], showCloseHint?: boolean): void;
     /**
      * Show waiting message (for polling flows like GitHub Copilot)
      */

@@ -5,8 +5,9 @@
  * - `pi -p "prompt"` - text output
  * - `pi --mode json "prompt"` - JSON event stream
  */
-import { flushRawStdout, writeRawStdout } from "../core/output-guard.js";
+import { flushRawStdout, waitForRawStdoutBackpressure, writeRawStdout } from "../core/output-guard.js";
 import { killTrackedDetachedChildren } from "../utils/shell.js";
+import { toJsonEvent } from "./json-event.js";
 /**
  * Run in print (single-shot) mode.
  * Sends prompts to the agent and outputs the result.
@@ -16,6 +17,7 @@ export async function runPrintMode(runtimeHost, options) {
     let exitCode = 0;
     let session = runtimeHost.session;
     let unsubscribe;
+    let unsubscribeBackpressure;
     let disposed = false;
     const signalCleanupHandlers = [];
     const disposeRuntime = async () => {
@@ -23,6 +25,7 @@ export async function runPrintMode(runtimeHost, options) {
             return;
         disposed = true;
         unsubscribe?.();
+        unsubscribeBackpressure?.();
         await runtimeHost.dispose();
     };
     const registerSignalHandlers = () => {
@@ -50,7 +53,7 @@ export async function runPrintMode(runtimeHost, options) {
         await session.bindExtensions({
             mode: mode === "json" ? "json" : "print",
             commandContextActions: {
-                waitForIdle: () => session.agent.waitForIdle(),
+                waitForIdle: () => session.waitForIdle(),
                 newSession: async (newSessionOptions) => runtimeHost.newSession(newSessionOptions),
                 fork: async (entryId, forkOptions) => {
                     const result = await runtimeHost.fork(entryId, forkOptions);
@@ -77,11 +80,18 @@ export async function runPrintMode(runtimeHost, options) {
             },
         });
         unsubscribe?.();
+        unsubscribeBackpressure?.();
         unsubscribe = session.subscribe((event) => {
             if (mode === "json") {
-                writeRawStdout(`${JSON.stringify(event)}\n`);
+                writeRawStdout(`${JSON.stringify(toJsonEvent(event))}\n`);
             }
         });
+        unsubscribeBackpressure =
+            mode === "json"
+                ? session.agent.subscribe(async () => {
+                    await waitForRawStdoutBackpressure();
+                })
+                : undefined;
     };
     try {
         if (mode === "json") {

@@ -35,10 +35,10 @@ const ASK_DELETE = { lastUserText: "把那条记忆忘掉", creationMode: "ask" 
 
 // ---------------- 1. 合一与跨 surface 一致性 ----------------
 
-test("向量库族四件；memory_search 三面共用一份实现", () => {
+test("记忆族六件；memory_search 三面共用一份实现", () => {
 	assert.deepEqual(
 		memoryTools.map((t) => t.name),
-		["memory_search", "memory_add", "memory_list", "memory_delete"],
+		["memory_search", "memory_read", "memory_update", "memory_add", "memory_list", "memory_delete"],
 	);
 	assert.deepEqual([...memorySearch.surfaces].sort(), ["assistant", "extension", "stage"]);
 	// 写侧与管理三件不给扩展面（那套工具面对台上不可达，不新增暴露）
@@ -48,7 +48,7 @@ test("向量库族四件；memory_search 三面共用一份实现", () => {
 	);
 	assert.deepEqual(
 		toolsFor(memoryTools, "stage").map((t) => t.name).sort(),
-		["memory_add", "memory_delete", "memory_list", "memory_search"],
+		["memory_add", "memory_delete", "memory_list", "memory_read", "memory_search", "memory_update"],
 	);
 });
 
@@ -62,7 +62,7 @@ test("跨 surface 一致性：同样的命中，正文逐字相同（差异只�
 	const s = await memorySearch.run({ query: "青梧" }, d, stageCtx);
 	const a = await memorySearch.run({ query: "青梧" }, d, assistantCtx);
 	assert.equal(s.text, a.text, "命中格式化是共用的，两面必须逐字一致");
-	assert.equal(s.text, "1. 〔旧事〕青梧在黑渊封印了魔尊。\n\n2. 〔archive〕玉佩碎成两半。");
+	assert.equal(s.text, "1. 〔旧事〕\n青梧在黑渊封印了魔尊。\n\n2. 〔archive〕\n玉佩碎成两半。");
 	assert.equal(s.activity, a.activity);
 });
 
@@ -116,7 +116,7 @@ test("写侧不给 store 参数：narrative 服务层禁写，只有一个合法
 
 	// list 要分库（两库性质不同：手动录入 vs 自动生成的剧情摘要）
 	const listProps = (memoryList.parameters(stageCtx) as { properties: Record<string, { enum?: string[] }> }).properties;
-	assert.deepEqual(listProps.store?.enum, ["external", "narrative"]);
+	assert.deepEqual(listProps.store?.enum, ["external", "narrative", "card"]);
 });
 
 test("memory_add 的描述必须钉死「不跨会话」并改道 lorebook_write（最易说谎处）", () => {

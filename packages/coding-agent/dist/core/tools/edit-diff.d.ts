@@ -60,11 +60,6 @@ export interface AppliedEditsResult {
  * Unicode quotes/dashes normalized to ASCII).
  */
 export declare function fuzzyFindText(content: string, oldText: string): FuzzyMatchResult;
-/** Strip UTF-8 BOM if present, return both the BOM (if any) and the text without it */
-export declare function stripBom(content: string): {
-    bom: string;
-    text: string;
-};
 /**
  * Apply one or more exact-text replacements to LF-normalized content.
  *

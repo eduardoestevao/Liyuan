@@ -82,7 +82,7 @@ import {
 	resolveConfigPath,
 } from "../src/paths.ts";
 import { deleteChat, exportChatZip, importChatZip, listCardSpaces, renameChat, resolveCardSpace } from "../src/cardspace.ts";
-import { scanSkillFiles } from "../src/stage/materials.ts";
+import { scanSkillFiles, stageSkillRoot } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import type { WorldlineView } from "../src/worldline.ts";
 import {
@@ -209,13 +209,13 @@ export interface RestHost {
 	selectModel(provider: string, id: string): Promise<CurrentModelInfo>;
 	setThinkingLevel(level: string): CurrentModelInfo;
 	authProviders(): AuthProviderInfo[];
-	setAuthKey(provider: string, key: string): void;
-	removeAuth(provider: string): void;
+	setAuthKey(provider: string, key: string): Promise<void>;
+	removeAuth(provider: string): Promise<void>;
 	/** runtime agent 目录（同步用，不对用户暴露） */
 	agentDir(): string;
 	/** 取某 provider 的运行时模型/端点快照 */
 	providerSnapshot(provider: string): ProviderRuntimeSnapshot | null;
-	refreshModels(): void;
+	refreshModels(): Promise<void>;
 	/** 会话重载（session_start 重放，素材重装）+ 服务端显示名刷新 + 全端对齐 */
 	reloadSession(): Promise<void>;
 	/**
@@ -668,7 +668,7 @@ function loadProjectAgentExtras(cwd: string): {
 	}
 }
 
-function loadOrSeedAgentConfig(host: RestHost): { path: string; exists: boolean; config: LiyuanAgentConfig; seeded: boolean } {
+async function loadOrSeedAgentConfig(host: RestHost): Promise<{ path: string; exists: boolean; config: LiyuanAgentConfig; seeded: boolean }> {
 	// 仓库为空时，把当前启用配置拆进仓库（迁移）
 	const mig = migrateActiveConfigIntoProfiles(host.cwd);
 	if (mig.migrated) {
@@ -685,7 +685,7 @@ function loadOrSeedAgentConfig(host: RestHost): { path: string; exists: boolean;
 			saveAgentConfig(host.cwd, cfg);
 		}
 		syncAgentConfigToRuntime(host.cwd, host.agentDir(), cfg);
-		host.refreshModels();
+		await host.refreshModels();
 		return { path: loaded.path, exists: true, config: cfg, seeded: false };
 	}
 
@@ -718,11 +718,11 @@ function loadOrSeedAgentConfig(host: RestHost): { path: string; exists: boolean;
 	};
 	saveAgentConfig(host.cwd, config);
 	syncAgentConfigToRuntime(host.cwd, host.agentDir(), config);
-	host.refreshModels();
+	await host.refreshModels();
 	return { path: loaded.path, exists: true, config, seeded: true };
 }
 
-function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): LiyuanAgentConfig {
+async function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): Promise<LiyuanAgentConfig> {
 	const normalized = normalizeAgentConfig(config);
 	// 合并磁盘上已有的模型字段（用户手改的 compat / thinkingLevelMap / cost 等不会被面板覆盖丢失）
 	const onDisk = loadAgentConfig(host.cwd).config;
@@ -734,7 +734,7 @@ function persistAgentConfig(host: RestHost, config: LiyuanAgentConfig): LiyuanAg
 	}
 	saveAgentConfig(host.cwd, normalized);
 	syncAgentConfigToRuntime(host.cwd, host.agentDir(), normalized);
-	host.refreshModels();
+	await host.refreshModels();
 	return normalized;
 }
 
@@ -1251,9 +1251,15 @@ export function createLorebookWithEntry(
 	}
 }
 
-/** 合并语料 + 「这条是 agent 自己写下的」标记（列举据此标「补充」） */export function loadMergedLoreMarked(cwd: string, config: RpConfig): Array<LorebookEntry & { agentWritten?: boolean }> {
+/** 合并语料及来源；内容指纹用于精确读取。 */
+export function loadMergedLoreMarked(cwd: string, config: RpConfig): Array<LorebookEntry & { agentWritten?: boolean; source?: string }> {
 	const { entries, sourceOf } = loadMergedLoreWithSource(cwd, config);
-	return entries.map((e) => (sourceOf(e) === "agent" ? { ...e, agentWritten: true } : e));
+	const sources = new Map<string, string>();
+	for (const rel of mountedLorebookPaths(config)) {
+		const abs = resolvePath(cwd, rel);
+		if (existsSync(abs)) for (const entry of loadLorebookFile(abs)) sources.set(loreFingerprint(entry.content), rel);
+	}
+	return entries.map((e) => ({ ...e, source: sources.get(loreFingerprint(e.content)) ?? "补充设定集", ...(sourceOf(e) === "agent" ? { agentWritten: true } : {}) }));
 }
 
 // ---------- persona 投影（PLAN-PANELS-V2 §2.5：config.userName/userPersona=当前 persona 的镜像） ----------
@@ -1770,8 +1776,11 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			// 保存后下一拍装载即生效（loadStageMaterials 每拍现读）。与 .liyuan-skills（幕后服务笔记）无关。
 			case "GET /api/stage-skills": {
 				sendJson(res, 200, {
-					skills: scanSkillFiles(host.cwd).map((s) => ({
+					defaultScope: stageSkillRoot(host.cwd) === stageSkillRoot(host.cwd, "global") ? "global" : "card",
+					skills: scanSkillFiles(host.cwd, true).map((s) => ({
 						dir: s.dir ?? s.name,
+						scope: s.scope,
+						shadowed: s.shadowed,
 						name: s.name,
 						description: s.description,
 						chars: s.body.length,
@@ -1788,19 +1797,24 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					description?: string;
 					body?: string;
 					disabled?: boolean;
+					scope?: "global" | "card";
 				};
+				if (body.scope !== undefined && body.scope !== "global" && body.scope !== "card") throw new Error("scope 须为 global 或 card。");
 				const r = saveStageSkill(host.cwd, {
 					dir: typeof body.dir === "string" && body.dir.trim() ? body.dir : undefined,
 					name: body.name ?? "",
 					description: body.description ?? "",
 					body: body.body ?? "",
+					scope: body.scope,
 					...(typeof body.disabled === "boolean" ? { disabled: body.disabled } : {}),
 				});
 				sendJson(res, 200, { ok: true, dir: r.dir, note: "下一拍装载即生效（引擎每拍现读 skills/）" });
 				return true;
 			}
 			case "DELETE /api/stage-skills": {
-				deleteStageSkill(host.cwd, query.get("dir") ?? "");
+				const scope = query.get("scope");
+				if (scope !== null && scope !== "global" && scope !== "card") throw new Error("scope 须为 global 或 card。");
+				deleteStageSkill(host.cwd, query.get("dir") ?? "", scope ?? undefined);
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
@@ -2961,7 +2975,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			// ---- 模型 ----
 			case "GET /api/models": {
 				// 打开连接面板时：agent.json → models.json，并重绑当前模型（手改 maxTokens 等无需整进程重启）
-				loadOrSeedAgentConfig(host);
+				(await loadOrSeedAgentConfig(host));
 				await rebindCurrentModel(host);
 				sendJson(res, 200, host.listModels());
 				return true;
@@ -2990,22 +3004,22 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			case "POST /api/auth": {
 				const body = JSON.parse(await readBody(req)) as { provider?: string; key?: string };
 				if (!body.provider || !body.key) throw new Error("缺少 provider / key");
-				host.setAuthKey(body.provider, body.key.trim());
-				host.refreshModels();
+				await host.setAuthKey(body.provider, body.key.trim());
+				await host.refreshModels();
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
 			case "DELETE /api/auth": {
 				const provider = query.get("provider");
 				if (!provider) throw new Error("缺少 provider");
-				host.removeAuth(provider);
-				host.refreshModels();
+				await host.removeAuth(provider);
+				await host.refreshModels();
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
 			// ---- 配置仓库 liyuan-profiles/ + 当前启用 liyuan.agent.json ----
 			case "GET /api/agent-profiles": {
-				loadOrSeedAgentConfig(host); // 触发迁移
+				(await loadOrSeedAgentConfig(host)); // 触发迁移
 				sendJson(res, 200, { profiles: listProfiles(host.cwd) });
 				return true;
 			}
@@ -3078,7 +3092,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				// 若正在启用这份，同步到 runtime 并重绑当前模型（contextWindow 等）
 				const active = listProfiles(host.cwd).find((p) => p.active);
 				if (active?.id === id) {
-					persistAgentConfig(host, config);
+					await persistAgentConfig(host, config);
 					await rebindCurrentModel(host);
 				}
 				host.notify("info", `配置「${rec.name}」已更新`);
@@ -3104,7 +3118,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					}
 				}
 				const config = enableProfile(host.cwd, host.agentDir(), id);
-				host.refreshModels();
+				await host.refreshModels();
 				// 切换到配置里的默认模型
 				if (config.defaultProvider && config.defaultModel) {
 					try {
@@ -3136,7 +3150,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 
 			// ---- 当前启用的 Agent 配置（liyuan.agent.json）----
 			case "GET /api/agent-config": {
-				const { path, exists, config, seeded } = loadOrSeedAgentConfig(host);
+				const { path, exists, config, seeded } = (await loadOrSeedAgentConfig(host));
 				await rebindCurrentModel(host);
 				if (seeded) host.notify("info", "已将当前使用中的渠道收编进梨园 Agent 配置");
 				sendJson(res, 200, {
@@ -3163,7 +3177,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				} else {
 					throw new Error("缺少 text 或 config");
 				}
-				const config = persistAgentConfig(host, normalizeAgentConfig(parsed));
+				const config = await persistAgentConfig(host, normalizeAgentConfig(parsed));
 				await rebindCurrentModel(host);
 				host.notify("info", "当前 Agent 配置已保存");
 				sendJson(res, 200, {
@@ -3177,7 +3191,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			}
 			// 兼容旧路径：转发到 agent-config
 			case "GET /api/models-json": {
-				const { path, exists, config, seeded } = loadOrSeedAgentConfig(host);
+				const { path, exists, config, seeded } = (await loadOrSeedAgentConfig(host));
 				sendJson(res, 200, {
 					path,
 					exists: exists || seeded,
@@ -3195,7 +3209,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 							? body.content
 							: null;
 				if (!parsed) throw new Error("缺少 text 或 content");
-				const config = persistAgentConfig(host, normalizeAgentConfig(parsed));
+				const config = await persistAgentConfig(host, normalizeAgentConfig(parsed));
 				sendJson(res, 200, {
 					ok: true,
 					path: loadAgentConfig(host.cwd).path,
@@ -3218,7 +3232,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const api = (body.api ?? (body.provider?.api as string | undefined) ?? "").toString().trim();
 				if (!name || !baseUrl || !api) throw new Error("渠道名、Base URL、API 类型均必填（模型清单可后补）");
 				if (!/^[\w.-]+$/.test(name)) throw new Error("渠道名只允许字母数字与 . - _");
-				const { config } = loadOrSeedAgentConfig(host);
+				const { config } = (await loadOrSeedAgentConfig(host));
 				if (config.providers[name]) throw new Error(`渠道已存在：${name}`);
 				const models = normalizeModels(body.models ?? body.provider?.models ?? []);
 				const fromProvider = body.provider && typeof body.provider === "object" ? { ...body.provider } : {};
@@ -3235,13 +3249,13 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					config.defaultProvider = name;
 					if (models[0]) config.defaultModel = models[0].id;
 				}
-				persistAgentConfig(host, config);
+				await persistAgentConfig(host, config);
 				host.notify("info", `渠道「${name}」已保存（${models.length} 个模型）`);
 				sendJson(res, 200, { ok: true, channel: publicProvider(name, entry), config });
 				return true;
 			}
 			case "GET /api/channels": {
-				const { path, config, seeded } = loadOrSeedAgentConfig(host);
+				const { path, config, seeded } = (await loadOrSeedAgentConfig(host));
 				if (seeded) host.notify("info", "已将当前使用中的渠道收编进梨园 Agent 配置");
 				sendJson(res, 200, {
 					path,
@@ -3264,7 +3278,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					setDefault?: boolean;
 				};
 				const name = (body.name ?? "").trim();
-				const { config } = loadOrSeedAgentConfig(host);
+				const { config } = (await loadOrSeedAgentConfig(host));
 				const ch = config.providers[name];
 				if (!ch) throw new Error(`渠道不存在：${name}`);
 				if (body.patch && typeof body.patch === "object") {
@@ -3287,13 +3301,13 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					const mid = normalizeModels(ch.models)[0]?.id;
 					if (mid) config.defaultModel = mid;
 				}
-				persistAgentConfig(host, config);
+				await persistAgentConfig(host, config);
 				sendJson(res, 200, { ok: true, channel: publicProvider(name, ch), config });
 				return true;
 			}
 			case "DELETE /api/channels": {
 				const name = (query.get("name") ?? "").trim();
-				const { config } = loadOrSeedAgentConfig(host);
+				const { config } = (await loadOrSeedAgentConfig(host));
 				if (!config.providers[name]) throw new Error(`渠道不存在：${name}`);
 				delete config.providers[name];
 				if (config.defaultProvider === name) {
@@ -3301,7 +3315,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					config.defaultProvider = first;
 					config.defaultModel = first ? normalizeModels(config.providers[first].models)[0]?.id : undefined;
 				}
-				persistAgentConfig(host, config);
+				await persistAgentConfig(host, config);
 				host.notify("info", `渠道「${name}」已删除`);
 				sendJson(res, 200, { ok: true });
 				return true;
@@ -3312,7 +3326,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				let apiKey = (body.apiKey ?? "").trim() || undefined;
 				const name = (body.name ?? "").trim();
 				if (name) {
-					const ch = loadOrSeedAgentConfig(host).config.providers[name];
+					const ch = (await loadOrSeedAgentConfig(host)).config.providers[name];
 					if (!ch?.baseUrl) throw new Error(`渠道不存在或缺 Base URL：${name}`);
 					baseUrl = String(ch.baseUrl);
 					if (!apiKey) {
@@ -3335,7 +3349,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				let baseUrl = (body.baseUrl ?? "").trim();
 				let apiKey = (body.apiKey ?? "").trim() || undefined;
 				const name = (body.name ?? "").trim();
-				const loaded = name ? loadOrSeedAgentConfig(host) : null;
+				const loaded = name ? (await loadOrSeedAgentConfig(host)) : null;
 				const ch = name && loaded ? loaded.config.providers[name] : undefined;
 				if (name) {
 					if (!ch?.baseUrl) throw new Error(`渠道不存在或缺 Base URL：${name}`);
@@ -3353,7 +3367,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (body.apply && name && loaded && ch) {
 					ch.models = mergeModelEntries(normalizeModels(ch.models), models);
 					loaded.config.providers[name] = ch;
-					persistAgentConfig(host, loaded.config);
+					await persistAgentConfig(host, loaded.config);
 					host.notify("info", `「${name}」已合并 ${result.ids.length} 个模型`);
 					sendJson(res, 200, { ok: true, models: result.ids, channel: publicProvider(name, ch) });
 					return true;

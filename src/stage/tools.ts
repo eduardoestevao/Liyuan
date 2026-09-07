@@ -33,6 +33,7 @@ export interface StageTool {
 	name: string;
 	description: string;
 	parameters: Record<string, unknown>;
+	mode?: "read" | "write";
 }
 
 /** 命中形（M-D1/M-D3 起由统一工具层定义，此处再导出保持既有引用不变） */
@@ -42,12 +43,12 @@ export type { LoreHitLike, MemoryHitLike };
  * 台上工具执行依赖。五族（世界书 / 向量库 / 角色库 / 世界线 / 面板）由统一工具层
  * 定义，此处继承——一处增减、全链路同步。台上的可用工具按注入函数的存在性过滤。
  */
-export interface StageToolDeps extends LoreDeps, MemoryDeps, CardDeps, WorldlineDeps, PanelDeps {
+export interface StageToolDeps extends LoreDeps, MemoryDeps, CardDeps, WorldlineDeps, Partial<PanelDeps> {
 	/** 世界状态账本（getState 必在；formatState 用于展示） */
 	getState: () => WorldState;
 	formatState: (s: WorldState) => string;
 	/** skill 内容解析（名称制）：skills/ 文件优先，拆层 D/E 进口包兜底；未注入＝无 skill_read 工具 */
-	getSkill?: (name: string) => string | undefined;
+	getSkill?: (name: string, file?: string, start?: number, end?: number) => string | undefined;
 }
 
 const STR = { type: "string" } as const;
@@ -62,6 +63,7 @@ export function stageTools(language: string, deps?: StageToolDeps): StageTool[] 
 		...unifiedStageTools(language, deps),
 		{
 			name: "world_state_get",
+			mode: "read",
 			description: "读取当前世界状态账本（时间/地点/人物好感与状态/物品归属/标记/剧情线）。拿不准既定事实时调用。",
 			parameters: { type: "object", properties: {}, required: [] },
 		},
@@ -83,6 +85,7 @@ export function stageTools(language: string, deps?: StageToolDeps): StageTool[] 
 export function skillReadTool(language: string, skills: Array<{ name: string; description: string }>): StageTool {
 	return {
 		name: "skill_read",
+		mode: "read",
 		description:
 			`按名读取一个 skill 的全文（${language}）。可读：\n` +
 			skills.map((s) => `- ${s.name}：${s.description}`).join("\n"),
@@ -90,6 +93,9 @@ export function skillReadTool(language: string, skills: Array<{ name: string; de
 			type: "object",
 			properties: {
 				name: { type: "string", enum: skills.map((s) => s.name), description: "要读取的 skill 名" },
+				file: { type: "string", description: "包内引用文件的相对路径；省略读取 SKILL.md。只读取文本，不执行代码。" },
+				start: { type: "integer", minimum: 0 },
+				end: { type: "integer", minimum: 0 },
 			},
 			required: ["name"],
 		},
@@ -97,13 +103,56 @@ export function skillReadTool(language: string, skills: Array<{ name: string; de
 }
 
 /**
- * 写侧只剩 `ask`（第三步：draft 族与 world_state_update 先后撤出模型视野）。
+ * 本拍稿件、上一拍修订、可选计划与用户提问的工具协议。
  * 记账归封笔后的场记旁路（scribe-run.ts），台上零世界写入工具。
  */
 export function writeTools(language: string): StageTool[] {
+	const version = { type: "integer", minimum: 0, description: "最近读取/写入回执的版本；空稿初始为 0。版本冲突时重新读取。" };
+	// Gateways may pad objects with no required fields. Surplus root keys have no effect;
+	// declared fields, nested plan items, and all versioned writes still undergo native validation.
+	const schema = (properties: Record<string, unknown>, required: string[]) => ({ type: "object", properties, required, ...(required.length ? { additionalProperties: false } : {}) });
 	return [
 		{
+			name: "draft_write", mode: "write",
+			description: "创建或全量替换本拍稿件，内容即时向用户展示并持久保存。写入不等于收笔；局部修改用 draft_edit，续写用 draft_append，完成用 draft_seal。简单回应也可直接输出。",
+			parameters: schema({ version, content: { ...STR, description: "完整稿件原文，保留所有格式与空白" } }, ["version", "content"]),
+		},
+		{
+			name: "draft_append", mode: "write",
+			description: "在当前稿件末尾续写一段并展示。默认与上文隔一个空行；separator 可指定精确连接字符。不会收笔。",
+			parameters: schema({ version, content: STR, separator: { ...STR, description: "默认两个换行；允许空串" } }, ["version", "content"]),
+		},
+		{
+			name: "draft_read", mode: "read", description: "读取本拍稿件与版本。start/end 是从 0 开始的 UTF-16 字符偏移，end 不含；省略即全文。返回的 content 是精确原文。",
+			parameters: schema({ start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 } }, []),
+		},
+		{
+			name: "draft_search", mode: "read", description: "在本拍稿件中按字面检索。hits 保留原文标点和空白，可直接用作 draft_edit.old；返回版本及命中总数。",
+			parameters: schema({ query: STR, limit: { type: "integer", minimum: 1, maximum: 50 } }, ["query"]),
+		},
+		{
+			name: "draft_edit", mode: "write", description: "按唯一原文引用批量修改当前稿件。全部引用都基于同一版本；任一处缺失、重复、重叠或版本冲突则整批不改。允许首尾空白/等长标点的有限匹配，回执报告匹配级别。",
+			parameters: schema({ version, edits: { type: "array", minItems: 1, items: schema({ old: STR, new: STR }, ["old", "new"]) } }, ["version", "edits"]),
+		},
+		{
+			name: "draft_seal", mode: "write", description: "完整正文与所需格式内容都写入后，最后单独调用，将本拍当前版本收笔并交给定稿与场记流程。不检查文风、字数或计划完成度；收笔后不能再改本拍稿件。",
+			parameters: schema({ version }, ["version"]),
+		},
+		{
+			name: "previous_draft_read", mode: "read", description: "读取当前分支上一拍已定稿回复的精确原文与版本，供回改。省略 start/end 即全文；偏移为从 0 开始的 UTF-16 字符，end 不含。不能选更早的拍次。",
+			parameters: schema({ start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 } }, []),
+		},
+		{
+			name: "previous_draft_edit", mode: "write", description: "按 previous_draft_read 的版本和唯一原文引用，原位修订上一拍回复；未引用部分保留，任一冲突则整批不改。只修正文，不重算账本或记忆；本拍已有新稿时不可用。单独调用，成功即结束本次请求，界面显示修后的原回复。",
+			parameters: schema({ version, edits: { type: "array", minItems: 1, items: schema({ old: STR, new: STR }, ["old", "new"]) } }, ["version", "edits"]),
+		},
+		{
+			name: "beat_plan", mode: "write", description: "按需要列出或调整本拍短计划。steps 是完整新清单，用稳定 id 更新/勾选/取消；省略 steps 则保留。mode=explore 只允许读取、提问和计划，mode=write 开放写入。计划可随正文与用户回答修改，简单回应无需计划。空参数读取现计划。",
+			parameters: schema({ mode: { type: "string", enum: ["explore", "write"] }, steps: { type: "array", maxItems: 20, items: schema({ id: STR, text: STR, status: { type: "string", enum: ["pending", "in_progress", "done", "cancelled"] } }, ["text"]) } }, []),
+		},
+		{
 			name: "ask",
+			mode: "read",
 			description:
 				"剧情共创决策（P7 接回）：把该由用户拍板的选择交给用户。两种触发：\n" +
 				"① **主动触发**（随时，含第 1 轮）：用户输入本身在求方向/递笔（「接下来去找谁」「怎么办」" +
@@ -138,6 +187,8 @@ export interface ToolRunResult {
 	text: string;
 	/** 过程条短句（无则不出条） */
 	activity?: string;
+	details?: unknown;
+	isError?: boolean;
 }
 
 /**
@@ -152,11 +203,13 @@ export async function runStageTool(
 ): Promise<ToolRunResult> {
 	// 统一工具层优先（PLAN-RP-TOOLING M-D1/M-D3）：世界书族与向量库族由那一份实现作答
 	const unified = await runUnifiedStageTool(deps, name, args, language);
-	if (unified) return { text: unified.text, ...(unified.activity ? { activity: unified.activity } : {}) };
+	if (unified) return unified;
 
 	if (name === "skill_read") {
 		const skillName = typeof args.name === "string" ? args.name.trim() : "";
-		const text = skillName ? deps.getSkill?.(skillName) : undefined;
+		let text: string | undefined;
+		try { text = skillName ? deps.getSkill?.(skillName, typeof args.file === "string" ? args.file : undefined, args.start as number | undefined, args.end as number | undefined) : undefined; }
+		catch (e) { return { text: e instanceof Error ? e.message : String(e), isError: true }; }
 		if (!text) {
 			return { text: `没有名为「${skillName}」的 skill。按已有理解直接动笔即可。` };
 		}

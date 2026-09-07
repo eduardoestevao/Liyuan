@@ -3,12 +3,13 @@
  *
  * Spawns the agent in RPC mode and provides a typed API for all operations.
  */
-import type { AgentEvent, AgentMessage, ThinkingLevel } from "@liyuan/agent-core";
+import type { AgentMessage, ThinkingLevel } from "@liyuan/agent-core";
 import type { ImageContent } from "@liyuan/ai";
 import type { SessionStats } from "../../core/agent-session.ts";
 import type { BashResult } from "../../core/bash-executor.ts";
 import type { CompactionResult } from "../../core/compaction/index.ts";
 import type { SessionEntry, SessionTreeNode } from "../../core/session-manager.ts";
+import type { JsonAgentSessionEvent } from "../json-event.ts";
 import type { RpcSessionState, RpcSlashCommand } from "./rpc-types.ts";
 export interface RpcClientOptions {
     /** Path to the CLI entry point (default: searches for dist/cli.js) */
@@ -30,7 +31,7 @@ export interface ModelInfo {
     contextWindow: number;
     reasoning: boolean;
 }
-export type RpcEventListener = (event: AgentEvent) => void;
+export type RpcEventListener = (event: JsonAgentSessionEvent) => void;
 export declare class RpcClient {
     private process;
     private stopReadingStdout;
@@ -76,6 +77,13 @@ export declare class RpcClient {
      */
     abort(): Promise<void>;
     /**
+     * Clear queued steering and follow-up messages, returning their text.
+     */
+    clearQueue(): Promise<{
+        steering: string[];
+        followUp: string[];
+    }>;
+    /**
      * Start a new session, optionally with parent tracking.
      * @param parentSession - Optional parent session path for lineage tracking
      * @returns Object with `cancelled: true` if an extension cancelled the new session
@@ -119,6 +127,10 @@ export declare class RpcClient {
     cycleThinkingLevel(): Promise<{
         level: ThinkingLevel;
     } | null>;
+    /**
+     * Get list of available thinking levels for the current model.
+     */
+    getAvailableThinkingLevels(): Promise<ThinkingLevel[]>;
     /**
      * Set steering mode.
      */
@@ -222,17 +234,17 @@ export declare class RpcClient {
     getCommands(): Promise<RpcSlashCommand[]>;
     /**
      * Wait for agent to become idle (no streaming).
-     * Resolves when agent_end event is received.
+     * Resolves when agent_settled event is received.
      */
     waitForIdle(timeout?: number): Promise<void>;
     /**
      * Collect events until agent becomes idle.
      */
-    collectEvents(timeout?: number): Promise<AgentEvent[]>;
+    collectEvents(timeout?: number): Promise<JsonAgentSessionEvent[]>;
     /**
      * Send prompt and wait for completion, returning all events.
      */
-    promptAndWait(message: string, images?: ImageContent[], timeout?: number): Promise<AgentEvent[]>;
+    promptAndWait(message: string, images?: ImageContent[], timeout?: number): Promise<JsonAgentSessionEvent[]>;
     private handleLine;
     private createProcessExitError;
     private rejectPendingRequests;

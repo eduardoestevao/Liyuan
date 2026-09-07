@@ -1,4 +1,4 @@
-import { realpathSync } from "node:fs";
+import { realpathSync, statSync } from "node:fs";
 import { homedir } from "node:os";
 import { isAbsolute, join, resolve as nodeResolvePath, relative, sep } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -16,6 +16,15 @@ export function canonicalizePath(path) {
     }
     catch {
         return path;
+    }
+}
+export function getFileRevision(path) {
+    try {
+        const stats = statSync(path, { bigint: true });
+        return `${stats.dev}:${stats.ino}:${stats.size}:${stats.mtimeNs}:${stats.ctimeNs}`;
+    }
+    catch {
+        return undefined;
     }
 }
 /**
@@ -36,6 +45,16 @@ export function isLocalPath(value) {
     }
     return true;
 }
+/** Convert Git Bash, MSYS, Cygwin, and WSL drive paths to a form native Windows APIs accept. */
+export function normalizeWindowsShellPath(filePath) {
+    if (!filePath.startsWith("/") || filePath.startsWith("//") || filePath.includes("\\"))
+        return filePath;
+    const match = filePath.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+    if (!match)
+        return filePath;
+    const suffix = match[2]?.replaceAll("/", "\\");
+    return `${match[1].toUpperCase()}:\\${suffix ?? ""}`;
+}
 export function normalizePath(input, options = {}) {
     let normalized = options.trim ? input.trim() : input;
     if (options.normalizeUnicodeSpaces) {
@@ -43,6 +62,9 @@ export function normalizePath(input, options = {}) {
     }
     if (options.stripAtPrefix && normalized.startsWith("@")) {
         normalized = normalized.slice(1);
+    }
+    if (process.platform === "win32") {
+        normalized = normalizeWindowsShellPath(normalized);
     }
     if (options.expandTilde ?? true) {
         const home = options.homeDir ?? homedir();

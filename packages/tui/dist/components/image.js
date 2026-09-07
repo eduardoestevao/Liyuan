@@ -1,4 +1,5 @@
 import { allocateImageId, getCapabilities, getCellDimensions, getImageDimensions, imageFallback, renderImage, } from "../terminal-image.js";
+import { truncateToWidth } from "../utils.js";
 export class Image {
     base64Data;
     mimeType;
@@ -74,12 +75,12 @@ export class Image {
             }
             else {
                 const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-                lines = [this.theme.fallbackColor(fallback)];
+                lines = [truncateToWidth(this.theme.fallbackColor(fallback), width)];
             }
         }
         else {
             const fallback = imageFallback(this.mimeType, this.dimensions, this.options.filename);
-            lines = [this.theme.fallbackColor(fallback)];
+            lines = [truncateToWidth(this.theme.fallbackColor(fallback), width)];
         }
         this.cachedLines = lines;
         this.cachedWidth = width;

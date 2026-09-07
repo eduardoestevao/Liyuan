@@ -12,8 +12,10 @@ export declare class CustomMessageComponent extends Container {
     private customComponent?;
     private markdownTheme;
     private _expanded;
-    constructor(message: CustomMessage<unknown>, customRenderer?: MessageRenderer, markdownTheme?: MarkdownTheme);
+    private outputPad;
+    constructor(message: CustomMessage<unknown>, customRenderer?: MessageRenderer, markdownTheme?: MarkdownTheme, outputPad?: number);
     setExpanded(expanded: boolean): void;
+    setOutputPad(outputPad: number): void;
     invalidate(): void;
     private rebuild;
 }

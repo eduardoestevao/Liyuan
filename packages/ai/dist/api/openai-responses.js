@@ -1,14 +1,20 @@
 import OpenAI from "openai";
 import { clampThinkingLevel } from "../models.js";
+import { splitDeferredTools } from "../utils/deferred-tools.js";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { headersToRecord } from "../utils/headers.js";
+import { getPiUserAgent } from "../utils/pi-user-agent.js";
 import { getProviderEnvValue } from "../utils/provider-env.js";
+import { retryProviderRequest } from "../utils/provider-retry.js";
+import { createGrammarToolInputProperties } from "./constrained-sampling.js";
 import { buildCopilotDynamicHeaders, hasCopilotVisionInput } from "./github-copilot-headers.js";
 import { clampOpenAIPromptCacheKey } from "./openai-prompt-cache.js";
 import { convertResponsesMessages, convertResponsesTools, processResponsesStream } from "./openai-responses-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 const OPENAI_TOOL_CALL_PROVIDERS = new Set(["openai", "openai-codex", "opencode"]);
+// OpenAI Responses rejects max_output_tokens below 16: https://github.com/earendil-works/pi/issues/6265
+const OPENAI_RESPONSES_MIN_OUTPUT_TOKENS = 16;
 function hasHeader(headers, name) {
     if (!headers)
         return false;
@@ -26,6 +32,9 @@ function getClientApiKey(provider, apiKey, headers) {
         return "unused";
     throw new Error(`No API key for provider: ${provider}`);
 }
+function detectSessionAffinityFormat(model) {
+    return model.provider === "openrouter" || model.baseUrl.includes("openrouter.ai") ? "openrouter" : "openai";
+}
 /**
  * Resolve cache retention preference.
  * Defaults to "short" and uses PI_CACHE_RETENTION for backward compatibility.
@@ -41,9 +50,15 @@ function resolveCacheRetention(cacheRetention, env) {
 }
 function getCompat(model) {
     return {
+        streaming: model.compat?.streaming ?? true,
         supportsDeveloperRole: model.compat?.supportsDeveloperRole ?? true,
-        sendSessionIdHeader: model.compat?.sendSessionIdHeader ?? true,
+        sessionAffinityFormat: model.compat?.sessionAffinityFormat ?? detectSessionAffinityFormat(model),
         supportsLongCacheRetention: model.compat?.supportsLongCacheRetention ?? true,
+        supportsStrictMode: model.compat?.supportsStrictMode ?? false,
+        supportsOpenAIGrammarTools: model.compat?.supportsOpenAIGrammarTools ?? false,
+        supportsAdditionalTools: model.compat?.supportsAdditionalTools ?? false,
+        supportsToolSearch: model.compat?.supportsToolSearch ?? false,
+        supportsExplicitPromptCacheMode: model.compat?.supportsExplicitPromptCacheMode ?? false,
     };
 }
 function getPromptCacheRetention(compat, cacheRetention) {
@@ -73,7 +88,7 @@ export const stream = (model, context, options) => {
                 totalTokens: 0,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
             },
-            stopReason: "stop",
+            stopReason: "pending",
             timestamp: Date.now(),
         };
         try {
@@ -81,8 +96,10 @@ export const stream = (model, context, options) => {
             const apiKey = getClientApiKey(model.provider, options?.apiKey, options?.headers);
             const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
             const cacheSessionId = cacheRetention === "none" ? undefined : options?.sessionId;
-            const client = createClient(model, context, apiKey, options?.headers, cacheSessionId);
-            let params = buildParams(model, context, options);
+            const compat = getCompat(model);
+            const grammarToolInputProperties = createGrammarToolInputProperties(context.tools, compat.supportsOpenAIGrammarTools);
+            const client = createClient(model, context, apiKey, options?.headers, options?.fetch, cacheSessionId);
+            let params = buildParams(model, context, options, compat, grammarToolInputProperties);
             const nextParams = await options?.onPayload?.(params, model);
             if (nextParams !== undefined) {
                 params = nextParams;
@@ -90,20 +107,34 @@ export const stream = (model, context, options) => {
             const requestOptions = {
                 ...(options?.signal ? { signal: options.signal } : {}),
                 ...(options?.timeoutMs !== undefined ? { timeout: options.timeoutMs } : {}),
-                maxRetries: options?.maxRetries ?? 0,
+                maxRetries: 0,
             };
-            const { data: openaiStream, response } = await client.responses.create(params, requestOptions).withResponse();
-            await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+            const retryOptions = { maxRetries: options?.maxRetries, maxRetryDelayMs: options?.maxRetryDelayMs, signal: options?.signal };
+            let eventSource;
+            if (model.compat?.streaming !== false) {
+                const { data: openaiStream, response } = await retryProviderRequest(() => client.responses.create(params, requestOptions).withResponse(), retryOptions);
+                await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                eventSource = openaiStream;
+            }
+            else {
+                const { data: fullResponse, response } = await retryProviderRequest(() => client.responses.create({ ...params, stream: false }, requestOptions).withResponse(), retryOptions);
+                await options?.onResponse?.({ status: response.status, headers: headersToRecord(response.headers) }, model);
+                eventSource = responseToEvents(fullResponse);
+            }
             stream.push({ type: "start", partial: output });
-            await processResponsesStream(openaiStream, output, stream, model, {
+            await processResponsesStream(eventSource, output, stream, model, {
                 serviceTier: options?.serviceTier,
+                grammarToolInputProperties,
                 applyServiceTierPricing: (usage, serviceTier) => applyServiceTierPricing(usage, serviceTier, model),
             });
             if (options?.signal?.aborted) {
                 throw new Error("Request was aborted");
             }
+            if (output.stopReason === "pending") {
+                throw new Error("OpenAI Responses stream ended without a stop reason");
+            }
             if (output.stopReason === "aborted" || output.stopReason === "error") {
-                throw new Error("An unknown error occurred");
+                throw new Error(output.errorMessage || "An unknown error occurred");
             }
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
@@ -111,8 +142,9 @@ export const stream = (model, context, options) => {
         catch (error) {
             for (const block of output.content) {
                 delete block.index;
-                // partialJson is only a streaming scratch buffer; never persist it.
+                // Streaming scratch buffers are only used during parsing; never persist them.
                 delete block.partialJson;
+                delete block.customInput;
             }
             output.stopReason = options?.signal?.aborted ? "aborted" : "error";
             output.errorMessage = formatOpenAIResponsesError(error);
@@ -124,7 +156,10 @@ export const stream = (model, context, options) => {
 };
 export const streamSimple = (model, context, options) => {
     getClientApiKey(model.provider, options?.apiKey, options?.headers);
-    const base = buildBaseOptions(model, context, options, options?.apiKey);
+    const base = {
+        ...buildBaseOptions(model, context, options, options?.apiKey),
+        toolChoice: options?.toolChoice,
+    };
     const clampedReasoning = options?.reasoning ? clampThinkingLevel(model, options.reasoning) : undefined;
     const reasoningEffort = clampedReasoning === "off" ? undefined : clampedReasoning;
     return stream(model, context, {
@@ -132,9 +167,9 @@ export const streamSimple = (model, context, options) => {
         reasoningEffort,
     });
 };
-function createClient(model, context, apiKey, optionsHeaders, sessionId) {
+function createClient(model, context, apiKey, optionsHeaders, fetch, sessionId) {
     const compat = getCompat(model);
-    const headers = { ...model.headers };
+    const headers = { "User-Agent": getPiUserAgent(), ...model.headers };
     if (model.provider === "github-copilot") {
         const hasImages = hasCopilotVisionInput(context.messages);
         const copilotHeaders = buildCopilotDynamicHeaders({
@@ -144,10 +179,15 @@ function createClient(model, context, apiKey, optionsHeaders, sessionId) {
         Object.assign(headers, copilotHeaders);
     }
     if (sessionId) {
-        if (compat.sendSessionIdHeader) {
-            headers.session_id = sessionId;
+        if (compat.sessionAffinityFormat === "openrouter") {
+            headers["x-session-id"] = sessionId;
         }
-        headers["x-client-request-id"] = sessionId;
+        else {
+            if (compat.sessionAffinityFormat === "openai") {
+                headers.session_id = sessionId;
+            }
+            headers["x-client-request-id"] = sessionId;
+        }
     }
     // Merge options headers last so they can override defaults
     if (optionsHeaders) {
@@ -157,23 +197,39 @@ function createClient(model, context, apiKey, optionsHeaders, sessionId) {
         apiKey,
         baseURL: model.baseUrl,
         dangerouslyAllowBrowser: true,
+        fetch,
         defaultHeaders: headers,
     });
 }
-function buildParams(model, context, options) {
-    const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS);
+function buildParams(model, context, options, compat = getCompat(model), grammarToolInputProperties = createGrammarToolInputProperties(context.tools, compat.supportsOpenAIGrammarTools)) {
+    const deferredToolsMode = compat.supportsAdditionalTools
+        ? "additional-tools"
+        : compat.supportsToolSearch
+            ? "tool-search"
+            : undefined;
+    const toolPlacement = splitDeferredTools(context, deferredToolsMode !== undefined);
+    const messages = convertResponsesMessages(model, context, OPENAI_TOOL_CALL_PROVIDERS, {
+        grammarToolInputProperties,
+        deferredTools: toolPlacement.deferred,
+        deferredToolsMode,
+        toolOptions: {
+            supportsStrictMode: compat.supportsStrictMode,
+            supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
+        },
+    });
     const cacheRetention = resolveCacheRetention(options?.cacheRetention, options?.env);
-    const compat = getCompat(model);
+    const disableImplicitPromptCache = cacheRetention === "none" && compat.supportsExplicitPromptCacheMode;
     const params = {
         model: model.id,
         input: messages,
         stream: true,
         prompt_cache_key: cacheRetention === "none" ? undefined : clampOpenAIPromptCacheKey(options?.sessionId),
         prompt_cache_retention: getPromptCacheRetention(compat, cacheRetention),
+        prompt_cache_options: disableImplicitPromptCache ? { mode: "explicit" } : undefined,
         store: false,
     };
     if (options?.maxTokens) {
-        params.max_output_tokens = options?.maxTokens;
+        params.max_output_tokens = Math.max(options.maxTokens, OPENAI_RESPONSES_MIN_OUTPUT_TOKENS);
     }
     if (options?.temperature !== undefined) {
         params.temperature = options?.temperature;
@@ -181,8 +237,14 @@ function buildParams(model, context, options) {
     if (options?.serviceTier !== undefined) {
         params.service_tier = options.serviceTier;
     }
-    if (context.tools && context.tools.length > 0) {
-        params.tools = convertResponsesTools(context.tools);
+    if (toolPlacement.immediate.length > 0) {
+        params.tools = convertResponsesTools(toolPlacement.immediate, {
+            supportsStrictMode: compat.supportsStrictMode,
+            supportsOpenAIGrammarTools: compat.supportsOpenAIGrammarTools,
+        });
+    }
+    if (options?.toolChoice !== undefined) {
+        params.tool_choice = options.toolChoice;
     }
     if (model.reasoning) {
         if (options?.reasoningEffort || options?.reasoningSummary) {
@@ -200,8 +262,39 @@ function buildParams(model, context, options) {
                 effort: (model.thinkingLevelMap?.off ?? "none"),
             };
         }
+        if (model.provider === "xai")
+            params.include = ["reasoning.encrypted_content"];
+    }
+    // Last so custom keys override the named request fields.
+    if (options?.samplingParams) {
+        Object.assign(params, options.samplingParams);
     }
     return params;
+}
+/**
+ * Synthesize the streaming event sequence from a non-streaming Response so that
+ * compat.streaming === false runs through the same event loop as streaming.
+ * processResponsesStream builds full blocks from output_item.done alone (getOrCreateSlot).
+ */
+function responseToEvents(response) {
+    if (response.status === "failed" || response.status === "cancelled") {
+        return [{ type: "response.failed", response, sequence_number: 0 }];
+    }
+    const events = [];
+    (response.output ?? []).forEach((item, index) => {
+        events.push({
+            type: "response.output_item.done",
+            output_index: index,
+            item,
+            sequence_number: events.length,
+        });
+    });
+    events.push({
+        type: response.status === "incomplete" ? "response.incomplete" : "response.completed",
+        response,
+        sequence_number: events.length,
+    });
+    return events;
 }
 function getServiceTierCostMultiplier(model, serviceTier) {
     switch (serviceTier) {

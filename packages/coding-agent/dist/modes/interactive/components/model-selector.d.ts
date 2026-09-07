@@ -1,10 +1,13 @@
 import { type Model } from "@liyuan/ai";
 import { Container, type Focusable, Input, type TUI } from "@liyuan/tui";
-import type { ModelRegistry } from "../../../core/model-registry.ts";
-import type { SettingsManager } from "../../../core/settings-manager.ts";
+import type { ModelRuntime } from "../../../core/model-runtime.ts";
 interface ScopedModelItem {
     model: Model<any>;
     thinkingLevel?: string;
+}
+interface DefaultModelReference {
+    provider: string;
+    id: string;
 }
 /**
  * Component that renders a model selector with search
@@ -21,21 +24,31 @@ export declare class ModelSelectorComponent extends Container implements Focusab
     private filteredModels;
     private selectedIndex;
     private currentModel?;
-    private settingsManager;
-    private modelRegistry;
+    private modelRuntime;
     private onSelectCallback;
+    private onSelectAsDefaultCallback?;
     private onCancelCallback;
     private errorMessage?;
+    private refreshStatusMessage;
+    private refreshStatusSuccess;
     private tui;
     private scopedModels;
+    private defaultModel?;
     private scope;
     private scopeText?;
     private scopeHintText?;
-    constructor(tui: TUI, currentModel: Model<any> | undefined, settingsManager: SettingsManager, modelRegistry: ModelRegistry, scopedModels: ReadonlyArray<ScopedModelItem>, onSelect: (model: Model<any>) => void, onCancel: () => void, initialSearchInput?: string);
-    private loadModels;
+    private readonly refreshAbortController;
+    private refreshTimeout?;
+    private closed;
+    constructor(tui: TUI, currentModel: Model<any> | undefined, modelRuntime: ModelRuntime, scopedModels: ReadonlyArray<ScopedModelItem>, onSelect: (model: Model<any>) => void, onCancel: () => void, initialSearchInput?: string, onSelectAsDefault?: (model: Model<any>) => void, defaultModel?: DefaultModelReference);
+    private loadModelsFromSnapshot;
+    private refreshModels;
+    dispose(): void;
     private sortModels;
     private getScopeText;
     private getScopeHintText;
+    private isDefaultModel;
+    private isDefaultSearch;
     private setScope;
     private filterModels;
     private updateList;

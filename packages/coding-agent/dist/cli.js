@@ -10,6 +10,7 @@ import { configureHttpDispatcher } from "./core/http-dispatcher.js";
 import { main } from "./main.js";
 process.title = APP_NAME;
 process.env.PI_CODING_AGENT = "true";
+process.env.AI_AGENT = "pi";
 process.emitWarning = (() => { });
 // Configure undici's global dispatcher before provider SDKs issue requests.
 // Runtime settings are applied once SettingsManager has loaded global/project settings.

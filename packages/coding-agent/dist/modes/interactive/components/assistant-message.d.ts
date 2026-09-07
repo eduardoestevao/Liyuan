@@ -1,5 +1,6 @@
 import type { AssistantMessage } from "@liyuan/ai";
 import { Container, type MarkdownTheme } from "@liyuan/tui";
+import type { MarkdownTransformer } from "../../../core/extensions/types.ts";
 /**
  * Component that renders a complete assistant message
  */
@@ -9,14 +10,16 @@ export declare class AssistantMessageComponent extends Container {
     private markdownTheme;
     private hiddenThinkingLabel;
     private outputPad;
+    private markdownTransformers;
     private lastMessage?;
     private hasToolCalls;
-    constructor(message?: AssistantMessage, hideThinkingBlock?: boolean, markdownTheme?: MarkdownTheme, hiddenThinkingLabel?: string, outputPad?: number);
+    private isStreaming;
+    constructor(message?: AssistantMessage, hideThinkingBlock?: boolean, markdownTheme?: MarkdownTheme, hiddenThinkingLabel?: string, outputPad?: number, markdownTransformers?: readonly MarkdownTransformer[]);
     invalidate(): void;
     setHideThinkingBlock(hide: boolean): void;
     setHiddenThinkingLabel(label: string): void;
     setOutputPad(padding: number): void;
     render(width: number): string[];
-    updateContent(message: AssistantMessage): void;
+    updateContent(message: AssistantMessage, isStreaming?: boolean): void;
 }
 //# sourceMappingURL=assistant-message.d.ts.map

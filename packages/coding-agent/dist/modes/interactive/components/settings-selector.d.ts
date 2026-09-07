@@ -1,10 +1,13 @@
 import type { ThinkingLevel } from "@liyuan/agent-core";
-import type { Transport } from "@liyuan/ai";
-import { Container, SettingsList } from "@liyuan/tui";
-import type { DefaultProjectTrust, WarningSettings } from "../../../core/settings-manager.ts";
+import { type Model, type Transport } from "@liyuan/ai";
+import { Container, type ScrollViewScrollbar, SettingsList } from "@liyuan/tui";
+import type { DefaultProjectTrust, FullscreenExitOutput, MermaidRenderingMode, TuiMode, WarningSettings } from "../../../core/settings-manager.ts";
 import { type TerminalTheme } from "../theme/theme.ts";
 export interface SettingsConfig {
     autoCompact: boolean;
+    defaultModel: string;
+    currentModel?: Model<any>;
+    availableDefaultModels: readonly Model<any>[];
     showImages: boolean;
     imageWidthCells: number;
     autoResizeImages: boolean;
@@ -16,10 +19,13 @@ export interface SettingsConfig {
     httpIdleTimeoutMs: number;
     thinkingLevel: ThinkingLevel;
     availableThinkingLevels: ThinkingLevel[];
+    modelThinkingLevels: Record<string, ThinkingLevel>;
     currentTheme: string;
     terminalTheme: TerminalTheme;
     availableThemes: string[];
     hideThinkingBlock: boolean;
+    mermaidRenderingMode: MermaidRenderingMode;
+    showCacheMissNotices: boolean;
     collapseChangelog: boolean;
     enableInstallTelemetry: boolean;
     doubleEscapeAction: "fork" | "tree" | "none";
@@ -32,6 +38,10 @@ export interface SettingsConfig {
     defaultProjectTrust: DefaultProjectTrust;
     clearOnShrink: boolean;
     showTerminalProgress: boolean;
+    tuiMode: TuiMode;
+    fullscreenExitOutput: FullscreenExitOutput;
+    fullscreenScrollbar: ScrollViewScrollbar;
+    fullscreenCopyOnSelect: boolean;
     warnings: WarningSettings;
 }
 export interface SettingsCallbacks {
@@ -45,10 +55,13 @@ export interface SettingsCallbacks {
     onFollowUpModeChange: (mode: "all" | "one-at-a-time") => void;
     onTransportChange: (transport: Transport) => void;
     onHttpIdleTimeoutMsChange: (timeoutMs: number) => void;
-    onThinkingLevelChange: (level: ThinkingLevel) => void;
+    onModelThinkingLevelChange: (provider: string, modelId: string, level: ThinkingLevel) => void;
+    onModelThinkingLevelRemove: (provider: string, modelId: string) => void;
     onThemeChange: (theme: string) => void;
     onThemePreview?: (theme: string) => void;
     onHideThinkingBlockChange: (hidden: boolean) => void;
+    onMermaidRenderingModeChange: (mode: MermaidRenderingMode) => void;
+    onShowCacheMissNoticesChange: (shown: boolean) => void;
     onCollapseChangelogChange: (collapsed: boolean) => void;
     onEnableInstallTelemetryChange: (enabled: boolean) => void;
     onDoubleEscapeActionChange: (action: "fork" | "tree" | "none") => void;
@@ -61,6 +74,10 @@ export interface SettingsCallbacks {
     onDefaultProjectTrustChange: (defaultProjectTrust: DefaultProjectTrust) => void;
     onClearOnShrinkChange: (enabled: boolean) => void;
     onShowTerminalProgressChange: (enabled: boolean) => void;
+    onTuiModeChange: (mode: TuiMode) => void;
+    onFullscreenExitOutputChange: (output: FullscreenExitOutput) => void;
+    onFullscreenScrollbarChange: (mode: ScrollViewScrollbar) => void;
+    onFullscreenCopyOnSelectChange: (enabled: boolean) => void;
     onWarningsChange: (warnings: WarningSettings) => void;
     onCancel: () => void;
 }

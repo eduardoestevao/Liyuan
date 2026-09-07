@@ -3,6 +3,7 @@ import { Container, type Focusable, Input } from "@liyuan/tui";
 export interface ModelsConfig {
     allModels: Model<any>[];
     enabledModelIds: string[] | null;
+    refreshStatus?: string;
 }
 export interface ModelsCallbacks {
     /** Called whenever the enabled model set or order changes (session-only, no persist) */
@@ -30,7 +31,10 @@ export declare class ScopedModelsSelectorComponent extends Container implements 
     private callbacks;
     private maxVisible;
     private isDirty;
+    private refreshStatusText?;
     constructor(config: ModelsConfig, callbacks: ModelsCallbacks);
+    updateModels(models: readonly Model<any>[], enabledModelIds?: string[] | null): void;
+    setRefreshStatus(message: string, kind: "muted" | "success" | "warning"): void;
     private buildItems;
     private getFooterText;
     private refresh;

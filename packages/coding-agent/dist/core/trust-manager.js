@@ -4,6 +4,7 @@ import { dirname, join } from "node:path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME } from "../config.js";
 import { canonicalizePath, resolvePath } from "../utils/paths.js";
+import { stripBom } from "../utils/text.js";
 const TRUST_REQUIRING_PROJECT_CONFIG_RESOURCES = [
     "settings.json",
     "extensions",
@@ -72,7 +73,7 @@ function readTrustFile(path) {
     }
     let parsed;
     try {
-        parsed = JSON.parse(readFileSync(path, "utf-8"));
+        parsed = JSON.parse(stripBom(readFileSync(path, "utf-8")));
     }
     catch (error) {
         const message = error instanceof Error ? error.message : String(error);

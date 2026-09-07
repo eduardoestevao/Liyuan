@@ -4,31 +4,29 @@ import { dirname, join } from "path";
 import lockfile from "proper-lockfile";
 import { CONFIG_DIR_NAME, getAgentDir } from "../config.js";
 import { normalizePath, resolvePath } from "../utils/paths.js";
+import { stripBom } from "../utils/text.js";
 import { DEFAULT_HTTP_IDLE_TIMEOUT_MS, parseHttpIdleTimeoutMs } from "./http-dispatcher.js";
-/** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
-function deepMergeSettings(base, overrides) {
+function isMergeableObject(value) {
+    return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+function deepMergeObjects(base, overrides) {
     const result = { ...base };
     for (const key of Object.keys(overrides)) {
         const overrideValue = overrides[key];
-        const baseValue = base[key];
         if (overrideValue === undefined) {
             continue;
         }
-        // For nested objects, merge recursively
-        if (typeof overrideValue === "object" &&
-            overrideValue !== null &&
-            !Array.isArray(overrideValue) &&
-            typeof baseValue === "object" &&
-            baseValue !== null &&
-            !Array.isArray(baseValue)) {
-            result[key] = { ...baseValue, ...overrideValue };
-        }
-        else {
-            // For primitives and arrays, override value wins
-            result[key] = overrideValue;
-        }
+        const baseValue = base[key];
+        result[key] =
+            isMergeableObject(baseValue) && isMergeableObject(overrideValue)
+                ? deepMergeObjects(baseValue, overrideValue)
+                : overrideValue;
     }
     return result;
+}
+/** Deep merge settings: project/overrides take precedence, nested objects merge recursively */
+function deepMergeSettings(base, overrides) {
+    return deepMergeObjects(base, overrides);
 }
 function parseTimeoutSetting(value, settingName) {
     const timeoutMs = parseHttpIdleTimeoutMs(value);
@@ -39,6 +37,13 @@ function parseTimeoutSetting(value, settingName) {
         throw new Error(`Invalid ${settingName} setting: ${String(value)}`);
     }
     return undefined;
+}
+function toSettingsError(scope, error, path) {
+    return {
+        scope,
+        ...(path ? { path } : {}),
+        error: error instanceof Error ? error : new Error(String(error)),
+    };
 }
 export class FileSettingsStorage {
     globalSettingsPath;
@@ -133,7 +138,8 @@ export class SettingsManager {
     projectSettingsLoadError = null; // Track if project settings file had parse errors
     writeQueue = Promise.resolve();
     errors;
-    constructor(storage, initialGlobal, initialProject, globalLoadError = null, projectLoadError = null, initialErrors = [], projectTrusted = true) {
+    settingsPaths;
+    constructor(storage, initialGlobal, initialProject, globalLoadError = null, projectLoadError = null, initialErrors = [], projectTrusted = true, settingsPaths = {}) {
         this.storage = storage;
         this.globalSettings = initialGlobal;
         this.projectSettings = initialProject;
@@ -141,26 +147,36 @@ export class SettingsManager {
         this.globalSettingsLoadError = globalLoadError;
         this.projectSettingsLoadError = projectLoadError;
         this.errors = [...initialErrors];
+        this.settingsPaths = settingsPaths;
         this.settings = deepMergeSettings(this.globalSettings, this.projectSettings);
     }
     /** Create a SettingsManager that loads from files */
     static create(cwd, agentDir = getAgentDir(), options = {}) {
-        const storage = new FileSettingsStorage(cwd, agentDir);
-        return SettingsManager.fromStorage(storage, options);
+        const resolvedCwd = resolvePath(cwd);
+        const resolvedAgentDir = resolvePath(agentDir);
+        const storage = new FileSettingsStorage(resolvedCwd, resolvedAgentDir);
+        return SettingsManager.fromStorageWithPaths(storage, options, {
+            global: join(resolvedAgentDir, "settings.json"),
+            project: join(resolvedCwd, CONFIG_DIR_NAME, "settings.json"),
+        });
     }
     /** Create a SettingsManager from an arbitrary storage backend */
     static fromStorage(storage, options = {}) {
+        return SettingsManager.fromStorageWithPaths(storage, options);
+    }
+    /** Create a manager while retaining optional file paths for reported storage errors. */
+    static fromStorageWithPaths(storage, options, settingsPaths = {}) {
         const projectTrusted = options.projectTrusted ?? true;
         const globalLoad = SettingsManager.tryLoadFromStorage(storage, "global");
         const projectLoad = SettingsManager.tryLoadFromStorage(storage, "project", projectTrusted);
         const initialErrors = [];
         if (globalLoad.error) {
-            initialErrors.push({ scope: "global", error: globalLoad.error });
+            initialErrors.push(toSettingsError("global", globalLoad.error, settingsPaths.global));
         }
         if (projectLoad.error) {
-            initialErrors.push({ scope: "project", error: projectLoad.error });
+            initialErrors.push(toSettingsError("project", projectLoad.error, settingsPaths.project));
         }
-        return new SettingsManager(storage, globalLoad.settings, projectLoad.settings, globalLoad.error, projectLoad.error, initialErrors, projectTrusted);
+        return new SettingsManager(storage, globalLoad.settings, projectLoad.settings, globalLoad.error, projectLoad.error, initialErrors, projectTrusted, settingsPaths);
     }
     /** Create an in-memory SettingsManager (no file I/O) */
     static inMemory(settings = {}, options = {}) {
@@ -181,7 +197,7 @@ export class SettingsManager {
         if (!content) {
             return {};
         }
-        const settings = JSON.parse(content);
+        const settings = JSON.parse(stripBom(content));
         return SettingsManager.migrateSettings(settings);
     }
     static tryLoadFromStorage(storage, scope, projectTrusted = true) {
@@ -326,8 +342,7 @@ export class SettingsManager {
         }
     }
     recordError(scope, error) {
-        const normalizedError = error instanceof Error ? error : new Error(String(error));
-        this.errors.push({ scope, error: normalizedError });
+        this.errors.push(toSettingsError(scope, error, this.settingsPaths[scope]));
     }
     clearModifiedScope(scope) {
         if (scope === "global") {
@@ -361,7 +376,7 @@ export class SettingsManager {
     persistScopedSettings(scope, snapshotSettings, modifiedFields, modifiedNestedFields) {
         this.storage.withLock(scope, (current) => {
             const currentFileSettings = current
-                ? SettingsManager.migrateSettings(JSON.parse(current))
+                ? SettingsManager.migrateSettings(JSON.parse(stripBom(current)))
                 : {};
             const mergedSettings = { ...currentFileSettings };
             for (const field of modifiedFields) {
@@ -498,6 +513,30 @@ export class SettingsManager {
         this.markModified("defaultThinkingLevel");
         this.save();
     }
+    getModelThinkingLevel(provider, modelId) {
+        return this.settings.modelThinkingLevels?.[`${provider}/${modelId}`];
+    }
+    getAllModelThinkingLevels() {
+        return { ...(this.settings.modelThinkingLevels ?? {}) };
+    }
+    setModelThinkingLevel(provider, modelId, level) {
+        if (!this.globalSettings.modelThinkingLevels) {
+            this.globalSettings.modelThinkingLevels = {};
+        }
+        this.globalSettings.modelThinkingLevels[`${provider}/${modelId}`] = level;
+        this.markModified("modelThinkingLevels");
+        this.save();
+    }
+    removeModelThinkingLevel(provider, modelId) {
+        if (!this.globalSettings.modelThinkingLevels)
+            return;
+        delete this.globalSettings.modelThinkingLevels[`${provider}/${modelId}`];
+        if (Object.keys(this.globalSettings.modelThinkingLevels).length === 0) {
+            delete this.globalSettings.modelThinkingLevels;
+        }
+        this.markModified("modelThinkingLevels");
+        this.save();
+    }
     getTransport() {
         return this.settings.transport ?? "auto";
     }
@@ -581,6 +620,9 @@ export class SettingsManager {
     getHideThinkingBlock() {
         return this.settings.hideThinkingBlock ?? false;
     }
+    getShowCacheMissNotices() {
+        return this.settings.showCacheMissNotices ?? false;
+    }
     getExternalEditorCommand() {
         const configuredEditor = this.settings.externalEditor;
         if (typeof configuredEditor === "string" && configuredEditor.trim() !== "") {
@@ -597,8 +639,14 @@ export class SettingsManager {
         this.markModified("hideThinkingBlock");
         this.save();
     }
+    setShowCacheMissNotices(show) {
+        this.globalSettings.showCacheMissNotices = show;
+        this.markModified("showCacheMissNotices");
+        this.save();
+    }
     getShellPath() {
-        return this.settings.shellPath;
+        const shellPath = this.settings.shellPath;
+        return shellPath ? normalizePath(shellPath) : shellPath;
     }
     setShellPath(path) {
         this.globalSettings.shellPath = path;
@@ -746,6 +794,15 @@ export class SettingsManager {
     getThinkingBudgets() {
         return this.settings.thinkingBudgets;
     }
+    getTerminalCapabilityOverrides() {
+        const terminal = this.settings.terminal;
+        const images = terminal?.images;
+        return {
+            ...(images === "kitty" || images === "iterm2" ? { images } : images === false ? { images: null } : {}),
+            ...(typeof terminal?.trueColor === "boolean" ? { trueColor: terminal.trueColor } : {}),
+            ...(typeof terminal?.hyperlinks === "boolean" ? { hyperlinks: terminal.hyperlinks } : {}),
+        };
+    }
     getShowImages() {
         return this.settings.terminal?.showImages ?? true;
     }
@@ -798,6 +855,39 @@ export class SettingsManager {
         this.markModified("terminal", "showTerminalProgress");
         this.save();
     }
+    getTuiMode() {
+        return this.settings.tuiMode === "fullscreen" ? "fullscreen" : "regular";
+    }
+    setTuiMode(mode) {
+        this.globalSettings.tuiMode = mode;
+        this.markModified("tuiMode");
+        this.save();
+    }
+    getFullscreenExitOutput() {
+        return this.settings.fullscreenExitOutput === "resume-hint" ? "resume-hint" : "transcript";
+    }
+    setFullscreenExitOutput(output) {
+        this.globalSettings.fullscreenExitOutput = output;
+        this.markModified("fullscreenExitOutput");
+        this.save();
+    }
+    getFullscreenScrollbar() {
+        const mode = this.settings.fullscreenScrollbar;
+        return mode === "always" || mode === "hidden" ? mode : "auto";
+    }
+    setFullscreenScrollbar(mode) {
+        this.globalSettings.fullscreenScrollbar = mode;
+        this.markModified("fullscreenScrollbar");
+        this.save();
+    }
+    getFullscreenCopyOnSelect() {
+        return this.settings.fullscreenCopyOnSelect ?? true;
+    }
+    setFullscreenCopyOnSelect(enabled) {
+        this.globalSettings.fullscreenCopyOnSelect = enabled;
+        this.markModified("fullscreenCopyOnSelect");
+        this.save();
+    }
     getImageAutoResize() {
         return this.settings.images?.autoResize ?? true;
     }
@@ -822,6 +912,10 @@ export class SettingsManager {
     }
     getEnabledModels() {
         return this.settings.enabledModels;
+    }
+    getDefaultTools() {
+        const tools = this.settings.defaultTools;
+        return tools ? [...tools] : undefined;
     }
     setEnabledModels(patterns) {
         this.globalSettings.enabledModels = patterns;
@@ -880,6 +974,16 @@ export class SettingsManager {
     }
     getCodeBlockIndent() {
         return this.settings.markdown?.codeBlockIndent ?? "  ";
+    }
+    getMermaidRenderingMode() {
+        const mode = this.settings.markdown?.mermaid;
+        return mode === "off" || mode === "final" ? mode : "streaming";
+    }
+    setMermaidRenderingMode(mode) {
+        this.globalSettings.markdown ??= {};
+        this.globalSettings.markdown.mermaid = mode;
+        this.markModified("markdown", "mermaid");
+        this.save();
     }
     getWarnings() {
         return { ...(this.settings.warnings ?? {}) };

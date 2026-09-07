@@ -1,4 +1,6 @@
+import type { ThinkingLevel } from "@liyuan/agent-core";
 import type { Transport } from "@liyuan/ai";
+import type { TuiMode as RendererTuiMode, ScrollViewScrollbar, TerminalCapabilities } from "@liyuan/tui";
 export interface CompactionSettings {
     enabled?: boolean;
     reserveTokens?: number;
@@ -19,11 +21,16 @@ export interface RetrySettings {
     baseDelayMs?: number;
     provider?: ProviderRetrySettings;
 }
+export type TuiMode = RendererTuiMode;
+export type FullscreenExitOutput = "transcript" | "resume-hint";
 export interface TerminalSettings {
     showImages?: boolean;
     imageWidthCells?: number;
     clearOnShrink?: boolean;
     showTerminalProgress?: boolean;
+    hyperlinks?: boolean | "auto";
+    images?: "kitty" | "iterm2" | "auto" | false;
+    trueColor?: boolean | "auto";
 }
 export interface ImageSettings {
     autoResize?: boolean;
@@ -35,8 +42,10 @@ export interface ThinkingBudgetsSettings {
     medium?: number;
     high?: number;
 }
+export type MermaidRenderingMode = "off" | "final" | "streaming";
 export interface MarkdownSettings {
     codeBlockIndent?: string;
+    mermaid?: MermaidRenderingMode;
 }
 export interface WarningSettings {
     anthropicExtraUsage?: boolean;
@@ -47,9 +56,11 @@ export type TransportSetting = Transport;
  * Package source for npm/git packages.
  * - String form: load all resources from the package
  * - Object form: filter which resources to load
+ * - autoload=false: start empty and only apply explicit resource patterns
  */
 export type PackageSource = string | {
     source: string;
+    autoload?: boolean;
     extensions?: string[];
     skills?: string[];
     prompts?: string[];
@@ -59,7 +70,8 @@ export interface Settings {
     lastChangelogVersion?: string;
     defaultProvider?: string;
     defaultModel?: string;
-    defaultThinkingLevel?: "off" | "minimal" | "low" | "medium" | "high" | "xhigh";
+    defaultThinkingLevel?: ThinkingLevel;
+    modelThinkingLevels?: Record<string, ThinkingLevel>;
     transport?: TransportSetting;
     steeringMode?: "all" | "one-at-a-time";
     followUpMode?: "all" | "one-at-a-time";
@@ -68,6 +80,7 @@ export interface Settings {
     branchSummary?: BranchSummarySettings;
     retry?: RetrySettings;
     hideThinkingBlock?: boolean;
+    showCacheMissNotices?: boolean;
     externalEditor?: string;
     shellPath?: string;
     quietStartup?: boolean;
@@ -87,6 +100,7 @@ export interface Settings {
     terminal?: TerminalSettings;
     images?: ImageSettings;
     enabledModels?: string[];
+    defaultTools?: string[];
     doubleEscapeAction?: "fork" | "tree" | "none";
     treeFilterMode?: "default" | "no-tools" | "user-only" | "labeled-only" | "all";
     thinkingBudgets?: ThinkingBudgetsSettings;
@@ -100,6 +114,10 @@ export interface Settings {
     httpProxy?: string;
     httpIdleTimeoutMs?: number;
     websocketConnectTimeoutMs?: number;
+    tuiMode?: TuiMode;
+    fullscreenExitOutput?: FullscreenExitOutput;
+    fullscreenScrollbar?: ScrollViewScrollbar;
+    fullscreenCopyOnSelect?: boolean;
 }
 export type SettingsScope = "global" | "project";
 export interface SettingsManagerCreateOptions {
@@ -110,6 +128,7 @@ export interface SettingsStorage {
 }
 export interface SettingsError {
     scope: SettingsScope;
+    path?: string;
     error: Error;
 }
 export declare class FileSettingsStorage implements SettingsStorage {
@@ -138,11 +157,14 @@ export declare class SettingsManager {
     private projectSettingsLoadError;
     private writeQueue;
     private errors;
+    private settingsPaths;
     private constructor();
     /** Create a SettingsManager that loads from files */
     static create(cwd: string, agentDir?: string, options?: SettingsManagerCreateOptions): SettingsManager;
     /** Create a SettingsManager from an arbitrary storage backend */
     static fromStorage(storage: SettingsStorage, options?: SettingsManagerCreateOptions): SettingsManager;
+    /** Create a manager while retaining optional file paths for reported storage errors. */
+    private static fromStorageWithPaths;
     /** Create an in-memory SettingsManager (no file I/O) */
     static inMemory(settings?: Partial<Settings>, options?: SettingsManagerCreateOptions): SettingsManager;
     private static loadFromStorage;
@@ -186,8 +208,12 @@ export declare class SettingsManager {
     getThemeSetting(): string | undefined;
     getTheme(): string | undefined;
     setTheme(theme: string): void;
-    getDefaultThinkingLevel(): "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | undefined;
-    setDefaultThinkingLevel(level: "off" | "minimal" | "low" | "medium" | "high" | "xhigh"): void;
+    getDefaultThinkingLevel(): ThinkingLevel | undefined;
+    setDefaultThinkingLevel(level: ThinkingLevel): void;
+    getModelThinkingLevel(provider: string, modelId: string): ThinkingLevel | undefined;
+    getAllModelThinkingLevels(): Record<string, ThinkingLevel>;
+    setModelThinkingLevel(provider: string, modelId: string, level: ThinkingLevel): void;
+    removeModelThinkingLevel(provider: string, modelId: string): void;
     getTransport(): TransportSetting;
     setTransport(transport: TransportSetting): void;
     getCompactionEnabled(): boolean;
@@ -220,8 +246,10 @@ export declare class SettingsManager {
     };
     getWebSocketConnectTimeoutMs(): number | undefined;
     getHideThinkingBlock(): boolean;
-    getExternalEditorCommand(): string | undefined;
+    getShowCacheMissNotices(): boolean;
+    getExternalEditorCommand(): string;
     setHideThinkingBlock(hide: boolean): void;
+    setShowCacheMissNotices(show: boolean): void;
     getShellPath(): string | undefined;
     setShellPath(path: string | undefined): void;
     getQuietStartup(): boolean;
@@ -258,6 +286,7 @@ export declare class SettingsManager {
     getEnableSkillCommands(): boolean;
     setEnableSkillCommands(enabled: boolean): void;
     getThinkingBudgets(): ThinkingBudgetsSettings | undefined;
+    getTerminalCapabilityOverrides(): Partial<TerminalCapabilities>;
     getShowImages(): boolean;
     setShowImages(show: boolean): void;
     getImageWidthCells(): number;
@@ -266,11 +295,20 @@ export declare class SettingsManager {
     setClearOnShrink(enabled: boolean): void;
     getShowTerminalProgress(): boolean;
     setShowTerminalProgress(enabled: boolean): void;
+    getTuiMode(): TuiMode;
+    setTuiMode(mode: TuiMode): void;
+    getFullscreenExitOutput(): FullscreenExitOutput;
+    setFullscreenExitOutput(output: FullscreenExitOutput): void;
+    getFullscreenScrollbar(): ScrollViewScrollbar;
+    setFullscreenScrollbar(mode: ScrollViewScrollbar): void;
+    getFullscreenCopyOnSelect(): boolean;
+    setFullscreenCopyOnSelect(enabled: boolean): void;
     getImageAutoResize(): boolean;
     setImageAutoResize(enabled: boolean): void;
     getBlockImages(): boolean;
     setBlockImages(blocked: boolean): void;
     getEnabledModels(): string[] | undefined;
+    getDefaultTools(): string[] | undefined;
     setEnabledModels(patterns: string[] | undefined): void;
     getDoubleEscapeAction(): "fork" | "tree" | "none";
     setDoubleEscapeAction(action: "fork" | "tree" | "none"): void;
@@ -285,6 +323,8 @@ export declare class SettingsManager {
     getAutocompleteMaxVisible(): number;
     setAutocompleteMaxVisible(maxVisible: number): void;
     getCodeBlockIndent(): string;
+    getMermaidRenderingMode(): MermaidRenderingMode;
+    setMermaidRenderingMode(mode: MermaidRenderingMode): void;
     getWarnings(): WarningSettings;
     setWarnings(warnings: WarningSettings): void;
 }

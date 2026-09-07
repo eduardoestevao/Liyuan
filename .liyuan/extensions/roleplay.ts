@@ -11,7 +11,8 @@ import { existsSync, mkdirSync, writeFileSync, copyFileSync } from "node:fs";
 import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { extname, isAbsolute, join } from "node:path";
-import type { ExtensionAPI } from "@liyuan/agent-runtime";
+import type { ExtensionAPI, ExtensionContext, ToolDefinition } from "@liyuan/agent-runtime";
+import { publishStageConnection, type StageHooks } from "../../src/stage/bridge.ts";
 import { completeSimple } from "@liyuan/ai/compat";
 import { Type } from "typebox";
 
@@ -20,7 +21,7 @@ import { buildImportBlock, cleanChat, DEFAULT_STRIP_TAGS, parseStChat, serialize
 import { findCommand } from "../../src/commands.ts";
 import { buildGreeting } from "../../src/greeting.ts";
 import { memoryArchiveCompacted, memoryRecallForTurn, memorySearch } from "../../src/memory/index.ts";
-import { GATED_TOOLS, WRITE_REQUEST_RE } from "../../src/tools/gate.ts";
+import { checkWriteGate } from "../../src/tools/gate.ts";
 import {
 	constantEntries,
 	appendOverlayEntry,
@@ -135,6 +136,56 @@ const cmdDesc = (name: string): string => {
 export default function roleplayExtension(pi: ExtensionAPI) {
 	let rpMode = true;
 	let savedTools: string[] | null = null;
+	let activeStage: StageHooks | undefined;
+	const stageToolErrors = new Set<string>();
+	let unpublishStage: (() => void) | undefined;
+	const rpToolDefinitions = new Map<string, ToolDefinition<any>>();
+	// 保留命令/非台上路径的工具定义；演出期间临时切到当前拍的完整工具清单。
+	const registerRpTool = (tool: ToolDefinition<any>) => {
+		rpToolDefinitions.set(tool.name, tool);
+		if (!activeStage?.toolNames.includes(tool.name)) pi.registerTool(tool);
+	};
+
+	const connectStage = (sessionId: string) => {
+		unpublishStage?.();
+		unpublishStage = publishStageConnection(sessionId, {
+			activate(hooks, tools) {
+				if (activeStage) throw new Error("当前会话已有一拍正在运行");
+				const previousTools = pi.getActiveTools();
+				const restore = () => {
+					activeStage = undefined;
+					stageToolErrors.clear();
+					for (const tool of tools) {
+						const previous = rpToolDefinitions.get(tool.name);
+						if (previous) pi.registerTool(previous);
+					}
+					pi.setActiveTools(previousTools);
+				};
+				try {
+					activeStage = hooks;
+					for (const tool of tools) {
+						pi.registerTool({
+							...tool,
+							label: tool.name,
+							parameters: tool.parameters as any,
+							executionMode: "sequential",
+							async execute(id, input, signal) {
+								const result = await hooks.execute(tool.name, id, input as Record<string, unknown>, signal);
+								// Native AgentToolResult carries content/details; error state is applied by tool_result.
+								if (result.isError) stageToolErrors.add(id);
+								return { content: result.content, details: result.details, ...(result.terminate ? { terminate: true } : {}) };
+							},
+						});
+					}
+					pi.setActiveTools(hooks.toolNames);
+				} catch (error) {
+					restore();
+					throw error;
+				}
+				return restore;
+			},
+		});
+	};
 
 	let config: RpConfig = { ...DEFAULT_CONFIG };
 	let card: CharacterCard | null = null;
@@ -185,6 +236,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	 */
 	const BUILTIN_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
 	const applyRpToolset = () => {
+		if (activeStage) return; // 本拍工具集归台上快照；热更新不能混入旧工具。
 		// 决策门禁开时把 ask_director 并入剧情工具集（silent 档不注册，模型无从调用=旧行为）
 		const rpTools = config.creationMode === "ask" ? [...RP_TOOLS, ASK_TOOL] : RP_TOOLS;
 		const withMcp = [...rpTools, ...mcpToolNames];
@@ -210,7 +262,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			if (mcpRegistered.has(tool.qualifiedName)) continue;
 			try {
 				const desc = tool;
-				pi.registerTool({
+				registerRpTool({
 					name: desc.qualifiedName,
 					label: `MCP · ${desc.serverName} · ${desc.name}`,
 					description:
@@ -383,10 +435,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	};
 
 	/** 旁侧模型调用（场记/审计/摘要/别名共用）。返回文本或 null；错误上抛由调用方定夺 */
-	type SideCtx = {
-		model?: Parameters<typeof completeSimple>[0];
-		modelRegistry: { getApiKeyAndHeaders: (m: never) => Promise<{ apiKey?: string; headers?: Record<string, string> }> };
-	};
+	type SideCtx = Pick<ExtensionContext, "model" | "modelRegistry">;
 	const sideComplete = async (
 		ctx: SideCtx,
 		systemPrompt: string,
@@ -395,14 +444,16 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		signal?: AbortSignal,
 	): Promise<string | null> => {
 		if (!ctx.model) return null;
-		const { apiKey, headers } = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model as never);
+		const auth = await ctx.modelRegistry.getApiKeyAndHeaders(ctx.model);
+		if (!auth.ok) throw new Error(auth.error);
+		const { apiKey, headers, baseUrl, env } = auth;
 		const response = await completeSimple(
-			ctx.model,
+			baseUrl ? { ...ctx.model, baseUrl } : ctx.model,
 			{
 				systemPrompt,
 				messages: [{ role: "user", content: [{ type: "text", text: userText }], timestamp: Date.now() }],
 			},
-			{ apiKey, headers, signal, maxTokens },
+			{ apiKey, headers, env, signal, maxTokens },
 		);
 		if (response.stopReason === "error") {
 			throw new Error(response.errorMessage || "side model error");
@@ -526,7 +577,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	// ---------- 幕后工具 ----------
 
 	try {
-		pi.registerTool({
+		registerRpTool({
 			name: "lorebook_search",
 			label: "世界书检索",
 			description:
@@ -546,7 +597,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		pi.registerTool({
+		registerRpTool({
 			name: "world_state_get",
 			label: "查看世界状态",
 			description: "Get the current structured world state (time, location, character affinity/status, inventory, flags, plot threads). Call when unsure about established facts.",
@@ -558,7 +609,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 
 		// 索引→检索闭环：【登场名录】/【设定集索引】告诉模型「存在什么」,这个工具负责「取细节」。
 		// 检索范围 = 剧情库(滚动摘要 + 压缩归档的早期正文) + 额外库(导入资料)。
-		pi.registerTool({
+		registerRpTool({
 			name: "memory_search",
 			label: "检索剧情记忆",
 			description:
@@ -597,7 +648,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		pi.registerTool({
+		registerRpTool({
 			name: "lorebook_write",
 			label: "写入补充设定集",
 			description:
@@ -638,7 +689,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		pi.registerTool({
+		registerRpTool({
 			name: "world_state_update",
 			label: "更新世界状态",
 			description:
@@ -687,7 +738,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 
 		// 图片通道（PLAN-PHASE3 §6.5）：交付数据放 details.rpImage，wire 层翻译成 image 消息
 		// （toolResult 自然进会话文件 → live 推送与刷新重放同一条路径；D10：插图是舞台美术，与正文明确区隔）
-		pi.registerTool({
+		registerRpTool({
 			name: "show_image",
 			label: "展示图片",
 			description:
@@ -724,7 +775,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		});
 
 		// 音频通道（同 show_image）：交付配乐/配音文件；文生音见 tts 工具
-		pi.registerTool({
+		registerRpTool({
 			name: "show_audio",
 			label: "展示音频",
 			description:
@@ -757,7 +808,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		});
 
 		// 视频通道（同 show_image/audio）：第三方/本机生成的短视频交付到对话内播放器
-		pi.registerTool({
+		registerRpTool({
 			name: "show_video",
 			label: "展示视频",
 			description:
@@ -795,7 +846,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		});
 
 		// 对话流 HTML 底座：在聊天消息流中嵌入可渲染 HTML（手机框、小界面等），与角色卡前端无关
-		pi.registerTool({
+		registerRpTool({
 			name: "show_html",
 			label: "展示 HTML",
 			description:
@@ -834,7 +885,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		});
 
 		// 文生音：OpenAI 兼容 speech API → .liyuan-audio/ → 对话内播放器（与 show_audio 同一交付通道）
-		pi.registerTool({
+		registerRpTool({
 			name: "tts",
 			label: "文生音",
 			description:
@@ -881,7 +932,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		// 持久化同 rp-state 三件套：.liyuan-artifacts/<sessionId>.json 缓存 + rp-panels 树快照，
 		// 落盘触发 server 的 fs.watch → panels 帧 → 前端右栏动态页签。D10：面板是舞台美术，不碰正文。
 
-		pi.registerTool({
+		registerRpTool({
 			name: "panel_write",
 			label: "更新面板",
 			description:
@@ -916,7 +967,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		pi.registerTool({
+		registerRpTool({
 			name: "panel_read",
 			label: "查看面板",
 			description:
@@ -944,7 +995,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		pi.registerTool({
+		registerRpTool({
 			name: "panel_close",
 			label: "收起面板",
 			description:
@@ -964,7 +1015,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		});
 
 		// 系统事务委托：右栏助手作为剧情 agent 的工具（主框统一入口，语义判断而非 // 硬改道）
-		pi.registerTool({
+		registerRpTool({
 			name: "assistant_run",
 			label: "委托助手",
 			description:
@@ -1021,7 +1072,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		// 决策门禁（PLAN-PHASE4 柱 1）：模型判断到关键剧情决策点时停笔，向用户摊开选项。
 		// D10 主动形态——不只 harness 不代笔，更把重大创作决策交还用户。ctx.ui.select 在 Web
 		// 宿主被接成选择卡通道（server/main.ts）：返回用户所选文字，返回 undefined = 用户停止本回合。
-		pi.registerTool({
+		registerRpTool({
 			name: ASK_TOOL,
 			label: "请用户定夺",
 			description:
@@ -1067,6 +1118,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	// ---------- 会话生命周期 ----------
 
 	pi.on("session_start", async (event, ctx) => {
+		connectStage(ctx.sessionManager.getSessionId());
 		if (process.env.RP_DEBUG) console.error(`[rp-debug] session_start fired（v-f1）`);
 		try {
 			const configPath = resolveConfigPath(ctx.cwd);
@@ -1231,17 +1283,30 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		refreshDisplayTagExtras();
 	};
 
-	// ============================================================
-	// harness 生成流程已整体移除（2026-08-02 重做）：
-	//   before_agent_start / context / before_provider_request /
-	//   agent_end×2（场记记账·固定楼层压缩）/ session_before_compact
-	// 新的固定流水线将在此处重建。
-	// ============================================================
+	// 回归 pi · 刀1：通道的唯一入口。主生成循环归 AgentSession，
+	// Stage 只处理每拍素材/稿纸/收尾；after_provider_response 是 HTTP 元数据，
+	// 模型增量与完整消息分别经 message_update / message_end。
+	pi.on("before_agent_start", () => activeStage ? { systemPrompt: activeStage.systemPrompt } : undefined);
+	pi.on("context", (event) => activeStage ? { messages: activeStage.context(event.messages) as typeof event.messages } : undefined);
+	pi.on("before_provider_request", (event, ctx) => activeStage?.providerPayload(event.payload, ctx.model as never));
+	pi.on("message_update", (event) => activeStage?.update(event.assistantMessageEvent as never));
+	pi.on("message_end", (event) => activeStage?.messageEnd(event.message as never));
+	pi.on("tool_result", (event) => {
+		activeStage?.toolResult(event.toolName, event.content);
+		if (stageToolErrors.delete(event.toolCallId)) return { isError: true };
+	});
+	pi.on("turn_end", () => activeStage?.turnEnd(() => pi.setActiveTools([])));
+	pi.on("agent_end", () => activeStage?.end());
+	pi.on("session_before_compact", () => activeStage ? { cancel: true } : undefined);
+	pi.on("session_shutdown", () => {
+		unpublishStage?.();
+		unpublishStage = undefined;
+	});
 
 
 	/** 取本拍最后一条用户原文（写入门禁判定用）。从会话 entries 倒序找第一条 user 消息。 */
-	const lastUserText = (ctx: { sessionManager?: { getEntries?: () => Array<Record<string, unknown>> } }): string => {
-		const entries = ctx.sessionManager?.getEntries?.() ?? [];
+	const lastUserText = (ctx: { sessionManager?: { getBranch?: () => Array<Record<string, unknown>> } }): string => {
+		const entries = ctx.sessionManager?.getBranch?.() ?? [];
 		for (let i = entries.length - 1; i >= 0; i--) {
 			const e = entries[i];
 			if (e.type === "message") {
@@ -1261,16 +1326,15 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		return "";
 	};
 
-	pi.on("tool_call", async (event, ctx) => {
-		if (!rpMode || config.creationMode !== "ask") return undefined;
-		if (!GATED_TOOLS.includes(event.toolName)) return undefined;
-		// 用户本轮主动要求写入 → 放行（不再弹确认卡）
-		if (WRITE_REQUEST_RE.test(lastUserText(ctx))) return undefined;
-		return {
-			block: true,
-			reason:
-				"写入设定集/知识库需用户明确要求：本轮用户并未要求记录，本次写入已拒绝。不要写、也不要用 ask_director 询问「是否写入」；若用户后续明确要求再执行。",
+	pi.on("tool_call", (event, ctx) => {
+		const input = activeStage?.toolCall(event.toolName, event.input) ?? {
+			toolName: event.toolName,
+			lastUserText: lastUserText(ctx as never),
+			creationMode: rpMode ? config.creationMode : "silent",
 		};
+		if ("blockReason" in input && input.blockReason) return { block: true, reason: input.blockReason };
+		const verdict = checkWriteGate(input);
+		return verdict.allow ? undefined : { block: true, reason: verdict.reason };
 	});
 
 	/** 等待在途的场记调用归位（树导航前必须等：否则快照会写到导航后的位置上） */

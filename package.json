@@ -4,6 +4,7 @@
 	"description": "梨园（Liyuan）— 以 AI 为主演的角色扮演剧院",
 	"scripts": {
 		"test": "node --test test/*.test.ts",
+		"runtime:build": "node scripts/build-runtime.mjs",
 		"web": "node server/main.ts",
 		"web:new": "node server/main.ts --new",
 		"web:build": "npm --prefix web run build",
@@ -22,6 +23,14 @@
 		"ws": "^8.18.0"
 	},
 	"devDependencies": {
-		"playwright": "^1.49.0"
+		"@types/cross-spawn": "6.0.6",
+		"@types/hosted-git-info": "3.0.5",
+		"@types/node": "22.19.19",
+		"@types/proper-lockfile": "4.1.4",
+		"@types/semver": "7.7.1",
+		"@types/ws": "8.18.1",
+		"playwright": "^1.49.0",
+		"typescript": "5.9.3",
+		"vitest": "4.1.9"
 	}
 }

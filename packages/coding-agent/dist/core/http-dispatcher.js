@@ -1,6 +1,8 @@
 import { EventEmitter } from "node:events";
 import * as undici from "undici";
 export const DEFAULT_HTTP_IDLE_TIMEOUT_MS = 300_000;
+// Node's 250ms default can terminate valid connection attempts on high-latency routes.
+const DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS = 2_000;
 export const HTTP_IDLE_TIMEOUT_CHOICES = [
     { label: "30 sec", timeoutMs: 30_000 },
     { label: "1 min", timeoutMs: 60_000 },
@@ -71,6 +73,9 @@ export function configureHttpDispatcher(timeoutMs = DEFAULT_HTTP_IDLE_TIMEOUT_MS
     const dispatcher = withUndiciErrorListener(new undici.EnvHttpProxyAgent({
         allowH2: false,
         bodyTimeout: normalizedTimeoutMs,
+        connect: {
+            autoSelectFamilyAttemptTimeout: DEFAULT_AUTO_SELECT_FAMILY_ATTEMPT_TIMEOUT_MS,
+        },
         headersTimeout: normalizedTimeoutMs,
         clientFactory: createUndiciClient,
         factory: createUndiciOriginDispatcher,

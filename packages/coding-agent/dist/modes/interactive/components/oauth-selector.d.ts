@@ -1,10 +1,13 @@
+import type { ApiKeyAuth, AuthCheck, OAuthAuth } from "@liyuan/ai";
 import { Container, type Focusable } from "@liyuan/tui";
-import type { AuthStatus, AuthStorage } from "../../../core/auth-storage.ts";
 export type AuthSelectorProvider = {
     id: string;
     name: string;
     authType: "oauth" | "api_key";
+    method?: ApiKeyAuth | OAuthAuth;
+    status?: AuthCheck;
 };
+export declare function formatAuthSelectorProviderType(authType: AuthSelectorProvider["authType"]): string;
 /**
  * Component that renders an auth provider selector
  */
@@ -18,11 +21,10 @@ export declare class OAuthSelectorComponent extends Container implements Focusab
     private filteredProviders;
     private selectedIndex;
     private mode;
-    private authStorage;
-    private getAuthStatus;
     private onSelectCallback;
     private onCancelCallback;
-    constructor(mode: "login" | "logout", authStorage: AuthStorage, providers: AuthSelectorProvider[], onSelect: (providerId: string) => void, onCancel: () => void, getAuthStatus?: (providerId: string) => AuthStatus);
+    private showAuthTypeLabels;
+    constructor(mode: "login" | "logout", providers: AuthSelectorProvider[], onSelect: (providerId: string, authType: AuthSelectorProvider["authType"]) => void, onCancel: () => void, initialSearchInput?: string);
     private filterProviders;
     private updateList;
     private formatStatusIndicator;

@@ -27,6 +27,10 @@ liyuan-preset.json
 liyuan-profiles
 # compose 的宿主挂载目录：用户数据，绝不进镜像
 data
+!packages/ai/src/providers/data
+!packages/ai/src/providers/data/*.json
+!packages/ai/dist/providers/data
+!packages/ai/dist/providers/data/*.json
 # 卡＝工作空间：cards/<卡文件夹>/ 整棵是用户数据（卡本体/卡级配置/子项目的会话与账本）
 cards
 assets/ab-test

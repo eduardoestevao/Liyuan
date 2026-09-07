@@ -4,6 +4,7 @@ export { withFileMutationQueue } from "./file-mutation-queue.js";
 export { createFindTool, createFindToolDefinition, } from "./find.js";
 export { createGrepTool, createGrepToolDefinition, } from "./grep.js";
 export { createLsTool, createLsToolDefinition, } from "./ls.js";
+export { createLocalPowerShellOperations, createPowerShellTool, createPowerShellToolDefinition, } from "./powershell.js";
 export { createReadTool, createReadToolDefinition, } from "./read.js";
 export { DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, truncateLine, truncateTail, } from "./truncate.js";
 export { createWriteTool, createWriteToolDefinition, } from "./write.js";
@@ -12,15 +13,27 @@ import { createEditTool, createEditToolDefinition } from "./edit.js";
 import { createFindTool, createFindToolDefinition } from "./find.js";
 import { createGrepTool, createGrepToolDefinition } from "./grep.js";
 import { createLsTool, createLsToolDefinition } from "./ls.js";
+import { createPowerShellTool, createPowerShellToolDefinition } from "./powershell.js";
 import { createReadTool, createReadToolDefinition } from "./read.js";
 import { createWriteTool, createWriteToolDefinition } from "./write.js";
-export const allToolNames = new Set(["read", "bash", "edit", "write", "grep", "find", "ls"]);
+export const allToolNames = new Set([
+    "read",
+    "bash",
+    "powershell",
+    "edit",
+    "write",
+    "grep",
+    "find",
+    "ls",
+]);
 export function createToolDefinition(toolName, cwd, options) {
     switch (toolName) {
         case "read":
             return createReadToolDefinition(cwd, options?.read);
         case "bash":
             return createBashToolDefinition(cwd, options?.bash);
+        case "powershell":
+            return createPowerShellToolDefinition(cwd, options?.powershell);
         case "edit":
             return createEditToolDefinition(cwd, options?.edit);
         case "write":
@@ -41,6 +54,8 @@ export function createTool(toolName, cwd, options) {
             return createReadTool(cwd, options?.read);
         case "bash":
             return createBashTool(cwd, options?.bash);
+        case "powershell":
+            return createPowerShellTool(cwd, options?.powershell);
         case "edit":
             return createEditTool(cwd, options?.edit);
         case "write":
@@ -75,6 +90,7 @@ export function createAllToolDefinitions(cwd, options) {
     return {
         read: createReadToolDefinition(cwd, options?.read),
         bash: createBashToolDefinition(cwd, options?.bash),
+        powershell: createPowerShellToolDefinition(cwd, options?.powershell),
         edit: createEditToolDefinition(cwd, options?.edit),
         write: createWriteToolDefinition(cwd, options?.write),
         grep: createGrepToolDefinition(cwd, options?.grep),
@@ -102,6 +118,7 @@ export function createAllTools(cwd, options) {
     return {
         read: createReadTool(cwd, options?.read),
         bash: createBashTool(cwd, options?.bash),
+        powershell: createPowerShellTool(cwd, options?.powershell),
         edit: createEditTool(cwd, options?.edit),
         write: createWriteTool(cwd, options?.write),
         grep: createGrepTool(cwd, options?.grep),

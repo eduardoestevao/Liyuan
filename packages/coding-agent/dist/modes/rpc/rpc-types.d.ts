@@ -32,6 +32,9 @@ export type RpcCommand = {
     type: "abort";
 } | {
     id?: string;
+    type: "clear_queue";
+} | {
+    id?: string;
     type: "new_session";
     parentSession?: string;
 } | {
@@ -55,6 +58,9 @@ export type RpcCommand = {
 } | {
     id?: string;
     type: "cycle_thinking_level";
+} | {
+    id?: string;
+    type: "get_available_thinking_levels";
 } | {
     id?: string;
     type: "set_steering_mode";
@@ -176,6 +182,15 @@ export type RpcResponse = {
 } | {
     id?: string;
     type: "response";
+    command: "clear_queue";
+    success: true;
+    data: {
+        steering: string[];
+        followUp: string[];
+    };
+} | {
+    id?: string;
+    type: "response";
     command: "new_session";
     success: true;
     data: {
@@ -224,6 +239,14 @@ export type RpcResponse = {
     data: {
         level: ThinkingLevel;
     } | null;
+} | {
+    id?: string;
+    type: "response";
+    command: "get_available_thinking_levels";
+    success: true;
+    data: {
+        levels: ThinkingLevel[];
+    };
 } | {
     id?: string;
     type: "response";

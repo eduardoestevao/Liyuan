@@ -17,10 +17,11 @@ export interface StageToolShape {
 	name: string;
 	description: string;
 	parameters: Record<string, unknown>;
+	mode: "read" | "write";
 }
 
 /** 台上统一层依赖（各族依赖包的并集；随里程碑推进逐族扩充） */
-export type UnifiedStageDeps = LoreDeps & MemoryDeps & CardDeps & WorldlineDeps & PanelDeps;
+export type UnifiedStageDeps = LoreDeps & MemoryDeps & CardDeps & WorldlineDeps & Partial<PanelDeps>;
 
 /** 台上可见的统一层工具（世界书族 + 向量库族 + 角色库族 + 世界线族 + 面板族） */
 const ALL_TOOLS = [...loreTools, ...memoryTools, ...cardTools, ...worldlineTools, ...panelTools] as ToolSpec<UnifiedStageDeps>[];
@@ -37,13 +38,15 @@ function availableSpecs(deps: UnifiedStageDeps): ToolSpec<UnifiedStageDeps>[] {
 		if (s.name === "lorebook_write") return typeof deps.writeLore === "function";
 		if (s.name === "lorebook_update") return typeof deps.updateLore === "function";
 		if (s.name === "lorebook_delete") return typeof deps.deleteLore === "function";
-		if (s.name === "lorebook_list") return typeof deps.listLore === "function" && typeof deps.fingerprint === "function";
+		if (s.name === "lorebook_list" || s.name === "lorebook_read") return typeof deps.listLore === "function" && typeof deps.fingerprint === "function";
 		if (s.name === "lorebook_toggle") return typeof deps.toggleLore === "function";
 		if (s.name === "lorebook_files") return typeof deps.listBooks === "function";
 		if (s.name === "lorebook_create") return typeof deps.createBook === "function";
 		if (s.name === "lorebook_mount") return typeof deps.mountBook === "function";
 		if (s.name === "memory_add") return typeof deps.addMemory === "function";
 		if (s.name === "memory_list") return typeof deps.listMemory === "function";
+		if (s.name === "memory_read") return typeof deps.readMemory === "function";
+		if (s.name === "memory_update") return typeof deps.updateMemory === "function";
 		if (s.name === "memory_delete") return typeof deps.deleteMemory === "function";
 		if (s.name === "card_read") return typeof deps.readCard === "function";
 		if (s.name === "card_update") return typeof deps.updateCard === "function";
@@ -66,7 +69,8 @@ export function unifiedStageTools(language: string, deps?: UnifiedStageDeps): St
 	const ctx = ctxFor(language);
 	const specs = deps ? availableSpecs(deps) : STAGE_SPECS;
 	return specs.map((s) => ({
-		name: s.name,
+			name: s.name,
+			mode: s.mode,
 		description: s.description(ctx),
 		parameters: s.parameters(ctx),
 	}));

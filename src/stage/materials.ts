@@ -8,8 +8,9 @@
  * 本模块只读盘、不写盘、零 pi 依赖。
  */
 
-import { existsSync, readFileSync, readdirSync, statSync } from "node:fs";
-import { isAbsolute, join } from "node:path";
+import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
+import { isAbsolute, join, relative, resolve } from "node:path";
+import { resolveCardSpace } from "../cardspace.ts";
 
 import { loadCardFile, applyMacros, readCardRawJson } from "../card.ts";
 import { promptRules, extractRegexScripts, type DisplayRule } from "../cardfront.ts";
@@ -52,6 +53,7 @@ export type { AssembledPiece } from "../preset-assemble.ts";
 export interface StageMaterials {
 	config: RpConfig;
 	card: CharacterCard;
+	cardAuthorScripts: ReturnType<typeof extractAuthorScripts>;
 	/** 已挂载世界书 + 补充设定集 overlay，禁用项与外部插件协议条目已剔除 */
 	entries: LorebookEntry[];
 	/** 预设文档（原文 + 归一条目）；null＝未配置且无默认预设 */
@@ -110,6 +112,9 @@ export interface SkillFile {
 	body: string;
 	/** 存储目录名（skills/<dir>/SKILL.md；编辑器按它定位文件，通常与 name 一致） */
 	dir?: string;
+	root?: string;
+	scope?: "global" | "card";
+	shadowed?: boolean;
 	/** frontmatter `disable-model-invocation: true`：对模型隐身（不上 skill_read 清单，也读不到正文）。
 	 *  与办事笔记（src/skills.ts）同一个键、同一个语义；编辑器仍列出它，只有送模那一侧滤掉。 */
 	disableModelInvocation?: boolean;
@@ -119,8 +124,13 @@ export interface SkillFile {
  * 扫描 skills/ 目录（M-R2 §4.C）。frontmatter 缺 name/description 的包跳过（不猜）；
  * 解析是死板的数据读取——内容全部署名归包作者，harness 零改写。
  */
-export function scanSkillFiles(cwd: string): SkillFile[] {
-	const root = join(cwd, "skills");
+export function stageSkillRoot(cwd: string, scope?: "global" | "card"): string {
+	const card = scope === "global" ? null : resolveCardSpace(cwd, loadStageConfig(cwd).card);
+	if (scope === "card" && !card) throw new Error("当前没有卡级技能目录。");
+	return card ? join(card.dir, "技能") : join(cwd, "skills");
+}
+
+function scanSkillRoot(root: string, scope: "global" | "card"): SkillFile[] {
 	if (!existsSync(root)) return [];
 	const out: SkillFile[] = [];
 	for (const dir of readdirSync(root, { withFileTypes: true })) {
@@ -129,6 +139,8 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 		if (!existsSync(file)) continue;
 		let raw = "";
 		try {
+			const rel = relative(realpathSync(root), realpathSync(file));
+			if (isAbsolute(rel) || rel.startsWith("..")) continue;
 			raw = readFileSync(file, "utf8");
 		} catch {
 			continue;
@@ -151,10 +163,32 @@ export function scanSkillFiles(cwd: string): SkillFile[] {
 			description: description.slice(0, 1024),
 			body: rawLines.slice(endIdx + 1).join("\n").trim(),
 			dir: dir.name,
+			root, scope,
 			...(meta.get("disable-model-invocation") === "true" ? { disableModelInvocation: true } : {}),
 		});
 	}
 	return out;
+}
+
+export function scanSkillFiles(cwd: string, includeShadowed = false): SkillFile[] {
+	const global = stageSkillRoot(cwd, "global"), active = stageSkillRoot(cwd);
+	const all = [...scanSkillRoot(global, "global"), ...(active !== global ? scanSkillRoot(active, "card") : [])];
+	const effective = new Map(all.map((s) => [s.name, s]));
+	return includeShadowed ? all.map((s) => ({ ...s, shadowed: effective.get(s.name) !== s })) : [...effective.values()];
+}
+
+export function readStageSkill(cwd: string, name: string, file = "SKILL.md", start = 0, end?: number): string | undefined {
+	const skill = modelVisibleSkillFiles(cwd).find((s) => s.name === name);
+	if (!skill?.root || !skill.dir) return undefined;
+	const base = realpathSync(join(skill.root, skill.dir));
+	if (isAbsolute(file) || file.includes("\\") || file.includes(":")) throw new Error("skill 引用必须是包内相对路径。");
+	const absolute = realpathSync(resolve(base, file));
+	const rel = relative(base, absolute);
+	if (isAbsolute(rel) || rel.startsWith("..")) throw new Error("skill 引用超出包目录。");
+	const content = file === "SKILL.md" ? skill.body : readFileSync(absolute, "utf8");
+	const to = end ?? content.length;
+	if (!Number.isInteger(start) || !Number.isInteger(to) || start < 0 || to < start || to > content.length) throw new Error("skill 读取范围无效。");
+	return JSON.stringify({ name, scope: skill.scope, file, start, end: to, total: content.length, content: content.slice(start, to) });
 }
 
 /** 送模那一侧看得见的 skill：关掉的整条不存在（不进 skill_read 清单，也读不到正文）。

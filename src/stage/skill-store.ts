@@ -6,9 +6,9 @@
  * 货架，常驻档全文随 system。不存在第二套"面板专用"存储。
  */
 
-import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
-import { scanSkillFiles } from "./materials.ts";
+import { existsSync, mkdirSync, realpathSync, rmSync, writeFileSync } from "node:fs";
+import { isAbsolute, join, relative } from "node:path";
+import { scanSkillFiles, stageSkillRoot } from "./materials.ts";
 
 /** frontmatter 值与目录名都压成单行（解析器按行读，换行会截断语义） */
 const oneLine = (s: string): string => s.replace(/\s+/g, " ").trim();
@@ -29,6 +29,7 @@ export interface StageSkillInput {
 	body: string;
 	/** 对模型隐身开关；不给＝沿用文件里现有的值（改正文的调用方不必知道有这个键） */
 	disabled?: boolean;
+	scope?: "global" | "card";
 }
 
 /** 保存（新建或覆盖已有目录）。返回实际存储目录名。 */
@@ -40,7 +41,14 @@ export function saveStageSkill(cwd: string, input: StageSkillInput): { dir: stri
 	if (!input.body.trim()) throw new Error("正文为空");
 	const dir = sanitizeSkillDir(input.dir ?? name);
 	if (!dir) throw new Error("名称/目录含路径字符，无法作为存储目录");
-	const folder = join(cwd, "skills", dir);
+	const existing = input.dir ? scanSkillFiles(cwd, !!input.scope).filter((s) => s.dir === dir && (!input.scope || s.scope === input.scope)) : [];
+	if (existing.length > 1) throw new Error("同目录名存在于多份技能，请指定 scope。");
+	const root = existing[0]?.root ?? stageSkillRoot(cwd, input.scope);
+	const folder = join(root, dir);
+	if (existsSync(folder)) {
+		const rel = relative(realpathSync(root), realpathSync(folder));
+		if (isAbsolute(rel) || rel.startsWith("..")) throw new Error("技能目录不能指向包外。");
+	}
 	const file = join(folder, "SKILL.md");
 	if (!input.dir) {
 		// 新建流：不吞占已有目录（同名 skill 或非 skill 目录都拒绝，改判去编辑流）
@@ -49,8 +57,7 @@ export function saveStageSkill(cwd: string, input: StageSkillInput): { dir: stri
 	}
 	// 整文件重写，故未点名 disabled 时先把现值读回来——否则 agent 改一次正文就把用户关掉的开关打开了。
 	// 读回走 scanSkillFiles（frontmatter 只有那一个解析器），不另写一份。
-	const disabled =
-		input.disabled ?? (input.dir ? scanSkillFiles(cwd).some((s) => s.dir === dir && s.disableModelInvocation) : false);
+	const disabled = input.disabled ?? existing[0]?.disableModelInvocation ?? false;
 	mkdirSync(folder, { recursive: true });
 	const text = [
 		"---",
@@ -67,10 +74,15 @@ export function saveStageSkill(cwd: string, input: StageSkillInput): { dir: stri
 }
 
 /** 删除整个 skill 目录（含 references/ 等附件）。只认有 SKILL.md 的目录。 */
-export function deleteStageSkill(cwd: string, dirName: string): void {
+export function deleteStageSkill(cwd: string, dirName: string, scope?: "global" | "card"): void {
 	const dir = sanitizeSkillDir(dirName);
 	if (!dir) throw new Error("非法目录名");
-	const folder = join(cwd, "skills", dir);
+	const existing = scanSkillFiles(cwd, !!scope).filter((s) => s.dir === dir && (!scope || s.scope === scope));
+	if (existing.length !== 1) throw new Error("skill 不存在或目录名有歧义。");
+	const root = existing[0].root!;
+	const folder = join(root, dir);
+	const rel = relative(realpathSync(root), realpathSync(folder));
+	if (isAbsolute(rel) || rel.startsWith("..")) throw new Error("技能目录不能指向包外。");
 	if (!existsSync(join(folder, "SKILL.md"))) throw new Error(`skill「${dir}」不存在`);
 	rmSync(folder, { recursive: true, force: true });
 }

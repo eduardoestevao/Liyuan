@@ -28,6 +28,9 @@ import {
 	type AttachmentView,
 } from "./attachments.ts";
 import { ArtifactPanel } from "./components/ArtifactPanel.tsx";
+import { DraftPanel } from "./components/DraftPanel.tsx";
+import { workspaceSegments } from "./draft-view.ts";
+import type { DraftView } from "./wire.ts";
 import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
 import { CardPanel } from "./components/CardPanel.tsx";
@@ -247,6 +250,8 @@ export default function App() {
 	const [userAvatarUrl, setUserAvatarUrl] = useState<string | null>(null);
 	const [messages, setMessages] = useState<ChatMsg[]>([]);
 	const [streamText, setStreamText] = useState("");
+	const [draftWorkspace, setDraftWorkspace] = useState<DraftView>();
+	const [draftHistory, setDraftHistory] = useState<{ id: string; revisions: Array<{ version: number; text: string; reason: string; at: number }> }>();
 	const [streamThinking, setStreamThinking] = useState("");
 	/** 本轮时间线的实时渲染态（与 turnSegsRef 同内容） */
 	const [liveSegs, setLiveSegs] = useState<TurnSegment[]>([]);
@@ -799,8 +804,17 @@ export default function App() {
 						// 同会话 hello（重载）：刷新列表
 						sendRef.current({ type: "sessions" });
 					}
-					document.title = "梨园";
-					refreshAvatars();
+						document.title = "梨园";
+						setDraftWorkspace(frame.workspace);
+						setDraftHistory(undefined);
+						setBusy(frame.streaming === true);
+						if (frame.streaming && frame.workspace && !frame.workspace.entryId) {
+							const segs = workspaceSegments(frame.workspace);
+							setSegs(segs);
+							streamRef.current = segs.filter((s) => s.kind === "text").map((s) => s.text).join("");
+							setStreamText(streamRef.current);
+						}
+						refreshAvatars();
 					break;
 				}
 				case "message":
@@ -849,11 +863,24 @@ export default function App() {
 					}
 					pushSegDelta(frame.kind, frame.delta, frame.draft, frame.reset);
 					break;
-				case "draft_resync":
+					case "draft_resync":
 					// 修复后的稿件分段重同步：全部稿段原位替换成修后分段（该段原地变新）
 					if (abortingRef.current) break;
 					setSegs(resyncDraftSegs(turnSegsRef.current, frame.segments));
-					break;
+						break;
+					case "draft_workspace": {
+						setDraftWorkspace(frame.workspace);
+						if (frame.streaming && !frame.workspace.entryId) {
+							const segs = workspaceSegments(frame.workspace);
+							setSegs(segs);
+							streamRef.current = segs.filter((s) => s.kind === "text").map((s) => s.text).join("");
+							setStreamText(streamRef.current);
+						}
+						break;
+					}
+					case "draft_history":
+						setDraftHistory({ id: frame.id, revisions: frame.revisions });
+						break;
 				case "stream":
 					// 中间 tool 轮被 server 过滤：计划旁白留档进过程清单，再清流式半成品
 					if (frame.state === "clear") {
@@ -1234,7 +1261,7 @@ export default function App() {
 	useEffect(() => {
 		const el = listRef.current;
 		if (el && atBottomRef.current) el.scrollTop = el.scrollHeight;
-	}, [messages, streamText, streamThinking, thinkingLive, toolNote, liveActs, liveSegs]);
+	}, [messages, streamText, streamThinking, thinkingLive, toolNote, liveActs, liveSegs, activeChoice]);
 
 	const onScroll = () => {
 		const el = listRef.current;
@@ -2214,7 +2241,11 @@ export default function App() {
 									{(streamText || streamThinking) && <span className="caret" />}
 								</div>
 							)}
-							{activeChoice && (
+								{draftWorkspace && <DraftPanel workspace={draftWorkspace} busy={busy}
+									revisions={draftHistory?.id === draftWorkspace.id ? draftHistory.revisions : undefined}
+									onInspect={() => ws.send({ type: "draft_history", id: draftWorkspace.id })}
+									onRestore={(version) => ws.send({ type: "draft_restore", id: draftWorkspace.id, version, expectedVersion: draftWorkspace.version })} />}
+								{activeChoice && (
 								<ChoiceCard
 									choice={activeChoice}
 									onReply={(r) => {

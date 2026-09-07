@@ -1,7 +1,8 @@
-import type { ExtensionFactory } from "./core/extensions/types.ts";
+import type { InlineExtension } from "./core/extensions/types.ts";
 export type PackageCommand = "install" | "remove" | "update" | "list";
+export declare function cleanupManagedInstall(): void;
 export interface PackageCommandRuntimeOptions {
-    extensionFactories?: ExtensionFactory[];
+    extensionFactories?: InlineExtension[];
 }
 export declare function handleConfigCommand(args: string[], runtimeOptions?: PackageCommandRuntimeOptions): Promise<boolean>;
 export declare function handlePackageCommand(args: string[], runtimeOptions?: PackageCommandRuntimeOptions): Promise<boolean>;

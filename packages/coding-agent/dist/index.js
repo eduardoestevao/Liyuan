@@ -3,14 +3,15 @@ export { parseArgs } from "./cli/args.js";
 // Config paths
 export { CONFIG_DIR_NAME, getAgentDir, getDocsPath, getExamplesPath, getPackageDir, getReadmePath, VERSION, } from "./config.js";
 export { AgentSession, parseSkillBlock, } from "./core/agent-session.js";
-// Auth and model registry
-export { AuthStorage, FileAuthStorageBackend, InMemoryAuthStorageBackend, } from "./core/auth-storage.js";
+export { readStoredCredential } from "./core/auth-storage.js";
 // Compaction
-export { calculateContextTokens, collectEntriesForBranchSummary, compact, DEFAULT_COMPACTION_SETTINGS, estimateTokens, findCutPoint, findTurnStartIndex, generateBranchSummary, generateSummary, getLastAssistantUsage, prepareBranchEntries, serializeConversation, shouldCompact, } from "./core/compaction/index.js";
+export { calculateContextTokens, collectEntriesForBranchSummary, compact, DEFAULT_COMPACTION_SETTINGS, estimateTokens, findCutPoint, findTurnStartIndex, generateBranchSummary, generateSummary, generateSummaryWithUsage, getLastAssistantUsage, prepareBranchEntries, serializeConversation, shouldCompact, } from "./core/compaction/index.js";
 export { createEventBus } from "./core/event-bus.js";
-export { createExtensionRuntime, defineTool, discoverAndLoadExtensions, ExtensionRunner, isBashToolResult, isEditToolResult, isFindToolResult, isGrepToolResult, isLsToolResult, isReadToolResult, isToolCallEventType, isWriteToolResult, wrapRegisteredTool, wrapRegisteredTools, } from "./core/extensions/index.js";
+export { createExtensionRuntime, defineTool, discoverAndLoadExtensions, ExtensionRunner, isBashToolResult, isEditToolResult, isFindToolResult, isGrepToolResult, isLsToolResult, isPowerShellToolResult, isReadToolResult, isToolCallEventType, isWriteToolResult, wrapRegisteredTool, wrapRegisteredTools, } from "./core/extensions/index.js";
 export { convertToLlm } from "./core/messages.js";
 export { ModelRegistry } from "./core/model-registry.js";
+export { resolveCliModel, resolveModelScopeWithDiagnostics, } from "./core/model-resolver.js";
+export { CredentialSynchronizationError, ModelRuntime, } from "./core/model-runtime.js";
 export { DefaultPackageManager } from "./core/package-manager.js";
 export { DefaultResourceLoader, loadProjectContextFiles } from "./core/resource-loader.js";
 // SDK for programmatic usage
@@ -18,15 +19,15 @@ export { AgentSessionRuntime,
 // Factory
 createAgentSession, createAgentSessionFromServices, createAgentSessionRuntime, createAgentSessionServices, createBashTool, 
 // Tool factories (for custom cwd)
-createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createReadOnlyTools, createReadTool, createWriteTool, } from "./core/sdk.js";
-export { buildSessionContext, CURRENT_SESSION_VERSION, getLatestCompactionEntry, migrateSessionEntries, parseSessionEntries, SessionManager, } from "./core/session-manager.js";
+createCodingTools, createEditTool, createFindTool, createGrepTool, createLsTool, createPowerShellTool, createReadOnlyTools, createReadTool, createWriteTool, } from "./core/sdk.js";
+export { buildContextEntries, buildSessionContext, CURRENT_SESSION_VERSION, getLatestCompactionEntry, migrateSessionEntries, parseSessionEntries, SessionManager, sessionEntryToContextMessages, } from "./core/session-manager.js";
 export { SettingsManager, } from "./core/settings-manager.js";
 // Skills
 export { formatSkillsForPrompt, loadSkills, loadSkillsFromDir, } from "./core/skills.js";
 export { createSyntheticSourceInfo } from "./core/source-info.js";
 export { generateDiffString, generateUnifiedPatch } from "./core/tools/edit-diff.js";
 // Tools
-export { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLocalBashOperations, createLsToolDefinition, createReadToolDefinition, createWriteToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, truncateLine, truncateTail, withFileMutationQueue, } from "./core/tools/index.js";
+export { createBashToolDefinition, createEditToolDefinition, createFindToolDefinition, createGrepToolDefinition, createLocalBashOperations, createLocalPowerShellOperations, createLsToolDefinition, createPowerShellToolDefinition, createReadToolDefinition, createWriteToolDefinition, DEFAULT_MAX_BYTES, DEFAULT_MAX_LINES, formatSize, truncateHead, truncateLine, truncateTail, withFileMutationQueue, } from "./core/tools/index.js";
 export { hasTrustRequiringProjectResources, ProjectTrustStore, } from "./core/trust-manager.js";
 // Main entry point
 export { main } from "./main.js";
@@ -41,6 +42,7 @@ export { copyToClipboard } from "./utils/clipboard.js";
 export { parseFrontmatter, stripFrontmatter } from "./utils/frontmatter.js";
 export { convertToPng } from "./utils/image-convert.js";
 export { formatDimensionNote, resizeImage } from "./utils/image-resize.js";
+export { detectSupportedImageMimeTypeFromFile } from "./utils/mime.js";
 // Shell utilities
-export { getShellConfig } from "./utils/shell.js";
+export { getPowerShellConfig, getShellConfig } from "./utils/shell.js";
 //# sourceMappingURL=index.js.map

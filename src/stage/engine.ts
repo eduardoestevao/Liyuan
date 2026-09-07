@@ -1,20 +1,20 @@
 /**
- * 台上引擎（PLAN-RP-HARNESS M1）——RP 原生回合循环（R1 循环自持）。
+ * 台上一拍的领域逻辑：装配 → pi 生成/工具循环 → 定稿/场记/存档。
  *
- * 一拍 = 装配（f(分支)）→ 一次流式生成（M1 零工具）→ assistant 落树 → 谢幕。
- * 没有 steer/followUp 队列，没有续轮判定：harness 知道自己在哪一幕。
- *
- * 竞态两律（R9）在此落地：
- * - 回合互斥：忙时新输入进队列，本拍收尾后依序开演；
- * - 谢幕由 harness 判定：流结束即收轮，不存在模型可续的循环。
- *
- * 依赖全部注入（SessionManager / 模型 / 流函数），可用 faux provider 离线整测。
+ * 生成只经 AgentSession.prompt；真实钩子由 roleplay 扩展注册。
+ * 本层保留 RP 的拍级队列、稿纸、合并、媒体与旁路工作，不再自持模型循环。
  */
 
 import { join } from "node:path";
 import { mkdirSync, writeFileSync } from "node:fs";
 
 import { applyProjectedSamplers } from "../samplers.ts";
+import { getStageConnection, type StageHooks, type StageToolResult } from "./bridge.ts";
+import { DraftStore, draftDirectory, listDrafts } from "./draft-store.ts";
+import { applyDraftRevisions, DRAFT_REVISION_TYPE } from "./draft-projection.ts";
+import { PreviousDraftEditor } from "./previous-draft.ts";
+import { projectToolContext } from "./context.ts";
+import type { GateInput } from "../tools/gate.ts";
 import { extractDraftRules } from "../draft.ts";
 import {
 	appendOverlayEntry,
@@ -26,6 +26,7 @@ import {
 import { formatPanelIndex, formatPanelSnapshot, loadPanels } from "../panels.ts";
 import { cardDirOfChatDir, chatDataPath, chatDirOfSessionDir } from "../cardspace.ts";
 import { fitResidentSummary, loadResidentSummary } from "../card-memory.ts";
+import { changeCardMemory, listCardMemory, readCardMemory, searchCardMemory } from "../card-memory-tools.ts";
 import { classifyTag, scanTaggedBlocks } from "../postprocess.ts";
 import { formatRosterIndex, formatState, saveState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
@@ -44,6 +45,7 @@ import {
 	constantLoreOf,
 	loadStageConfig,
 	loadStageMaterials,
+	readStageSkill,
 	type AssembledPiece,
 	type StageMaterials,
 } from "./materials.ts";
@@ -81,15 +83,19 @@ import {
 	type MediaStageResult,
 } from "./media-stage.ts";
 import { assistantStageTool, runAssistantStageTool } from "./assistant-stage.ts";
-import type { MemoryChunkLike } from "../tools/memory.ts";
+import type { MemoryChunkLike, MemoryDocument, MemorySearchResult } from "../tools/memory.ts";
 import type { WorldlineViewLite } from "../tools/worldline.ts";
 import { defaultSaveName } from "../worldline.ts";
 import { extractDraftBody } from "../draft.ts";
 import {
 	createWorkspace,
+	commitWorkspace,
 	finalTimeline,
 	recordSegment,
+	reviseDraft,
+	restoreDraftVersion,
 	runWriteTool,
+	workspaceToolBlock,
 	type TurnWorkspace,
 	type WorkspaceDeps,
 } from "./workspace.ts";
@@ -154,6 +160,8 @@ export interface StageTurnEndInfo {
 	error?: string;
 	/** 落树的 assistant 条目 id（错误/空拍时无） */
 	entryId?: string;
+	/** An existing reply was revised; no new story or memory-ingestion turn was created. */
+	revisedEntryId?: string;
 }
 
 export interface StageEvents {
@@ -177,6 +185,10 @@ export interface StageEvents {
 	 * draft_edit 改稿成功后按当前稿全量重切下发，修后的段就是用户看到的段。
 	 */
 	onDraftResync?: (segments: string[]) => void;
+	/** Canonical artifact/plan + current preview; also used on reconnect. */
+	onWorkspace?: (workspace: TurnWorkspace) => void;
+	/** Refresh the original reply after its revision receipt is durable. */
+	onReplyRevised?: (entryId: string) => void;
 	onTurnEnd?: (info: StageTurnEndInfo) => void;
 	/** 面向用户的告警（宏降级等）；每种只发一次 */
 	onNotify?: (level: "info" | "warning" | "error", text: string) => void;
@@ -213,11 +225,19 @@ export function sideStatLine(s: SideTextStat): string {
 	}｜思考 ${s.thinkChars} 字｜${(s.ms / 1000).toFixed(1)}s`;
 }
 
+/** 由 pi 会话独占消息持久化与内存历史。 */
+export interface StageAgentSession {
+	sessionManager: StageSessionManager;
+	prompt(text: string, options: { expandPromptTemplates: false; reuseUserMessage: boolean }): Promise<void>;
+	abort(): Promise<void>;
+	appendMessage(message: unknown): string;
+}
+
 export interface StageEngineDeps {
 	cwd: string;
-	getSessionManager: () => StageSessionManager;
+	getSession: () => StageAgentSession;
 	getModel: () => StageModelLike | undefined;
-	getAuth: (model: StageModelLike) => Promise<{ apiKey?: string; headers?: Record<string, string> }>;
+	getAuth: (model: StageModelLike) => Promise<{ apiKey?: string; headers?: Record<string, string | null> }>;
 	/**
 	 * 旁路条目（场记记账 / 长局压缩用哪个模型、哪一档）：给出则旁路调用走它，
 	 * 不给（或用户没配）则跟随剧情模型 —— 逐字旧行为。
@@ -231,7 +251,8 @@ export interface StageEngineDeps {
 	/** 账本磁盘缓存路径（.liyuan-state/<sessionId>.json）；给出则场记落盘（fs.watch → state 帧） */
 	getStateFile?: (sessionId: string) => string | undefined;
 	/** 剧情库检索（memory_search 工具用）；未注入 = 该工具恒返回无命中 */
-	searchMemory?: (sessionId: string, query: string) => Promise<MemoryHitLike[]>;
+	searchMemory?: (sessionId: string, query: string) => Promise<MemoryHitLike[] | MemorySearchResult>;
+	readMemory?: (sessionId: string, ref: string) => MemoryDocument | undefined;
 	/**
 	 * 每拍被动召回（【剧情记忆】注入用）：宿主按「当前对话 + 当前卡」绑 MemoryScope 后
 	 * 调 memoryRecallForTurn，受设置里「每轮自动检索并注入模型」开关管辖。
@@ -338,7 +359,8 @@ export interface StageEngineDeps {
 	 * 未注入 = 台上无 ask 工具（依赖缺失的工具不上清单）。
 	 */
 	askUser?: (question: string, options: string[], signal?: AbortSignal) => Promise<string | undefined>;
-	streamFn: StageStreamFn;
+	/** 仅供场记/压缩旁路使用；主模型由 pi 调用。 */
+	sideStreamFn: StageStreamFn;
 	events?: StageEvents;
 }
 
@@ -361,8 +383,7 @@ const textOfAssistant = (m: AssistantMsgLike | null): string => {
 	return m.content
 		.filter((c) => c.type === "text")
 		.map((c) => c.text ?? "")
-		.join("")
-		.trim();
+		.join("");
 };
 
 /**
@@ -524,6 +545,77 @@ export class StageEngine {
 	#warnedAuditDrop = 0;
 	#warnedProtocolDrop = "";
 	#lastAssemblyJson = "";
+	#workspace?: { ws: TurnWorkspace; deps: WorkspaceDeps };
+
+	getWorkspaces(): TurnWorkspace[] {
+		const sm = this.#deps.getSession().sessionManager;
+		const ids = new Set((sm.getBranch() as Array<{ id: string }>).map((e) => e.id));
+		const directory = draftDirectory(this.#deps.cwd, sm.getSessionDir?.(), sm.getSessionId());
+		const list = listDrafts(directory).filter((w) => w.sessionId === sm.getSessionId() &&
+			(!w.revision || ids.has(w.revision.requestId)) &&
+			(w.entryId ? ids.has(w.entryId) : w.userId ? ids.has(w.userId) : w.parentId === null || ids.has(w.parentId)));
+		const recovered = list.map((w) => {
+			if (!w.restorePending || this.#busy) return w;
+			const store = new DraftStore(directory, w.id), current = store.read()!;
+			this.#publishDraftRestore(current, store);
+			return current;
+		});
+		const projected = new Map(applyDraftRevisions(sm.getBranch() as BranchEntryLike[]).map((e) => [e.id, e]));
+		return recovered.filter((w) => {
+			const entry = w.entryId ? projected.get(w.entryId) : undefined;
+			const details = (entry?.type === "message" ? entry.message : entry) as { details?: { rpDraft?: { id?: string } } } | undefined;
+			const currentId = details?.details?.rpDraft?.id;
+			return !currentId || currentId === w.id;
+		}).sort((a, b) => b.updatedAt - a.updatedAt);
+	}
+
+	/** The artifact journals the operation first; replay the receipt once after an interrupted flush. */
+	#publishDraftRestore(ws: TurnWorkspace, store: DraftStore): void {
+		if (!ws.restorePending || !ws.entryId) return;
+		const sm = this.#deps.getSession().sessionManager;
+		const branch = sm.getBranch() as Array<{ id: string; type: string; customType?: string; data?: { draftId?: string; version?: number } }>;
+		if (ws.sessionId !== sm.getSessionId() || !branch.some((e) => e.id === ws.entryId) ||
+			(ws.revision && !branch.some((e) => e.id === ws.revision!.requestId))) throw new Error("修订所属会话或分支已切换；回到原分支后再同步。");
+		const exists = branch.some(
+			(e) => e.type === "custom" && e.customType === DRAFT_REVISION_TYPE && e.data?.draftId === ws.id && e.data.version === ws.version,
+		);
+		if (!exists) sm.appendCustomEntry(DRAFT_REVISION_TYPE, { targetId: ws.entryId, text: ws.draft, timeline: ws.timeline, draftId: ws.id, version: ws.version, phase: ws.phase,
+			...(ws.revision ? { requestId: ws.revision.requestId } : {}) });
+		sm.flush();
+		const next = structuredClone(ws); delete next.restorePending;
+		commitWorkspace(ws, { rules: {}, userName: "", charName: "", persist: (value) => store.write(value) }, next);
+	}
+
+	getWorkspace(): TurnWorkspace | undefined {
+		const active = this.#workspace?.ws;
+		if (this.#busy && active?.sessionId === this.#deps.getSession().sessionManager.getSessionId()) return structuredClone(active);
+		const latest = this.getWorkspaces()[0];
+		if (latest && ["writing", "exploring", "waiting"].includes(latest.phase)) {
+			latest.phase = "stopped"; // interrupted process; the saved preview remains reviewable
+		}
+		return latest;
+	}
+
+	/** Host-only undo. Ended replies get an append-only receipt; waiting replies continue on the new version. */
+	restoreDraft(id: string, version: number, expectedVersion: number): TurnWorkspace {
+		if (this.#busy) {
+			const active = this.#workspace;
+			if (!active || active.ws.id !== id || active.ws.phase !== "waiting") throw new Error("请在等待回答或本拍结束后恢复稿件。");
+			restoreDraftVersion(active.ws, active.deps, version, expectedVersion);
+			this.#deps.events?.onWorkspace?.(active.ws);
+			return structuredClone(active.ws);
+		}
+		const ws = this.getWorkspaces().find((w) => w.id === id);
+		if (!ws) throw new Error("当前分支没有这份稿件。");
+		const sm = this.#deps.getSession().sessionManager;
+		const store = new DraftStore(draftDirectory(this.#deps.cwd, sm.getSessionDir?.(), sm.getSessionId()), id);
+		const current = store.read()!;
+		if (["writing", "exploring", "waiting"].includes(current.phase)) current.phase = "stopped";
+		current.restorePending = !!current.entryId;
+		restoreDraftVersion(current, { rules: {}, userName: "", charName: "", persist: (w) => store.write(w) }, version, expectedVersion);
+		this.#publishDraftRestore(current, store);
+		return current;
+	}
 	/**
 	 * 本拍模型请求的存档名（`worldline_store` 登记，封笔后由 #turn 兑现）。
 	 * 每拍开头清空——报错/空手/中断都会从 #turn 里提前 return，只有这里清才不会漏到下一拍。
@@ -560,6 +652,7 @@ export class StageEngine {
 	/** 强制停止本拍：已流出的部分正文仍落树可见 */
 	abort(): void {
 		this.#abort?.abort();
+		void this.#deps.getSession().abort();
 	}
 
 	async #drain(): Promise<void> {
@@ -572,6 +665,7 @@ export class StageEngine {
 	async #run(userText: string | null): Promise<void> {
 		const ev = this.#deps.events ?? {};
 		this.#busy = true;
+		this.#abort = new AbortController();
 		this.#pendingSave = null; // 上一拍若中途 return，登记的存档请求不许漏到这一拍
 		this.#pendingPanelData = {};
 		ev.onTurnStart?.();
@@ -591,7 +685,10 @@ export class StageEngine {
 
 	async #turn(userText: string | null): Promise<StageTurnEndInfo> {
 		const { cwd, events: rawEv = {} } = this.#deps;
-		const sm = this.#deps.getSessionManager();
+		const session = this.#deps.getSession();
+		const sm = session.sessionManager;
+		const connection = getStageConnection(sm.getSessionId());
+		if (!connection) throw new Error("RP 扩展尚未绑定当前 pi 会话。");
 
 		// ---- 全流程文字留档 ----
 		// 前端能看到的每一个字、每一次工具调用/回执、每一次注入，按时序全记。
@@ -609,8 +706,8 @@ export class StageEngine {
 			onActivity: (d) => { blog("activity", d); rawEv.onActivity?.(d); },
 			onNotify: (lv, t) => { blog("notify", `[${lv}] ${t}`); rawEv.onNotify?.(lv, t); },
 		};
-		// 工具调用/回执由 agentLoop 内记录（见下方 blog 透传）
-		const _blog = blog; // 透传给 agentLoop 用
+		// 工具调用/回执统一由 pi 的 tool_call/tool_result 钩子记录。
+		const _blog = blog;
 
 		// 素材现读：改卡/改预设/挂书即时生效
 		const materials = loadStageMaterials(cwd);
@@ -629,12 +726,12 @@ export class StageEngine {
 			return { aborted: false, error: "no-model" };
 		}
 
-		if (userText !== null) {
-			sm.appendMessage(nowMsg(userText));
-		}
-
-		// 上下文 = f(分支)
-		const branch = sm.getBranch() as BranchEntryLike[];
+		// 新输入由 pi 在 message_end 落树。预演装配只使用一份虚拟分支，
+		// 这样素材/鉴权失败时不会启动一个缺少 RP 上下文的裸回合。
+		const branch = [
+			...sm.getBranch(),
+			...(userText !== null ? [{ type: "message", message: nowMsg(userText) }] : []),
+		] as BranchEntryLike[];
 		const state = stateFromBranch(branch);
 		const { history, lastUserText, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
 		if (!history.some((m) => m.role === "user")) {
@@ -689,7 +786,7 @@ export class StageEngine {
 		// 读侧依赖先建：统一层按注入情况决定哪些世界书工具上清单（M-D2）。
 		// skill 全部走标准按需档：名字+描述上 skill_read 清单，读不读归模型（8/23 定案）。
 		const skillList = materials.skillFiles.map((f) => ({ name: f.name, description: f.description }));
-		const readDeps = this.#toolDeps(lastUserText);
+		const readDeps = this.#toolDeps();
 		// MCP 外设（8/06 重接）：hub 里本会话已连接的工具并入清单。
 		// 空数组＝没启用/没连上，与「未注入 mcp 依赖」同效——都不上清单。
 		const mcpTools = mcpStageTools(this.#deps.mcp);
@@ -700,7 +797,7 @@ export class StageEngine {
 		const assistantTool = assistantStageTool();
 		// P7：ask 工具依赖宿主注入 askUser（选择卡通道）；未注入则从清单剔除
 		const askEnabled = !!this.#deps.askUser;
-		const tools = [
+		const tools: StageTool[] = [
 			...stageTools(config.language, readDeps),
 			...(skillList.length > 0 ? [skillReadTool(config.language, skillList)] : []),
 			...writeTools(config.language).filter((t) => t.name !== "ask" || askEnabled),
@@ -708,12 +805,21 @@ export class StageEngine {
 			...(assistantTool ? [assistantTool] : []),
 			...mcpTools,
 		];
-		const ws = createWorkspace();
+		const ws = createWorkspace({ sessionId: sm.getSessionId(), parentId: sm.getLeafId(),
+			...(userText === null ? { userId: [...branch].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.id } : {}) });
+		const draftStore = new DraftStore(draftDirectory(cwd, sm.getSessionDir?.(), sm.getSessionId()), ws.id);
+		const previousDraft = new PreviousDraftEditor(() => sm.getBranch() as BranchEntryLike[], draftDirectory(cwd, sm.getSessionDir?.(), sm.getSessionId()));
 		const wsDeps: WorkspaceDeps = {
 			rules: extractDraftRules([...materials.presetRuleTexts, ...phAll.map((b) => b.text)]),
 			userName: config.userName,
 			charName: card.name,
+			file: draftStore.file,
+			persist: (next) => draftStore.write(next),
+			reload: () => draftStore.read(),
 		};
+		this.#workspace = { ws, deps: wsDeps };
+		draftStore.write(ws);
+		ev.onWorkspace?.(ws);
 
 		// 【剧情记忆】被动召回：向量库注入侧。旁路调用必须带超时——provider 抽风时单次能卡
 		// 几百秒，扮演不能陪着干等；拿不到就当没有，这一拍不出该块。
@@ -827,242 +933,386 @@ export class StageEngine {
 		];
 
 		const { apiKey, headers } = await this.#deps.getAuth(model);
-		this.#abort = new AbortController();
-		const options: Record<string, unknown> = {
-			apiKey,
-			headers,
-			signal: this.#abort.signal,
-			sessionId: sm.getSessionId(),
-		};
-		const thinking = this.#deps.getThinking?.();
-		if (thinking) options.reasoning = thinking;
-		const samplers = materials.presetDoc?.samplers;
-		if (samplers && Object.keys(samplers).length > 0) {
-			options.onPayload = (payload: unknown, m: StageModelLike) => {
-				if (!payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
-				return applyProjectedSamplers(payload as Record<string, unknown>, samplers, {
-					provider: m.provider,
-					modelId: m.id,
-					baseUrl: m.baseUrl,
-					api: typeof m.api === "string" ? m.api : undefined,
-				});
-			};
+		if (this.#abort?.signal.aborted) {
+			if (userText !== null) session.appendMessage(nowMsg(userText));
+			sm.flush();
+			return { aborted: true };
 		}
-
-		const s = this.#deps.streamFn(model, { systemPrompt, messages, tools }, options);
+		const samplers = materials.presetDoc?.samplers;
 		let final: AssistantMsgLike | null = null;
 		let errored: string | undefined;
 		let text = "";
-		const fwd = this.#draftForwarder();
-		for await (const e of s) {
-			if (e.type === "done") {
-				final = e.message ?? null;
-			} else if (e.type === "error") {
-				final = e.error ?? null;
-				errored = final?.errorMessage || "provider error";
-			} else if (e.type === "text_delta" && e.delta) {
-				text += e.delta;
-				ev.onDelta?.("text", e.delta);
-			} else if (e.type === "thinking_delta" && e.delta) {
-				recordSegment(ws, { kind: "thinking", text: e.delta });
-				ev.onDelta?.("thinking", e.delta);
-			} else {
-				fwd(e);
-			}
-		}
-
-		// 尾巴口径（8/09）：稿落地后的 text 通道产出。稿落地前工具轮的旁白（读题/计划）
-		// 不算——旁白曾被 mergeFinalText 当尾巴拼到正文尾部（实弹：读题文字跑进正文）。
+		let loopText = "";
 		let loopTail = "";
-		// M-A agent 循环（PLAN-RP-AGENT-EXEC §2.3）：思考→工具→看结果→再思考，直到交稿定稿。
-		// 首轮无论 stopReason 都进循环——模型直出正文不调工具时由循环做宽进严出代收（D2）。
-		if (!errored && final && final.stopReason !== "aborted") {
-			const turn = await this.#agentLoop({
-				model,
-				options,
-				systemPrompt,
-				messages,
-				first: final,
-				tools,
-				ws,
-				wsDeps,
-				language: config.language,
-				readDeps,
-				directText: text,
-				_blog,
-			});
-			if (turn.final) final = turn.final;
-			if (turn.errored) errored = turn.errored;
-			text += turn.text;
-			loopTail = turn.tailText ?? turn.text;
-		}
+		let roundText = "";
+		let round = 0;
+		let tailStart = -1;
+		let contextStart: number | undefined;
+		let userStopped = false;
+		let finished = false;
+		let endInfo: StageTurnEndInfo | undefined;
+		const readNames = new Set([...unifiedStageToolNames(readDeps), "world_state_get", "skill_read"]);
+		const mcpNames = mcpStageToolNames(this.#deps.mcp);
+		const mediaNames = this.#deps.media ? mediaStageToolNames(mediaOpts) : new Set<string>();
+		const publish = () => ev.onWorkspace?.(structuredClone(ws));
+		let lastCheckpoint = 0;
+		const checkpoint = (force = false) => {
+			if (force || Date.now() - lastCheckpoint > 250) {
+				commitWorkspace(ws, wsDeps, structuredClone(ws)); lastCheckpoint = Date.now(); publish();
+			}
+		};
 
-		const aborted = final?.stopReason === "aborted";
-		if (!text) text = textOfAssistant(final);
+		const finish = async (): Promise<StageTurnEndInfo> => {
+			const aborted = userStopped || this.#abort?.signal.aborted === true || final?.stopReason === "aborted";
+			if (ws.revision) {
+				this.#publishDraftRestore(ws, draftStore);
+				delete ws.preview;
+				checkpoint(true);
+				ev.onStreamClear?.();
+				sm.appendCustomEntry("rp-text-debug", { beatLog, revision: ws.revision, draft: ws.draft });
+				sm.flush();
+				return { aborted, revisedEntryId: ws.revision.targetId };
+			}
+			if (!text) text = textOfAssistant(final);
+			if ((aborted || errored) && ws.mode === "write" && ws.preview?.content && ws.preview.version === ws.version) {
+				const preview = ws.preview;
+				const partial = preview.name === "draft_append" ? ws.draft + (ws.draft ? preview.separator ?? "\n\n" : "") + preview.content : preview.content;
+				runWriteTool(ws, wsDeps, "draft_write", { content: partial }, true);
+			}
 
-		// 定稿 = 工作区稿（工件）；工作区空（中断半拍/循环认栽）退回直出正文
-		// **但**模型常把格式栈尾巴（状态栏/catsay 等）走 text 通道而非 draft_write 参数：
-		// 二选一会把那部分连内容一起扔掉（8/05 实锤：模型宣告要出「正文+状态栏+咪咪点评」，
-		// draft_write 只交了正文，屏上流式见过三样、落树只剩一样）。故此处**合并**：
-		// 稿件为主体，text 里**格式特征**的尾巴补回（纯文本闲聊不进正文）。
-		const finalText = mergeFinalText(ws.draft, ws.draft.trim() ? loopTail : text);
+			// 定稿 = 工作区稿（工件）；工作区空（中断半拍/循环认栽）退回直出正文
+			// **但**模型常把格式栈尾巴（状态栏/catsay 等）走 text 通道而非 draft_write 参数：
+			// 二选一会把那部分连内容一起扔掉（8/05 实锤：模型宣告要出「正文+状态栏+咪咪点评」，
+			// draft_write 只交了正文，屏上流式见过三样、落树只剩一样）。故此处**合并**：
+			// 稿件为主体，text 里**格式特征**的尾巴补回（纯文本闲聊不进正文）。
+			const merged = mergeFinalText(ws.draft, ws.draft.trim() ? loopTail : ws.mode === "write" ? text : "");
+			// The existing format-tail compatibility path may add material, but never rewrites the artifact itself.
+			const finalText = ws.draft ? ws.draft + (merged.startsWith(ws.draft.trim()) ? merged.slice(ws.draft.trim().length) : "") : merged;
+			const finalSegments = finalTimeline(ws, finalText).map((s) => s.kind === "text" ? { ...s, draft: true } : s);
+			if (finalText !== ws.draft) reviseDraft(ws, finalText, "finalize");
+			ws.timeline = finalSegments;
+			ws.phase = aborted ? "stopped" : errored ? "error" : ws.sealed ? "sealed" : "stopped";
+			ws.sealed = ws.phase === "sealed";
+			delete ws.preview;
 
-		// 全流程文字留档：beatLog 时序 + merge 四件全部落进 session JSONL
-		_blog("merge_input_draft", ws.draft);
-		_blog("merge_input_tail", loopTail);
-		_blog("merge_output", finalText);
+			// 全流程文字留档：beatLog 时序 + merge 四件全部落进 session JSONL
+			_blog("merge_input_draft", ws.draft);
+			_blog("merge_input_tail", loopTail);
+			_blog("merge_output", finalText);
 
-		// 落树：正文以定稿为准（保留思考块，剥离工具调用轨迹）；纯错误/空拍不落
-		let entryId: string | undefined;
-		if (final && finalText) {
-			const keep = (final.content ?? []).filter((c) => c.type === "thinking");
-			// 时间线随 details 持久化：定稿只留最后一稿正文，但用户要看的
-			// 「思考→工具→正文」全链在此保住——resyncAll 全量重放与刷新后仍在。
-			// 稿段以定稿为准（工作区空时退回直出正文，时间线里也可能没有稿段）。
-			const timeline = finalTimeline(ws, finalText);
-			const prevDetails =
-				final.details && typeof final.details === "object" && !Array.isArray(final.details)
-					? (final.details as Record<string, unknown>)
-					: undefined;
-			const details = timeline.length ? { ...prevDetails, rpTimeline: timeline } : prevDetails;
-			entryId = sm.appendMessage({
-				...final,
-				content: [...keep, { type: "text", text: finalText }],
-				...(details ? { details } : {}),
-			});
-			sm.flush();
-		}
-
-		// 留档条目必须落在正文**之后**：append 会把叶移到自己身上（_appendEntry），
-		// 落在正文之前就把正文垫成它的子节点、不再是 user 的直接子节点，而 swipe 变体
-		// （listReplyVariants 只认 user 的直接子节点）随之一个都认不出来——v1.4.1 起
-		// reroll 恒显 1/1、旧变体在树上却不可达。空拍（无 final/finalText）照样留档。
-		sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
-		sm.flush();
-
-		// 媒体交付落树（8/06 重接）：wire 只认树上的 toolResult 出 image/audio/video/html 帧。
-		// 落在正文**之后**——屏上顺序与演出顺序一致（先看正文，再看图）。
-		// 正文空拍时也要落：用户可能只让「把刚才那张图再给我看看」，没有正文照样得交付。
-		if (!aborted && ws.mediaDeliveries?.length) {
-			for (const d of ws.mediaDeliveries) {
-				sm.appendMessage({
-					role: "toolResult",
-					toolName: d.toolName,
-					content: [{ type: "text", text: d.text }],
-					details: d.details,
-					isError: false,
-					timestamp: Date.now(),
+			// 落树：正文以定稿为准（保留思考块，剥离工具调用轨迹）；纯错误/空拍不落
+			let entryId: string | undefined;
+			if (final && finalText) {
+				const keep = (final.content ?? []).filter((c) => c.type === "thinking");
+				// 时间线随 details 持久化：定稿只留最后一稿正文，但用户要看的
+				// 「思考→工具→正文」全链在此保住——resyncAll 全量重放与刷新后仍在。
+				// 稿段以定稿为准（工作区空时退回直出正文，时间线里也可能没有稿段）。
+				const timeline = ws.timeline;
+				const prevDetails =
+					final.details && typeof final.details === "object" && !Array.isArray(final.details)
+						? (final.details as Record<string, unknown>)
+						: undefined;
+				const details = { ...prevDetails, rpTimeline: timeline, rpDraft: { id: ws.id, version: ws.version, phase: ws.phase },
+					...(ws.choices?.length ? { rpChoices: ws.choices } : {}) };
+				entryId = session.appendMessage({
+					...final,
+					...(ws.sealed ? { stopReason: "stop" } : {}),
+					content: [...keep, { type: "text", text: finalText }],
+					...(details ? { details } : {}),
 				});
+				ws.entryId = entryId;
+				sm.flush();
 			}
+			checkpoint(true);
+
+			// 留档条目必须落在正文**之后**：append 会把叶移到自己身上（_appendEntry），
+			// 落在正文之前就把正文垫成它的子节点、不再是 user 的直接子节点，而 swipe 变体
+			// （listReplyVariants 只认 user 的直接子节点）随之一个都认不出来——v1.4.1 起
+			// reroll 恒显 1/1、旧变体在树上却不可达。空拍（无 final/finalText）照样留档。
+			sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
 			sm.flush();
-		}
 
-		if (errored && !aborted) {
-			ev.onNotify?.("error", `生成失败：${errored}`);
-			return { aborted: false, error: errored, entryId };
-		}
+			// 媒体交付落树（8/06 重接）：wire 只认树上的 toolResult 出 image/audio/video/html 帧。
+			// 落在正文**之后**——屏上顺序与演出顺序一致（先看正文，再看图）。
+			// 正文空拍时也要落：用户可能只让「把刚才那张图再给我看看」，没有正文照样得交付。
+			if (!aborted && ws.mediaDeliveries?.length) {
+				for (const d of ws.mediaDeliveries) {
+					session.appendMessage({
+						role: "toolResult",
+						toolName: d.toolName,
+						toolCallId: d.toolCallId,
+						content: [{ type: "text", text: d.text }],
+						details: d.details,
+						isError: false,
+						timestamp: Date.now(),
+					});
+				}
+				sm.flush();
+			}
 
-		// 空手认栽（循环逼稿一次仍无产出）：明说，不再静默丢拍（实弹三拍 0 字正文的教训）
-		if (!errored && !aborted && !finalText) {
-			ev.onNotify?.("warning", "本拍模型未交出任何正文（已催稿一次仍空手）——请重试或更换模型。");
-			return { aborted: false, error: "no-draft" };
-		}
+			if (errored && !aborted) {
+				ev.onNotify?.("error", `生成失败：${errored}`);
+				return { aborted: false, error: errored, entryId };
+			}
 
-		// M-A：#revise 旁路停用（8/10 验收整体退役；修改由模型自发 draft_edit 承担）。
-		// 记账（第三步）：world_state_update 已撤出模型视野，账本整体归封笔后的场记旁路。
-		// 触发是结构信号（本拍有正文＝封笔），扮演者无感；场记读「已写出的正文＋当前账本」
-		// 出 patch，判断在模型、落账由 harness 死板执行（叶守卫在 runScribeTurn 内）。
-		if (entryId && !aborted && finalText) {
-			// MVU 卡：开演前若树还没建（首拍/老会话），从卡的初值声明懒建——世界书 [initvar] 优先，
-			// 没有就退到卡自带脚本里 Zod schema 的 prefault（见 seedMvuIfNeeded）。规则喂给场记当参考。
-			const seededState = seedMvuIfNeeded(
-				state,
-				materials.card.book,
-				materials.config.userName,
-				materials.card.name,
-				materials.cardAuthorScripts,
-			);
-			const mvuRules = seededState.mvu ? findMvuRules(materials.card.book) : undefined;
-			/**
-			 * 本拍新声明的面板数据并进账本，赶在场记之前——这样场记这一拍就能看见新面板的树、
-			 * 顺手把它推到本拍剧情的状态。**已有的树不覆盖**：agent 重写外观时可能连 data 一起再给
-			 * 一遍（那是它写模板时的初值），拿它盖掉推进过的值就等于每次重画都把面板打回开局。
-			 */
-			const declared = Object.entries(this.#pendingPanelData);
-			const scribeState = declared.length
-				? {
-						...seededState,
-						panelData: declared.reduce(
-							(acc, [name, tree]) => (acc[name] ? acc : { ...acc, [name]: tree }),
-							{ ...(seededState.panelData ?? {}) } as Record<string, Record<string, unknown>>,
-						),
+			// 模型停手但无正文：如实通知，保持今天的空拍行为。
+			if (!errored && !aborted && !finalText) {
+				ev.onNotify?.("warning", "本拍模型未交出任何正文——请重试或更换模型。");
+				return { aborted: false, error: "no-draft" };
+			}
+			if (!aborted && !errored && finalText && !ws.sealed) {
+				ev.onNotify?.("warning", "稿件已保存，本拍尚未收笔。");
+				return { aborted: false, error: "unsealed-draft", entryId };
+			}
+
+			// 定稿后的 RP 旁路工作，统一归 agent_end。
+			// 记账（第三步）：world_state_update 已撤出模型视野，账本整体归封笔后的场记旁路。
+			// 触发是结构信号（本拍有正文＝封笔），扮演者无感；场记读「已写出的正文＋当前账本」
+			// 出 patch，判断在模型、落账由 harness 死板执行（叶守卫在 runScribeTurn 内）。
+			if (entryId && !aborted && finalText) {
+				// MVU 卡：开演前若树还没建（首拍/老会话），从卡的初值声明懒建——世界书 [initvar] 优先，
+				// 没有就退到卡自带脚本里 Zod schema 的 prefault（见 seedMvuIfNeeded）。规则喂给场记当参考。
+				const seededState = seedMvuIfNeeded(
+					state,
+					materials.card.book,
+					materials.config.userName,
+					materials.card.name,
+					materials.cardAuthorScripts,
+				);
+				const mvuRules = seededState.mvu ? findMvuRules(materials.card.book) : undefined;
+				/**
+				 * 本拍新声明的面板数据并进账本，赶在场记之前——这样场记这一拍就能看见新面板的树、
+				 * 顺手把它推到本拍剧情的状态。**已有的树不覆盖**：agent 重写外观时可能连 data 一起再给
+				 * 一遍（那是它写模板时的初值），拿它盖掉推进过的值就等于每次重画都把面板打回开局。
+				 */
+				const declared = Object.entries(this.#pendingPanelData);
+				const scribeState = declared.length
+					? {
+							...seededState,
+							panelData: declared.reduce(
+								(acc, [name, tree]) => (acc[name] ? acc : { ...acc, [name]: tree }),
+								{ ...(seededState.panelData ?? {}) } as Record<string, Record<string, unknown>>,
+							),
+						}
+					: seededState;
+				const r = await runScribeTurn(
+					{
+						// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
+						sideText: (sp, ut) => this.#sideText(model, sp, ut, { apiKey, headers }, 2048, "scribe"),
+						appendStateEntry: (s) => sm.appendCustomEntry(STATE_ENTRY_TYPE, s),
+						getLeafId: () => sm.getLeafId(),
+						stateFile: this.#deps.getStateFile?.(sm.getSessionId()),
+						onActivity: (d) => ev.onActivity?.(d),
+					},
+					{
+						state: scribeState,
+						userText: lastUserText,
+						assistantText: finalText,
+						charName: materials.card.name,
+						userName: materials.config.userName,
+						mvuRules,
+					},
+				);
+				if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);
+				/**
+				 * 场记这拍没落账（无变化/解析失败/切了分支），新声明的面板数据就没人写下来——
+				 * 而 panel_write 不会再调一次，那棵树会永久丢失、面板永远显示不出值。所以补一笔。
+				 * r.kind === "applied" 时不必补：scribeState 已经带着声明进去、随账本一起落了。
+				 */
+				if (declared.length && r.kind !== "applied") {
+					try {
+						sm.appendCustomEntry(STATE_ENTRY_TYPE, scribeState);
+						const f = this.#deps.getStateFile?.(sm.getSessionId());
+						if (f) saveState(f, scribeState);
+					} catch {
+						// 补写失败只是这拍面板没值，不影响正文
 					}
-				: seededState;
-			const r = await runScribeTurn(
-				{
-					// 2048：账本+名录随剧情增长，patch 可能很长；1024 实测会截断出半截 JSON（8/03）
-					sideText: (sp, ut) => this.#sideText(model, sp, ut, { apiKey, headers }, 2048, "scribe"),
-					appendStateEntry: (s) => sm.appendCustomEntry(STATE_ENTRY_TYPE, s),
-					getLeafId: () => sm.getLeafId(),
-					stateFile: this.#deps.getStateFile?.(sm.getSessionId()),
-					onActivity: (d) => ev.onActivity?.(d),
-				},
-				{
-					state: scribeState,
-					userText: lastUserText,
-					assistantText: finalText,
-					charName: materials.card.name,
-					userName: materials.config.userName,
-					mvuRules,
-				},
-			);
-			if (r.kind === "failed") console.error(`[stage-scribe] 记账跳过：${r.error}`);
-			/**
-			 * 场记这拍没落账（无变化/解析失败/切了分支），新声明的面板数据就没人写下来——
-			 * 而 panel_write 不会再调一次，那棵树会永久丢失、面板永远显示不出值。所以补一笔。
-			 * r.kind === "applied" 时不必补：scribeState 已经带着声明进去、随账本一起落了。
-			 */
-			if (declared.length && r.kind !== "applied") {
+				}
+				sm.flush();
+			}
+			this.#pendingPanelData = {};
+
+			// 世界线存档（M-D7）：模型本拍调过 worldline_store 才有值。
+			// **必须排在场记之后**——rp-state 刚落在叶上，回退到此点账本才对得齐
+			// （面板快照在 panel_write 时已自落，无需再补）。分线与否由宿主按此刻树形算。
+			if (this.#pendingSave && this.#deps.storeSave && entryId && !aborted && finalText) {
+				const want = this.#pendingSave;
 				try {
-					sm.appendCustomEntry(STATE_ENTRY_TYPE, scribeState);
-					const f = this.#deps.getStateFile?.(sm.getSessionId());
-					if (f) saveState(f, scribeState);
-				} catch {
-					// 补写失败只是这拍面板没值，不影响正文
+					const saved = this.#deps.storeSave(sm.getSessionId(), want);
+					if (saved) {
+						ev.onActivity?.(`已钉档「${saved.name}」（${saved.worldlineName}）`);
+						sm.flush();
+					} else {
+						ev.onNotify?.("warning", `存档「${want}」未能钉下（无当前叶位）。`);
+					}
+				} catch (err) {
+					// 存档失败不该动摇已经写好的一拍
+					console.error("[stage] 钉档失败", err);
+					ev.onNotify?.("warning", `存档「${want}」失败：${err instanceof Error ? err.message : String(err)}`);
 				}
 			}
-			sm.flush();
-		}
-		this.#pendingPanelData = {};
+			this.#pendingSave = null;
 
-		// 世界线存档（M-D7）：模型本拍调过 worldline_store 才有值。
-		// **必须排在场记之后**——rp-state 刚落在叶上，回退到此点账本才对得齐
-		// （面板快照在 panel_write 时已自落，无需再补）。分线与否由宿主按此刻树形算。
-		if (this.#pendingSave && this.#deps.storeSave && entryId && !aborted && finalText) {
-			const want = this.#pendingSave;
-			try {
-				const saved = this.#deps.storeSave(sm.getSessionId(), want);
-				if (saved) {
-					ev.onActivity?.(`已钉档「${saved.name}」（${saved.worldlineName}）`);
-					sm.flush();
-				} else {
-					ev.onNotify?.("warning", `存档「${want}」未能钉下（无当前叶位）。`);
-				}
-			} catch (err) {
-				// 存档失败不该动摇已经写好的一拍
-				console.error("[stage] 钉档失败", err);
-				ev.onNotify?.("warning", `存档「${want}」失败：${err instanceof Error ? err.message : String(err)}`);
+			// M4 长局压缩：攒够拍数就把早期剧情摘要成 rp-summary（装配时回读为【前情提要】）。
+			// 放在谢幕前的最后一步——记账已落，摘要能读到最新账本；叶守卫在 runCompaction 内。
+			// 压缩失败/未到期都只是跳过，下一拍会再判一次。
+			if (entryId && !aborted && finalText) {
+				await this.#compact(model, { apiKey, headers }, config.compactEveryNTurns ?? 30);
 			}
-		}
-		this.#pendingSave = null;
+			return { aborted, entryId };
+		};
 
-		// M4 长局压缩：攒够拍数就把早期剧情摘要成 rp-summary（装配时回读为【前情提要】）。
-		// 放在谢幕前的最后一步——记账已落，摘要能读到最新账本；叶守卫在 runCompaction 内。
-		// 压缩失败/未到期都只是跳过，下一拍会再判一次。
-		if (entryId && !aborted && finalText) {
-			await this.#compact(model, { apiKey, headers }, config.compactEveryNTurns ?? 30);
+		const hooks: StageHooks = {
+			systemPrompt,
+			toolNames: tools.map((tool) => tool.name),
+			context: (piMessages) => {
+				// 历史/状态/预设/记忆只有这一份出口；本拍新增的工具过程仍由 pi 持有。
+				contextStart ??= piMessages.length;
+				ws.userId ??= [...sm.getBranch() as Array<{ id: string; type: string; message?: { role?: string } }>].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.id;
+				const projected = projectToolContext([...messages, ...piMessages.slice(contextStart)]);
+				ws.context = projected.stats; checkpoint(true);
+				return projected.messages;
+			},
+			providerPayload: (payload, requestModel = model) => {
+				if (!samplers || !Object.keys(samplers).length || !payload || typeof payload !== "object" || Array.isArray(payload)) return undefined;
+				return applyProjectedSamplers(payload as Record<string, unknown>, samplers, {
+					provider: requestModel.provider,
+					modelId: requestModel.id,
+					baseUrl: requestModel.baseUrl,
+					api: typeof requestModel.api === "string" ? requestModel.api : undefined,
+				});
+			},
+			update: (event) => {
+				if (ws.revision) return; // A completed edit cannot grow another narrative or mutate its saved timeline.
+				if (event.type === "text_delta" && event.delta) {
+						text += event.delta;
+						roundText += event.delta;
+						if (round > 0) loopText += event.delta;
+						if (ws.sealed) recordSegment(ws, { kind: "text", text: event.delta });
+						ev.onDelta?.("text", event.delta);
+						if (ws.mode === "write" && !ws.sealed) ws.preview = { name: ws.draft ? "draft_append" : "direct", content: ws.draft ? roundText : text, version: ws.version };
+					checkpoint();
+				} else if (event.type === "thinking_delta" && event.delta) {
+					recordSegment(ws, { kind: "thinking", text: event.delta });
+					ev.onDelta?.("thinking", event.delta);
+				} else if (event.type.startsWith("toolcall_") && event.partial && event.contentIndex !== undefined) {
+					const call = event.partial.content[event.contentIndex];
+					if ((call?.name === "draft_write" || call?.name === "draft_append") && typeof call.arguments?.content === "string" &&
+						call.arguments.version === ws.version && !workspaceToolBlock(ws, call.name, "write")) {
+						ws.preview = { name: call.name, content: call.arguments.content, version: ws.version, ...(typeof call.arguments.separator === "string" ? { separator: call.arguments.separator } : {}) };
+						checkpoint();
+					}
+				}
+			},
+			messageEnd: (message) => {
+				if (message.role !== "assistant" && message.role !== "toolResult") return undefined;
+				if (message.role === "assistant") {
+					final = message as AssistantMsgLike;
+					if (ws.revision) {
+						if (round >= MAX_ROUNDS && final.content.some((block) => block.type === "toolCall")) void session.abort();
+						return { persist: false };
+					}
+					if (!roundText && textOfAssistant(final)) {
+						roundText = textOfAssistant(final); text += roundText;
+						if (round > 0) loopText += roundText;
+						if (ws.draft) recordSegment(ws, { kind: "text", text: roundText });
+					}
+					if (final.stopReason === "error") errored = final.errorMessage || "provider error";
+					const calls = final.content.filter((block) => block.type === "toolCall");
+					if (!errored && final.stopReason !== "aborted") {
+						if (round >= MAX_ROUNDS && calls.length) {
+							// 撤工具后的最后一发仍幻觉调用：停在本次回应，不再执行或续轮。
+							void session.abort();
+						} else if (!calls.length) {
+							if (ws.draft && !ws.sealed && ws.mode === "write") {
+								const continuation = textOfAssistant(final);
+								if (continuation) {
+									runWriteTool(ws, wsDeps, "draft_append", { content: continuation }, "capture");
+									tailStart = loopText.length;
+								}
+								if (!ws.explicitWrites) runWriteTool(ws, wsDeps, "draft_seal", {}, true);
+							}
+						if (!ws.draft.trim() && text.trim() && ws.mode === "write") {
+							const result = runWriteTool(ws, wsDeps, "draft_write", { content: text }, true);
+								ws.strayText = "";
+								ev.onActivity?.(result.ok ? "直出正文已代收为 draft_write" : "直出正文代收失败");
+							}
+						}
+					}
+				}
+				// 临时过程仍供本拍推理；由 AgentSession 在 agent_end 前从内存移除。
+				return { persist: false };
+			},
+			toolCall: (name, input) => {
+				blog("tool_call", `${name}: ${JSON.stringify(input)}`);
+				const blockReason = workspaceToolBlock(ws, name, tools.find((t) => t.name === name)?.mode);
+				return { toolName: name, lastUserText, creationMode: loadStageConfig(cwd).creationMode, ...(blockReason ? { blockReason } : {}) };
+			},
+			toolResult: (name, content) => {
+				blog("tool_result", `${name}: ${content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("")}`);
+			},
+			turnEnd: (withdrawTools) => {
+				const calls = final?.content.filter((block) => block.type === "toolCall") ?? [];
+				if (calls.length && final?.stopReason !== "aborted" && !userStopped && !this.#abort?.signal.aborted) {
+					delete ws.preview;
+					if (!ws.sealed) ws.timeline = ws.timeline.filter((s) => s.kind !== "text" || s.draft);
+					checkpoint(true);
+				}
+				if (!userStopped && !errored && final?.stopReason !== "aborted" && calls.length && round < MAX_ROUNDS) {
+					if (tailStart < 0) {
+						if (roundText.trim()) ev.onStreamClear?.();
+						if (ws.draft.trim()) tailStart = loopText.length;
+					}
+					if (ws.draft.trim()) {
+						ws.strayText = text.slice(0, text.length - loopText.length + (tailStart >= 0 ? tailStart : loopText.length)).trim();
+					}
+				}
+				loopTail = tailStart >= 0 ? loopText.slice(tailStart) : loopText;
+				roundText = "";
+				round++;
+				if (round >= MAX_ROUNDS) withdrawTools();
+			},
+			end: async () => {
+				if (finished) return;
+				finished = true;
+				try {
+					endInfo = await finish();
+				} catch (error) {
+					const message = error instanceof Error ? error.message : String(error);
+					ev.onNotify?.("error", `本拍收尾失败：${message}`);
+					endInfo = { aborted: this.#abort?.signal.aborted === true, error: message };
+				}
+			},
+			execute: async (name, id, input, signal) => {
+				if (name === "ask" && roundText.trim() && ws.mode === "write") {
+					runWriteTool(ws, wsDeps, ws.draft ? "draft_append" : "draft_write", { content: roundText, version: ws.version }, "capture");
+					tailStart = loopText.length; roundText = "";
+				}
+				const result = await this.#executeTool({
+					ws, wsDeps, previousDraft, language: config.language, readDeps, readNames, mcpNames, mediaNames, ev,
+					stop: () => { userStopped = true; void session.abort(); },
+				}, name, id, input, signal);
+				delete ws.preview;
+				checkpoint(true);
+				if (ws.revision && ws.restorePending) {
+					try {
+						this.#publishDraftRestore(ws, draftStore);
+						ev.onReplyRevised?.(ws.revision.targetId);
+					} catch (error) {
+						return { content: [{ type: "text", text: `修订稿已保存，回复同步待恢复：${error instanceof Error ? error.message : String(error)}` }], isError: true };
+					}
+				}
+				return result;
+			},
+		};
+		const release = connection.activate(hooks, tools);
+		try {
+			await session.prompt(userText ?? lastUserText, { expandPromptTemplates: false, reuseUserMessage: userText === null });
+			if (!finished || !endInfo) throw new Error("pi 未完成本拍的 RP 收尾。");
+			return endInfo;
+		} finally {
+			release();
 		}
-		return { aborted, entryId };
 	}
 
 	/**
@@ -1089,12 +1339,12 @@ export class StageEngine {
 	/** 压缩一次（自动/手动共用）。失败只记日志不抛——压缩从不影响正文。 */
 	async #compact(
 		model: StageModelLike,
-		auth: { apiKey?: string; headers?: Record<string, string> },
+		auth: { apiKey?: string; headers?: Record<string, string | null> },
 		everyNTurns: number,
 		minChars?: number,
 	): Promise<CompactOutcome> {
 		const ev = this.#deps.events ?? {};
-		const sm = this.#deps.getSessionManager();
+		const sm = this.#deps.getSession().sessionManager;
 		const { config, card } = loadStageMaterials(this.#deps.cwd);
 		try {
 			const branch = sm.getBranch() as BranchEntryLike[];
@@ -1150,253 +1400,73 @@ export class StageEngine {
 		return fitResidentSummary(text, otherChars);
 	}
 
-	/**
-	 * M-A agent 循环（开放式）。M-R1（PLAN-RECTIFY §2.3）起由五注入日程驱动：
-	 * 规划卡随首轮末端注入送达；未封笔的轮次注进度行（每轮替换）/判定（一次性）；
-	 * seal（含兜底封笔）之后依次给记账、谢幕席位；日程走完、模型停手即收束。
-	 * 宽进严出（D2）：直出正文自动代收为 draft_write；无稿也无正文 → 逼稿一次；
-	 * MAX_ROUNDS 安全阀，触阀撤工具收场（谢幕注入未给过则并入收场句）。
-	 */
-	async #agentLoop(o: {
-		model: StageModelLike;
-		options: Record<string, unknown>;
-		systemPrompt: string;
-		messages: unknown[];
-		first: AssistantMsgLike;
-		tools: StageTool[];
-		ws: TurnWorkspace;
-		wsDeps: WorkspaceDeps;
-		/** 剧情语言（统一工具层按面装配描述/schema，M-D1） */
-		language: string;
-		/** 读侧工具依赖（装配清单与执行同源，M-D2） */
-		readDeps: StageToolDeps;
-		/** 首轮直出正文（调用方已流式外发） */
-		directText: string;
-		/** 全流程文字留档 */
-		_blog?: (event: string, data: string) => void;
-	}): Promise<{ final: AssistantMsgLike | null; errored?: string; text: string; tailText?: string }> {
-		const rawEv2 = this.#deps.events ?? {};
-		const blog = o._blog ?? (() => {});
-		const ev: typeof rawEv2 = {
-			...rawEv2,
-			onDelta: (kind, delta, draft, reset) => {
-				blog(draft ? "draft_delta" : kind === "thinking" ? "thinking" : "text", delta);
-				rawEv2.onDelta?.(kind, delta, draft, reset);
-			},
-			onStreamClear: () => { blog("stream_clear", ""); rawEv2.onStreamClear?.(); },
-			onDraftResync: (segs) => { blog("draft_resync", segs.join("\n---\n")); rawEv2.onDraftResync?.(segs); },
-			onActivity: (d) => { blog("activity", d); rawEv2.onActivity?.(d); },
-		};
-		const readDeps = o.readDeps;
-		// 走 tools.ts 派发的工具（统一层世界书族/向量库族 + 台上读侧两件）；其余归工作区执行器。
-		// 统一层含写侧（lorebook_write/toggle、memory_add/delete），但它们写的是设定集/记忆库
-		// 而不是本拍草稿，故仍走 tools.ts 而非 workspace——「读/写」在此不是路由依据，工件归属才是。
-		const READ_TOOLS = new Set([
-			...unifiedStageToolNames(readDeps),
-			"world_state_get",
-			"skill_read",
-		]);
-		// MCP 外设（8/06 重接）：只认**本会话已连接**的限定名——不能只看 mcp__ 前缀，
-		// 否则模型幻觉出的服务器名会被当成 MCP 调用，错过「未知工具」的正常报错路径。
-		const MCP_TOOLS = mcpStageToolNames(this.#deps.mcp);
-		// 媒体交付（8/06 重接）：结果带 details.rp*，收尾时落成 toolResult 条目供 wire 出帧
-		const MEDIA_TOOLS = this.#deps.media
-			? mediaStageToolNames({ tts: this.#deps.ttsAvailable?.() === true })
-			: new Set<string>();
-		// 写账工具（记账轮的结构信号——§2.3：判据必须是结构信号，禁止文本识别）
-		const convo = [...o.messages];
-		let last: AssistantMsgLike = o.first;
-		let text = "";
-		let userStopped = false; // P7：用户在 ask 选择卡上点了停止——本拍收束
-		let lastConsumed = 0; // 本轮开始时 text 长度——判定「本轮新产出文本」用
-		// 稿首次落地时的 text 长度：之前的 text 是读题/计划旁白（工具轮的 text 通道产出），
-		// 不算正文也不算尾巴；之后的 text 才是尾巴候选（状态栏等）。-1 = 稿未落地。
-		let tailStart = -1;
-		// 尾巴口径：稿落地后的 text 通道产出（未落地=全量，直出正文路径要整段保留）
-		const tailOf = () => (tailStart >= 0 ? text.slice(tailStart) : text);
-		// 稿外直出记账（8/10 实弹：规划轮直出的开头因同轮带工具调用不触发代收，
-		// 前端当旁白清屏、引擎侧永不入稿——定稿凭空缺前半场）。这里只记事实：
-		// 代收消费过的部分不算，稿落地后的尾巴不算；余下的就是「流出去但不在稿内」。
-		let directConsumed = false; // o.directText 已被代收进稿
-		let strayFrom = 0; // 代收已消费的 text 前缀长度
-
-		for (let round = 0; round < MAX_ROUNDS; round++) {
-			lastConsumed = text.length; // 本轮之前的累计文本
-			const calls = (last.content ?? []).filter(
-				(c): c is { type: string; id?: string; name?: string; arguments?: Record<string, unknown> } =>
-					c.type === "toolCall",
-			);
-
-			if (calls.length === 0) {
-				// 模型停手：预设主导，harness 不再催轮——收束本拍。
-				if (o.ws.draft.trim()) {
-					convo.push(last);
-					if (!o.ws.sealed) runWriteTool(o.ws, o.wsDeps, "draft_seal", {});
-				} else {
-					const direct = `${o.directText}${text}`.trim();
-					if (direct) {
-						// 宽进严出：直出正文代收为 draft_write（已流式外发过，不重复上屏）。
-						const r = runWriteTool(o.ws, o.wsDeps, "draft_write", { content: direct }, true);
-						directConsumed = true;
-						strayFrom = text.length;
-						o.ws.strayText = "";
-						ev.onActivity?.(r.ok ? "直出正文已代收为 draft_write" : "直出正文代收失败");
-						convo.push(last);
-					}
-				}
-				break;
-			} else {
-				convo.push(last);
-				for (const call of calls) {
-					const name = call.name ?? "";
-					blog("tool_call", `${name}: ${JSON.stringify(call.arguments ?? {})}`);
-					let r: ToolRunResult | MediaStageResult;
-					// P7：ask 工具——弹出选择卡等用户应答，答案作为新输入回喂模型。
-					// 用户停止（undefined）→ 本拍收束：不再续轮，直接以现稿定稿。
-					if (name === "ask" && this.#deps.askUser) {
-						const q = String(call.arguments?.question ?? "").trim() || "请你定夺";
-						const raw = call.arguments?.options;
-						const options = Array.isArray(raw)
-							? raw.map((s) => String(s).trim()).filter(Boolean)
-							: [];
-						// 停下来等用户：回合制共创，不设超时；abort 信号透传（用户点停止即收敛）
-						const answer = await this.#deps.askUser(q, options, this.#abort?.signal);
-						o.ws.lookups++; // 用户参与选择＝这一拍有戏（draft_write 门禁判据）
-						if (answer === undefined) {
-							// 用户停止：笔还给用户，本拍收束——标记后跳出循环
-							ev.onActivity?.(`ask「${q.slice(0, 24)}」· 用户停止`);
-							userStopped = true;
-							recordSegment(o.ws, {
-								kind: "tool",
-								activity: { kind: "tool_start", name: "ask", detail: "用户停止——笔还给用户" },
-							});
-							break;
-						}
-						r = {
-							text: `用户已作答：「${answer}」。`,
-							activity: `ask「${q.slice(0, 24)}」· 用户作答`,
-						};
-						ev.onActivity?.(r.activity);
-						recordSegment(o.ws, {
-							kind: "tool",
-							activity: { kind: "tool_start", name: "ask", detail: r.activity },
-						});
-						convo.push({
-							role: "toolResult",
-							toolCallId: call.id,
-							toolName: "ask",
-							content: [{ type: "text", text: r.text }],
-							timestamp: Date.now(),
-						});
-						continue;
-					}
-					if (name === "panel_write" || name === "panel_close") o.ws.panelWrites++;
-					// 三态路由 +MCP：统一层/台上读侧 → tools.ts；MCP 外设 → hub；其余 → 工作区。
-					// MCP 走网络/子进程，可能很慢——把本拍 abort 信号透传下去，用户点停止能立刻中断。
-					r = name === "assistant_run"
-						? ((await runAssistantStageTool(name, call.arguments ?? {}, this.#abort?.signal)) ?? {
-								text: `未知工具「${name}」。`,
-								isError: true,
-							})
-						: MCP_TOOLS.has(name)
-							? ((await runMcpStageTool(
-									this.#deps.mcp!,
-									name,
-									call.arguments ?? {},
-									this.#abort?.signal,
-								)) ?? { text: `未知工具「${name}」。`, isError: true })
-							: MEDIA_TOOLS.has(name)
-								? ((await runMediaStageTool(this.#deps.cwd, name, call.arguments ?? {})) ?? {
-										text: `未知工具「${name}」。`,
-										isError: true,
-									})
-								: READ_TOOLS.has(name)
-									? await this.#runReadTool(o, readDeps, name, call.arguments ?? {})
-									: runWriteTool(o.ws, o.wsDeps, name, call.arguments ?? {});
-					// 媒体交付要落成 toolResult 条目（wire 只认树上的 toolResult 出媒体帧）——
-					// 台上引擎默认剥离工具轨迹，故在此单独收集，谢幕后随正文一起落树。
-					const mediaDetails = (r as MediaStageResult).details;
-					if (MEDIA_TOOLS.has(name) && mediaDetails && (r as MediaStageResult).isError !== true) {
-						o.ws.mediaDeliveries = o.ws.mediaDeliveries ?? [];
-						o.ws.mediaDeliveries.push({ toolName: name, details: mediaDetails, text: r.text });
-					}
-					// 时间线：工具按调用位置入档（draft_write/edit 的正文另由 #recordDraft 记）
-					recordSegment(o.ws, { kind: "tool", activity: { kind: "tool_start", name, detail: r.activity ?? "" } });
-					if (r.activity) ev.onActivity?.(r.activity);
-					blog("tool_result", `${name}: ${r.text}`);
-					convo.push({
-						role: "toolResult",
-						toolCallId: call.id,
-						toolName: name,
-						content: [{ type: "text", text: r.text }],
-						// MCP 失败必须如实标记：模型据此改道或如实告知用户，而不是当成功往下演
-						isError: (r as { isError?: boolean }).isError === true,
-						timestamp: Date.now(),
-					});
-				}
+	/** pi 负责校验、顺序执行与中断；这里仅派发一件 RP 工具及记录领域结果。 */
+	async #executeTool(
+		o: {
+			ws: TurnWorkspace; wsDeps: WorkspaceDeps; previousDraft: PreviousDraftEditor; language: string; readDeps: StageToolDeps;
+			readNames: Set<string>; mcpNames: Set<string>; mediaNames: Set<string>; ev: StageEvents; stop: () => void;
+		},
+		name: string,
+		id: string,
+		args: Record<string, unknown>,
+		signal?: AbortSignal,
+	): Promise<StageToolResult> {
+		const { ws, ev } = o;
+		let result: ToolRunResult | MediaStageResult;
+		if (name === "ask" && this.#deps.askUser) {
+			const question = String(args.question ?? "").trim() || "请你定夺";
+			const options = Array.isArray(args.options) ? args.options.map((value) => String(value).trim()).filter(Boolean) : [];
+			recordSegment(ws, { kind: "tool", activity: { kind: "tool_start", name, detail: question } });
+			commitWorkspace(ws, o.wsDeps, { ...structuredClone(ws), phase: "waiting" });
+			ev.onWorkspace?.(structuredClone(ws));
+			const answer = await this.#deps.askUser(question, options, signal);
+			ws.lookups++;
+			if (answer === undefined) {
+				ev.onActivity?.(`ask「${question.slice(0, 24)}」· 用户停止`);
+				recordSegment(ws, { kind: "tool", activity: { kind: "tool_end", name, detail: "用户停止——笔还给用户" } });
+				o.stop();
+				return { content: [] };
 			}
-
-			// P7：用户停止（ask 卡上点了停止）——本拍收束，不再续轮
-			if (userStopped) break;
-
-			// 中间轮旁白（8/09 实弹）：稿落地前、工具轮里流出的 text 是读题/计划旁白——
-			// 通知前端清掉（收进过程条）；tailStart 一旦标记（稿已落地），之后的 text
-			// 归尾巴候选，不再清（状态栏后调记账的场景，状态栏不能被当旁白删掉）。
-			// round 0 的旁白在 performTurn 首轮流里（o.directText），不在本层 text 统计中。
-			if (tailStart < 0) {
-				const talked = text.length > lastConsumed || (round === 0 && o.directText.trim().length > 0);
-				if (calls.length > 0 && talked) ev.onStreamClear?.();
-				if (o.ws.draft.trim()) tailStart = text.length;
-			}
-
-			// 稿外直出 = 未被代收的首轮直出 + 稿落地前流出的 text（尾巴与已消费部分除外）。
-			// 每轮更新，seal 回执（runCheck）把它作为事实补认。
-			if (o.ws.draft.trim()) {
-				o.ws.strayText = `${directConsumed ? "" : o.directText}${text.slice(
-					strayFrom,
-					tailStart >= 0 ? Math.max(strayFrom, tailStart) : text.length,
-				)}`.trim();
-			}
-
-			// 安全阀最后一轮撤掉工具：模型只能收笔（触阀后以现稿/直出定稿）
-			const lastRound = round >= MAX_ROUNDS - 1;
-			const ctx: Record<string, unknown> = { systemPrompt: o.systemPrompt, messages: convo };
-			if (!lastRound) ctx.tools = o.tools;
-
-			const s = this.#deps.streamFn(o.model, ctx as never, o.options);
-			let final: AssistantMsgLike | null = null;
-			const fwd = this.#draftForwarder();
-			// thinking_delta 入时间线（思考→工具→正文全链）
-			for await (const e of s) {
-				if (e.type === "done") final = e.message ?? null;
-				else if (e.type === "error") {
-					return { final: e.error ?? null, errored: e.error?.errorMessage || "provider error", text, tailText: tailOf() };
-				} else if (e.type === "text_delta" && e.delta) {
-					text += e.delta;
-					// 稿已存在后的正文外产出（状态栏/catsay 等格式尾巴）入时间线按序记档；
-					// 定稿时由 finalTimeline 吸收进稿段（内容以 mergeFinalText 为准）。
-					if (o.ws.draft.trim()) recordSegment(o.ws, { kind: "text", text: e.delta });
-					ev.onDelta?.("text", e.delta);
-				} else if (e.type === "thinking_delta" && e.delta) {
-					recordSegment(o.ws, { kind: "thinking", text: e.delta });
-					ev.onDelta?.("thinking", e.delta);
-				} else {
-					fwd(e);
-				}
-			}
-			if (!final) return { final: last, text, tailText: tailOf() };
-			last = final;
-			if (final.stopReason === "aborted") break;
+			commitWorkspace(ws, o.wsDeps, { ...structuredClone(ws), phase: ws.mode === "explore" ? "exploring" : "writing",
+				choices: [...(ws.choices ?? []), { question, answer }] });
+			result = { text: `用户已作答：「${answer}」。当前稿件版本 v${ws.version}。`, activity: `ask「${question.slice(0, 24)}」· 用户作答` };
+		} else {
+			if (name === "panel_write" || name === "panel_close") ws.panelWrites++;
+			result = name === "previous_draft_read" || name === "previous_draft_edit"
+				? o.previousDraft.run(ws, o.wsDeps, name, args)
+				: name === "assistant_run"
+				? ((await runAssistantStageTool(name, args, signal)) ?? { text: `未知工具「${name}」。`, isError: true })
+				: o.mcpNames.has(name)
+					? ((await runMcpStageTool(this.#deps.mcp!, name, args, signal)) ?? { text: `未知工具「${name}」。`, isError: true })
+					: o.mediaNames.has(name)
+						? ((await runMediaStageTool(this.#deps.cwd, name, args)) ?? { text: `未知工具「${name}」。`, isError: true })
+						: o.readNames.has(name)
+							? await this.#runReadTool(o, o.readDeps, name, args)
+							: runWriteTool(ws, o.wsDeps, name, args);
 		}
-		return { final: last, text, tailText: tailOf() };
+		const media = result as MediaStageResult;
+		if (o.mediaNames.has(name) && media.details && media.isError !== true) {
+			ws.mediaDeliveries ??= [];
+			ws.mediaDeliveries.push({ toolName: name, toolCallId: id, details: media.details, text: result.text });
+		}
+		if (!ws.revision || ws.restorePending) {
+			if (name !== "ask") recordSegment(ws, { kind: "tool", activity: { kind: "tool_start", name, detail: result.activity ?? "" } });
+			recordSegment(ws, { kind: "tool", activity: { kind: "tool_end", name, detail: media.isError ? result.text : result.activity ?? "", ...(media.isError ? { isError: true } : {}) } });
+		}
+		if (result.activity) ev.onActivity?.(result.activity);
+		return {
+			content: [{ type: "text", text: result.text }],
+			...(media.details ? { details: media.details } : {}),
+			...(media.isError ? { isError: true } : {}),
+			...((name === "draft_seal" && ws.sealed || name === "previous_draft_edit" && ws.revision) && !media.isError ? { terminate: true } : {}),
+		};
 	}
+
 
 	/**
 	 * 台上读侧工具，并把「查过世界」记进工作区。
 	 *
-	 * lookups 是 draft_write 门禁的判据（见 workspace.ts runWriteTool）：查过设定/旧账/
-	 * 账本＝这一拍中途确实有要停下来处理的事＝有戏，本该一段一段演。
-	 * skill_read 读的是写作方法论而非世界事实，不计入。
+	 * lookups 只用于观测，不参与收笔或查库次数门禁。skill_read 不计入事实读取。
 	 */
 	async #runReadTool(
 		o: { ws: TurnWorkspace; language: string },
@@ -1408,30 +1478,18 @@ export class StageEngine {
 		return runStageTool(readDeps, name, args, o.language);
 	}
 
-	/**
-	 * D1：draft_write / draft_append 的正文参数流式转发——工件正文照常逐字上屏。
-	 * toolcall_delta 用渐进解析的 arguments（openai-completions 每帧重解 partialArgs）；
-	 * toolcall_end 兜底补齐后缀（faux 等不做渐进解析的 provider 在此整段上屏）。
-	 * 每条流各建一个（sent 按 contentIndex 记已发长度，保证不重发）。
-	 *
-	 * M-E：draft_append 是**追加**语义，reset 必须为 false——已上屏的段落是
-	 * 已经发生的事，续写不能把它擦掉重排（那正是分段续写要消除的体验）。
-	 */
-	#draftForwarder(): (e: StageStreamEvent) => void {
-		// 8/13 定案：稿件内容不再在生成时抢跑转发——被受理门拒掉的段落会提前上屏、
-		// 造成「屏上正文 ≠ 最终正文」（实弹：被拒草稿重复可见）。稿件上屏改到
-		// agentLoop 受理成功后统一转发（见 runWriteTool 调用点），这里恒为空操作。
-		return () => {};
-	}
+
 
 	/**
 	 * 台上工具的执行依赖（每次取用现读素材/账本——工具看到的世界与装配同源）。
-	 * lastUserText 供写入门禁判定（M-D2）：门禁问的是「用户本拍有没有要求记录」。
+	 * 写入许可统一由 RP 扩展的 tool_call 钩子判断。
 	 */
-	#toolDeps(lastUserText = ""): StageToolDeps {
+	#toolDeps(): StageToolDeps {
 		const cwd = this.#deps.cwd;
-		const sm = this.#deps.getSessionManager();
+		const sm = this.#deps.getSession().sessionManager;
 		/** 台上补充设定集路径（写侧落点；卡未装载时为空＝无 lorebook_write） */
+		const chatDir = chatDirOfSessionDir(sm.getSessionDir?.());
+		const cardDir = chatDir ? cardDirOfChatDir(chatDir) : null;
 		const overlayOf = (): string => {
 			try {
 				const m = loadStageMaterials(cwd);
@@ -1446,7 +1504,9 @@ export class StageEngine {
 			searchLore: (query, limit) => {
 				const m = loadStageMaterials(cwd);
 				// 语料 = 世界书（已挂载的独立书）+ 补充设定集；materials 已剥离外部插件协议条目。
-				return searchEntries(m.entries, query, limit);
+				const hits = searchEntries(m.entries, query, limit);
+				const marked = lh?.listMarked() as Array<LorebookEntry & { source?: string }> | undefined;
+				return hits.map((h) => ({ ...h, entry: { ...h.entry, source: marked?.find((e) => loreFingerprint(e.content) === loreFingerprint(h.entry.content))?.source } }));
 			},
 			// ---- M-D2 写侧 / M-D7 改删与书一级：有宿主件走宿主件，否则退回 overlay ----
 			writeLore: lh
@@ -1468,21 +1528,35 @@ export class StageEngine {
 				: {}),
 			fingerprint: loreFingerprint,
 			...(this.#deps.setDisabledLore ? { toggleLore: this.#deps.setDisabledLore } : {}),
-			gate: () => ({ lastUserText, creationMode: loadStageConfig(cwd).creationMode }),
 			searchMemory: async (query) => {
 				const search = this.#deps.searchMemory;
-				if (!search) return [];
-				return search(sm.getSessionId(), query);
+				let result: MemorySearchResult;
+				try {
+					const r = search ? await search(sm.getSessionId(), query) : { hits: [], sources: [{ scope: "session", status: "unavailable" as const }] };
+					result = Array.isArray(r) ? { hits: r, sources: [{ scope: "session", status: "ok" }] } : r;
+				} catch (e) { result = { hits: [], sources: [{ scope: "session", status: "error", error: e instanceof Error ? e.message : String(e) }] }; }
+				if (cardDir) {
+					try { result.hits.push(...searchCardMemory(cardDir, query)); result.sources.push({ scope: "card", status: "ok" }); }
+					catch (e) { result.sources.push({ scope: "card", status: "error", error: String(e) }); }
+				} else result.sources.push({ scope: "card", status: "unavailable" });
+				return result;
 			},
+			...(this.#deps.readMemory || cardDir ? { readMemory: (ref: string) => ref.startsWith("card:")
+				? cardDir ? readCardMemory(cardDir, ref) : undefined : this.#deps.readMemory?.(sm.getSessionId(), ref) } : {}),
+			...(cardDir ? { updateMemory: (ref: string, version: string, content: string) => changeCardMemory(cardDir, ref, version, content)! } : {}),
 			// ---- M-D3 向量库写侧：scope 由宿主绑定，模型只给内容（作用域不经模型） ----
 			...(this.#deps.addMemory
 				? { addMemory: (input: { text: string; title?: string }) => this.#deps.addMemory!(sm.getSessionId(), input) }
 				: {}),
-			...(this.#deps.listMemory
-				? { listMemory: (storeId: string) => this.#deps.listMemory!(sm.getSessionId(), storeId) }
+			...(this.#deps.listMemory || cardDir
+				? { listMemory: (storeId: string) => storeId === "card" ? (cardDir ? listCardMemory(cardDir).map((d) => ({ ...d, id: d.ref })) : []) : this.#deps.listMemory?.(sm.getSessionId(), storeId) ?? [] }
 				: {}),
-			...(this.#deps.deleteMemory
-				? { deleteMemory: (storeId: string, id: string) => this.#deps.deleteMemory!(sm.getSessionId(), storeId, id) }
+			...(this.#deps.deleteMemory || cardDir
+				? { deleteMemory: (storeId: string, id: string, version?: string) => {
+					if (storeId !== "card") return this.#deps.deleteMemory?.(sm.getSessionId(), storeId, id) ?? false;
+					if (!cardDir) return false;
+					changeCardMemory(cardDir, id, version ?? ""); return true;
+				} }
 				: {}),
 			// ---- M-D4 角色库：读卡面 / M-D7 改卡（改的是用户的卡文件，宿主负责热重载） ----
 			readCard: () => {
@@ -1534,11 +1608,11 @@ export class StageEngine {
 				: {}),
 			getState: () => stateFromBranch(sm.getBranch() as BranchEntryLike[]),
 			formatState,
-			getSkill: (name) => {
+			getSkill: (name, file, start, end) => {
 				const m = loadStageMaterials(cwd);
 				// {{可用skill}} 动态表格随「skill指导」（8/19 拆循环时删除）一并退役——
 				// 标准形态下这张表就是 skill_read 的工具描述本身，不再由某条 skill 正文转发。
-				return m.skillFiles.find((f) => f.name === name)?.body ?? m.skillPacks.get(name);
+				return readStageSkill(cwd, name, file, start, end);
 			},
 		};
 	}
@@ -1610,7 +1684,7 @@ export class StageEngine {
 		model: StageModelLike,
 		systemPrompt: string,
 		userText: string,
-		auth: { apiKey?: string; headers?: Record<string, string> },
+		auth: { apiKey?: string; headers?: Record<string, string | null> },
 		maxTokens = 8192,
 		kind: SideTextStat["kind"] = "scribe",
 		reasoning: string | undefined = "off",
@@ -1668,7 +1742,7 @@ export class StageEngine {
 			console.log(`[stage-side] ${line}`);
 		};
 		try {
-			const s = this.#deps.streamFn(
+			const s = this.#deps.sideStreamFn(
 				chosen,
 				{
 					systemPrompt,

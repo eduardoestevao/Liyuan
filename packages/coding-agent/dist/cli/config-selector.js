@@ -1,7 +1,7 @@
 /**
  * TUI config selector for `pi config` command
  */
-import { ProcessTerminal, TUI } from "@liyuan/tui";
+import { ProcessTerminal, TuiMainScreen } from "@liyuan/tui";
 import { ConfigSelectorComponent } from "../modes/interactive/components/config-selector.js";
 import { initTheme, stopThemeWatcher } from "../modes/interactive/theme/theme.js";
 /** Show TUI config selector and return when closed */
@@ -9,7 +9,7 @@ export async function selectConfig(options) {
     // Initialize theme before showing TUI
     initTheme(options.settingsManager.getTheme(), true);
     return new Promise((resolve) => {
-        const ui = new TUI(new ProcessTerminal());
+        const ui = new TuiMainScreen(new ProcessTerminal(), undefined, options.agentDir);
         let resolved = false;
         const selector = new ConfigSelectorComponent(options.resolvedPaths, options.settingsManager, options.cwd, options.agentDir, () => {
             if (!resolved) {
@@ -22,7 +22,7 @@ export async function selectConfig(options) {
             ui.stop();
             stopThemeWatcher();
             process.exit(0);
-        }, () => ui.requestRender(), ui.terminal.rows);
+        }, () => ui.requestRender(), ui.terminal.rows, options.writeScope, options.projectModeAvailable);
         ui.addChild(selector);
         ui.setFocus(selector.getResourceList());
         ui.start();

@@ -1,4 +1,5 @@
 import { Marked, Tokenizer } from "marked";
+import { renderLatex } from "../latex.js";
 import { getCapabilities, hyperlink, isImageLine } from "../terminal-image.js";
 import { applyBackgroundToLine, visibleWidth, wrapTextWithAnsi } from "../utils.js";
 const STRICT_STRIKETHROUGH_REGEX = /^(~~)(?=[^\s~])((?:\\.|[^\\])*?(?:\\.|[^\s~\\]))\1(?=[^~]|$)/;
@@ -17,6 +18,108 @@ class StrictStrikethroughTokenizer extends Tokenizer {
         };
     }
 }
+function isEscaped(source, index) {
+    let backslashes = 0;
+    for (let position = index - 1; position >= 0 && source[position] === "\\"; position--) {
+        backslashes++;
+    }
+    return backslashes % 2 === 1;
+}
+function findClosingDelimiter(source, closing, start) {
+    let index = source.indexOf(closing, start);
+    while (index >= 0 && isEscaped(source, index)) {
+        index = source.indexOf(closing, index + closing.length);
+    }
+    return index;
+}
+function looksLikePendingDollarMath(source) {
+    return /\\[A-Za-z]+|[_^=+*/<>()[\]|±≤≥≠≈∈→⇒∞∫∑√-]/.test(source);
+}
+function tokenizeInlineLatex(source) {
+    let opening = "";
+    let closing = "";
+    if (source.startsWith("$$")) {
+        opening = "$$";
+        closing = "$$";
+    }
+    else if (source.startsWith("\\(")) {
+        opening = "\\(";
+        closing = "\\)";
+    }
+    else if (source.startsWith("\\[")) {
+        opening = "\\[";
+        closing = "\\]";
+    }
+    else if (source.startsWith("$") && !/^\$\s/.test(source)) {
+        opening = "$";
+        closing = "$";
+    }
+    else {
+        return undefined;
+    }
+    const closingIndex = findClosingDelimiter(source, closing, opening.length);
+    if (closingIndex >= 0 &&
+        opening === "$" &&
+        (/\s$/.test(source.slice(opening.length, closingIndex)) ||
+            /^\d/.test(source.slice(closingIndex + 1)) ||
+            (/^[A-Z_][A-Z0-9_]*(?:[^A-Za-z0-9_\s])?$/.test(source.slice(opening.length, closingIndex)) &&
+                /^[A-Za-z_][A-Za-z0-9_]*/.test(source.slice(closingIndex + 1))) ||
+            source.slice(opening.length, closingIndex).includes("`"))) {
+        return undefined;
+    }
+    if (closingIndex < 0) {
+        const pendingSource = source.slice(opening.length);
+        if (opening.startsWith("\\") || looksLikePendingDollarMath(pendingSource)) {
+            return { type: "latex", raw: source, text: pendingSource, pending: true };
+        }
+        return undefined;
+    }
+    const text = source.slice(opening.length, closingIndex);
+    if (!text || text.includes("\n")) {
+        return undefined;
+    }
+    const raw = source.slice(0, closingIndex + closing.length);
+    return { type: "latex", raw, text };
+}
+function tokenizeBlockLatex(source) {
+    const dollarMatch = /^ {0,3}\$\$[ \t]*(?:\n)?([\s\S]*?)\$\$[ \t]*(?:\n|$)/.exec(source);
+    if (dollarMatch?.[1]) {
+        return { type: "latexBlock", raw: dollarMatch[0], text: dollarMatch[1].trim() };
+    }
+    const bracketMatch = /^ {0,3}\\\[[ \t]*(?:\n)?([\s\S]*?)\\\][ \t]*(?:\n|$)/.exec(source);
+    if (bracketMatch?.[1]) {
+        return { type: "latexBlock", raw: bracketMatch[0], text: bracketMatch[1].trim() };
+    }
+    const pendingBracket = /^ {0,3}\\\[[ \t]*(?:\n)?([\s\S]*)$/.exec(source);
+    if (pendingBracket) {
+        return { type: "latexBlock", raw: pendingBracket[0], text: pendingBracket[1], pending: true };
+    }
+    const pendingDollar = /^ {0,3}\$\$[ \t]*(?:\n)?([\s\S]*)$/.exec(source);
+    if (pendingDollar?.[1] && looksLikePendingDollarMath(pendingDollar[1])) {
+        return { type: "latexBlock", raw: pendingDollar[0], text: pendingDollar[1], pending: true };
+    }
+    return undefined;
+}
+const LATEX_MARKDOWN_EXTENSIONS = [
+    {
+        name: "latexBlock",
+        level: "block",
+        start(source) {
+            const match = /(?:^|\n) {0,3}(?:\$\$|\\\[)/.exec(source);
+            return match ? match.index + (match[0].startsWith("\n") ? 1 : 0) : undefined;
+        },
+        tokenizer: tokenizeBlockLatex,
+    },
+    {
+        name: "latex",
+        level: "inline",
+        start(source) {
+            const indices = [source.indexOf("$"), source.indexOf("\\("), source.indexOf("\\[")].filter((index) => index >= 0);
+            return indices.length > 0 ? Math.min(...indices) : undefined;
+        },
+        tokenizer: tokenizeInlineLatex,
+    },
+];
 function trimPartialClosingFences(tokens) {
     const token = tokens[tokens.length - 1];
     if (token?.type === "list") {
@@ -43,6 +146,7 @@ const markdownParser = new Marked();
 markdownParser.setOptions({
     tokenizer: new StrictStrikethroughTokenizer(),
 });
+markdownParser.use({ extensions: [...LATEX_MARKDOWN_EXTENSIONS] });
 export class Markdown {
     text;
     paddingX; // Left/right padding
@@ -79,8 +183,9 @@ export class Markdown {
         }
         // Calculate available width for content (subtract horizontal padding)
         const contentWidth = Math.max(1, width - this.paddingX * 2);
+        const text = this.options.transform?.(this.text, contentWidth) ?? this.text;
         // Don't render anything if there's no actual text
-        if (!this.text || this.text.trim() === "") {
+        if (!text || text.trim() === "") {
             const result = [];
             // Update cache
             this.cachedText = this.text;
@@ -89,7 +194,7 @@ export class Markdown {
             return result;
         }
         // Replace tabs with 3 spaces for consistent rendering
-        const normalizedText = this.text.replace(/\t/g, "   ");
+        const normalizedText = text.replace(/\t/g, "   ");
         // Parse markdown to HTML-like tokens
         const tokens = markdownParser.lexer(normalizedText);
         trimPartialClosingFences(tokens);
@@ -261,6 +366,19 @@ export class Markdown {
             case "text":
                 lines.push(this.renderInlineTokens([token], styleContext));
                 break;
+            case "latexBlock": {
+                const latexToken = token;
+                const rendered = !latexToken.pending && this.options.renderLatex !== false
+                    ? (renderLatex(latexToken.text, { display: true }) ?? latexToken.raw.trim())
+                    : latexToken.raw.trim();
+                for (const line of rendered.split("\n")) {
+                    lines.push(this.applyDefaultStyle(line));
+                }
+                if (nextTokenType && nextTokenType !== "space") {
+                    lines.push("");
+                }
+                break;
+            }
             case "code": {
                 const indent = this.theme.codeBlockIndent ?? "  ";
                 lines.push(this.theme.codeBlockBorder(`\`\`\`${token.lang || ""}`));
@@ -371,6 +489,14 @@ export class Markdown {
         };
         for (const token of tokens) {
             switch (token.type) {
+                case "latex": {
+                    const latexToken = token;
+                    const rendered = !latexToken.pending && this.options.renderLatex !== false
+                        ? (renderLatex(latexToken.text) ?? latexToken.raw)
+                        : latexToken.raw;
+                    result += applyTextWithNewlines(rendered);
+                    break;
+                }
                 case "escape":
                     result += applyTextWithNewlines(this.options.preserveBackslashEscapes ? token.raw : token.text);
                     break;
@@ -525,8 +651,13 @@ export class Markdown {
      * Delegates to wrapTextWithAnsi() so ANSI codes + long tokens are handled
      * consistently with the rest of the renderer.
      */
-    wrapCellText(text, maxWidth) {
-        return wrapTextWithAnsi(text, Math.max(1, maxWidth));
+    wrapCellText(text, maxWidth, stylePrefix = "") {
+        const lines = wrapTextWithAnsi(text, Math.max(1, maxWidth));
+        return lines.map((line, index) => {
+            // Reset text styles after each non-final fragment, then restore the surrounding style before padding and borders.
+            const styleReset = index < lines.length - 1 ? "\x1b[22;23;24;25;27;28;29;39m" : "";
+            return `${line}${styleReset}${stylePrefix}`;
+        });
     }
     /**
      * Render a table with width-aware cell wrapping.
@@ -634,7 +765,7 @@ export class Markdown {
         // Render header with wrapping
         const headerCellLines = token.header.map((cell, i) => {
             const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-            return this.wrapCellText(text, columnWidths[i]);
+            return this.wrapCellText(text, columnWidths[i], styleContext?.stylePrefix);
         });
         const headerLineCount = Math.max(...headerCellLines.map((c) => c.length));
         for (let lineIdx = 0; lineIdx < headerLineCount; lineIdx++) {
@@ -654,7 +785,7 @@ export class Markdown {
             const row = token.rows[rowIndex];
             const rowCellLines = row.map((cell, i) => {
                 const text = this.renderInlineTokens(cell.tokens || [], styleContext);
-                return this.wrapCellText(text, columnWidths[i]);
+                return this.wrapCellText(text, columnWidths[i], styleContext?.stylePrefix);
             });
             const rowLineCount = Math.max(...rowCellLines.map((c) => c.length));
             for (let lineIdx = 0; lineIdx < rowLineCount; lineIdx++) {

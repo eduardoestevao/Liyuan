@@ -11,6 +11,16 @@ export declare const cjkBreakRegex: RegExp;
  * Calculate the visible width of a string in terminal columns.
  */
 export declare function visibleWidth(str: string): number;
+/** Remove ANSI, OSC, and APC control sequences while preserving visible text. */
+export declare function stripTerminalSequences(str: string): string;
+interface GraphemeCellRange {
+    start: number;
+    end: number;
+}
+/** Return the terminal-cell range occupied by the grapheme at a visible column. */
+export declare function getGraphemeCellRange(line: string, column: number): GraphemeCellRange | undefined;
+/** Return the OSC 8 hyperlink covering a visible terminal column. */
+export declare function getOsc8LinkAtColumn(line: string, column: number): string | undefined;
 export declare function normalizeTerminalOutput(str: string): string;
 /**
  * Extract ANSI escape sequences from a string at the given position.
@@ -82,4 +92,5 @@ export declare function extractSegments(line: string, beforeEnd: number, afterSt
     after: string;
     afterWidth: number;
 };
+export {};
 //# sourceMappingURL=utils.d.ts.map

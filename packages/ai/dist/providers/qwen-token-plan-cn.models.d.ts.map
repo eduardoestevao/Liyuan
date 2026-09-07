@@ -1,0 +1,1 @@
+{"version":3,"file":"qwen-token-plan-cn.models.d.ts","sourceRoot":"","sources":["../../src/providers/qwen-token-plan-cn.models.ts"],"names":[],"mappings":"AAGA,OAAO,MAAM,MAAM,gCAAgC,CAAuB;AAC1E,OAAO,EAAuB,KAAK,YAAY,EAAE,MAAM,qBAAqB,CAAC;AAE7E,eAAO,MAAM,yBAAyB,EAAE,YAAY,CAAC,OAAO,MAAM,EAAE,oBAAoB,CACtC,CAAC"}

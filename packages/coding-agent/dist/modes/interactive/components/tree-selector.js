@@ -54,6 +54,7 @@ class TreeList {
     foldedNodes = new Set();
     onSelect;
     onCancel;
+    onCopy;
     onLabelEdit;
     constructor(tree, currentLeafId, maxVisibleLines, initialSelectedId, initialFilterMode) {
         this.currentLeafId = currentLeafId;
@@ -492,6 +493,10 @@ class TreeList {
     getSelectedNode() {
         return this.filteredNodes[this.selectedIndex]?.node;
     }
+    copySelected() {
+        const node = this.getSelectedNode();
+        this.onCopy?.(node ? this.getEntryCopyText(node) : undefined);
+    }
     updateNodeLabel(entryId, label, labelTimestamp) {
         for (const flatNode of this.flatNodes) {
             if (flatNode.node.entry.id === entryId) {
@@ -713,21 +718,47 @@ class TreeList {
         return `${year}/${month}/${day} ${time}`;
     }
     extractContent(content) {
-        const maxLen = 200;
+        return this.extractFullContent(content).slice(0, 200);
+    }
+    extractFullContent(content) {
         if (typeof content === "string")
-            return content.slice(0, maxLen);
-        if (Array.isArray(content)) {
-            let result = "";
-            for (const c of content) {
-                if (typeof c === "object" && c !== null && "type" in c && c.type === "text") {
-                    result += c.text;
-                    if (result.length >= maxLen)
-                        return result.slice(0, maxLen);
-                }
+            return content;
+        if (!Array.isArray(content))
+            return "";
+        let result = "";
+        for (const block of content) {
+            if (typeof block === "object" && block !== null && "type" in block && block.type === "text") {
+                result += block.text;
             }
-            return result;
         }
-        return "";
+        return result;
+    }
+    getEntryCopyText(node) {
+        const entry = node.entry;
+        let text;
+        switch (entry.type) {
+            case "message":
+                if (entry.message.role === "bashExecution") {
+                    text = entry.message.command;
+                }
+                else if ("content" in entry.message) {
+                    text = this.extractFullContent(entry.message.content);
+                    if (!text && entry.message.role === "assistant") {
+                        text = entry.message.errorMessage;
+                    }
+                }
+                break;
+            case "custom_message":
+                text = this.extractFullContent(entry.content);
+                break;
+            case "compaction":
+                text = entry.summary;
+                break;
+            case "branch_summary":
+                text = entry.summary;
+                break;
+        }
+        return text?.trim() ? text : undefined;
     }
     hasTextContent(content) {
         if (typeof content === "string")
@@ -841,6 +872,9 @@ class TreeList {
             if (selected && this.onSelect) {
                 this.onSelect(selected.node.entry.id);
             }
+        }
+        else if (kb.matches(keyData, "app.message.copy")) {
+            this.copySelected();
         }
         else if (kb.matches(keyData, "tui.select.cancel")) {
             if (this.searchQuery) {
@@ -1034,6 +1068,7 @@ const TREE_HELP_ITEMS = [
     { keys: ["tui.select.up", "tui.select.down"], label: "move" },
     { keys: ["tui.editor.cursorLeft", "tui.editor.cursorRight"], label: "page" },
     { keys: ["app.tree.foldOrUp", "app.tree.unfoldOrDown"], label: "branch" },
+    { keys: ["app.message.copy"], label: "copy" },
     { keys: ["app.tree.editLabel"], label: "label" },
     { keys: ["app.tree.toggleLabelTimestamp"], label: "label time" },
     {
@@ -1135,6 +1170,7 @@ export class TreeSelectorComponent extends Container {
     labelInputContainer;
     treeContainer;
     onLabelChangeCallback;
+    onCopy;
     // Focusable implementation - propagate to labelInput when active for IME cursor positioning
     _focused = false;
     get focused() {
@@ -1154,6 +1190,7 @@ export class TreeSelectorComponent extends Container {
         this.treeList = new TreeList(tree, currentLeafId, maxVisibleLines, initialSelectedId, initialFilterMode);
         this.treeList.onSelect = onSelect;
         this.treeList.onCancel = onCancel;
+        this.treeList.onCopy = (text) => this.onCopy?.(text);
         this.treeList.onLabelEdit = (entryId, currentLabel) => this.showLabelInput(entryId, currentLabel);
         this.treeContainer = new Container();
         this.treeContainer.addChild(this.treeList);

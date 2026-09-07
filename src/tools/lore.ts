@@ -38,6 +38,7 @@ export interface LoreEntryLike {
 	 * 这个标记不是权限边界，是**份量提示**——删自己写的便签与删用户的原稿不是一回事。
 	 */
 	agentWritten?: boolean;
+	source?: string;
 }
 
 export interface LoreHitLike {
@@ -111,12 +112,13 @@ const ASSISTANT_LIMIT = 5;
  * 合一前三份的括号/分隔符各不相同（全角「（关键词：…）」/ 全角「（keys: …）」/ 半角「 (keys: …)」）。
  * 统一取台上那版：全角中文标签、顿号分隔、**无关键词时整段省略**（不留空括号）。
  */
-function formatHits(hits: LoreHitLike[]): string {
+function formatHits(hits: LoreHitLike[], deps: LoreDeps): string {
 	return hits
 		.map((h) => {
 			const title = h.entry.comment || h.entry.keys?.[0] || "条目";
 			const keys = h.entry.keys?.length ? `（关键词：${h.entry.keys.join("、")}）` : "";
-			return `### ${title}${keys}\n${h.entry.content ?? ""}`;
+			const ref = deps.fingerprint ? `lore:${deps.fingerprint(h.entry.content ?? "")}` : undefined;
+			return `### ${title}${keys}${ref ? `\nref: ${ref}` : ""}${h.entry.source ? `\n来源：${h.entry.source}` : ""}\n${h.entry.content ?? ""}`;
 		})
 		.join("\n\n");
 }
@@ -190,10 +192,28 @@ export const lorebookSearch: ToolSpec<LoreDeps> = {
 		}
 
 		return {
-			text: formatHits(hits),
+			text: formatHits(hits, deps),
 			activity: `查设定「${query}」· ${hits.length} 条`,
 			details: { hits: hits.map((h) => ({ uid: h.entry.uid, score: h.score })) },
 		};
+	},
+};
+
+export const lorebookRead: ToolSpec<LoreDeps> = {
+	name: "lorebook_read", domain: "lore", mode: "read", surfaces: ["stage", "assistant"], label: "读取世界书条目",
+	description: () => "按 lorebook_search/list 给出的 ref 或内容指纹读取条目原文与来源。start/end 为从 0 开始的字符偏移，end 不含；省略即全文。",
+	parameters: () => ({ type: "object", properties: { ref: { type: "string" }, start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 } }, required: ["ref"] }),
+	async run(args, deps) {
+		if (!deps.listLore || !deps.fingerprint) return { text: "本环境未提供世界书读取。", isError: true };
+		const ref = strArg(args, "ref").replace(/^lore:/, "");
+		try {
+			const found = deps.listLore().filter((e) => deps.fingerprint!(e.content ?? "") === ref);
+			if (!found.length) return { text: "引用已失效或不在当前设定集中。", isError: true };
+			const text = found[0].content ?? "";
+			const start = args.start === undefined ? 0 : Number(args.start), end = args.end === undefined ? text.length : Number(args.end);
+			if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > text.length) return { text: "读取范围无效。", isError: true };
+			return { text: JSON.stringify({ ref: `lore:${ref}`, start, end, total: text.length, content: text.slice(start, end), sources: found.map((e) => ({ title: e.comment, uid: e.uid, source: e.source, enabled: e.enabled !== false })) }), activity: "读设定原文" };
+		} catch (e) { return { text: `读取世界书失败：${errText(e)}`, isError: true }; }
 	},
 };
 
@@ -681,6 +701,7 @@ export const lorebookMount: ToolSpec<LoreDeps> = {
 /** 世界书族全部工具（M-D1 检索；M-D2 写/列/启停；M-D7 改删 + 书一级列建挂） */
 export const loreTools: ToolSpec<LoreDeps>[] = [
 	lorebookSearch,
+	lorebookRead,
 	lorebookWrite,
 	lorebookUpdate,
 	lorebookDelete,

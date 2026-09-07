@@ -1,15 +1,15 @@
 import * as fs from "node:fs";
 import { createRequire } from "node:module";
 import * as path from "node:path";
-import { fileURLToPath } from "node:url";
 import { setKittyProtocolActive } from "./keys.js";
 import { isNativeModifierPressed } from "./native-modifiers.js";
+import { getNativeModuleCandidates } from "./native-module-path.js";
 import { StdinBuffer } from "./stdin-buffer.js";
 const cjsRequire = createRequire(import.meta.url);
 const TERMINAL_PROGRESS_KEEPALIVE_MS = 1000;
 const TERMINAL_PROGRESS_ACTIVE_SEQUENCE = "\x1b]9;4;3\x07";
-const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0;\x07";
-const APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
+const TERMINAL_PROGRESS_CLEAR_SEQUENCE = "\x1b]9;4;0\x07";
+const NATIVE_SHIFT_ENTER_SEQUENCE = "\x1b[13;2u";
 const DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS = 7;
 const KEYBOARD_PROTOCOL_RESPONSE_FRAGMENT_TIMEOUT_MS = 150;
 const KITTY_KEYBOARD_PROTOCOL_QUERY = `\x1b[>${DESIRED_KITTY_KEYBOARD_PROTOCOL_FLAGS}u\x1b[?u\x1b[c`;
@@ -29,10 +29,30 @@ function isKeyboardProtocolNegotiationSequencePrefix(sequence) {
 export function isAppleTerminalSession() {
     return process.platform === "darwin" && process.env.TERM_PROGRAM === "Apple_Terminal";
 }
-export function normalizeAppleTerminalInput(data, isAppleTerminal, isShiftPressed) {
-    if (isAppleTerminal && data === "\r" && isShiftPressed)
-        return APPLE_TERMINAL_SHIFT_ENTER_SEQUENCE;
+export function normalizeNativeShiftEnterInput(data, shouldDetectNativeShiftEnter, isShiftPressed) {
+    if (shouldDetectNativeShiftEnter && data === "\r" && isShiftPressed)
+        return NATIVE_SHIFT_ENTER_SEQUENCE;
     return data;
+}
+export function normalizeAppleTerminalInput(data, isAppleTerminal, isShiftPressed) {
+    return normalizeNativeShiftEnterInput(data, isAppleTerminal, isShiftPressed);
+}
+const DEFAULT_ESCAPE_TIMEOUT_MS = 10;
+const DEFAULT_SSH_ESCAPE_TIMEOUT_MS = 100;
+/**
+ * Resolve how long to wait for the rest of an escape sequence before
+ * dispatching a lone ESC as the Escape key. Legacy Alt+key input is ESC plus
+ * another byte, so high-latency transports need a longer reassembly window.
+ */
+export function resolveEscapeTimeoutMs(env = process.env) {
+    const configured = Number(env.PI_TUI_ESC_TIMEOUT);
+    if (Number.isFinite(configured) && configured > 0) {
+        return configured;
+    }
+    if (env.SSH_CONNECTION || env.SSH_TTY) {
+        return DEFAULT_SSH_ESCAPE_TIMEOUT_MS;
+    }
+    return DEFAULT_ESCAPE_TIMEOUT_MS;
 }
 /**
  * Real terminal using process.stdin/stdout
@@ -108,7 +128,7 @@ export class ProcessTerminal {
      * to handle the case where the response arrives split across multiple events.
      */
     setupStdinBuffer() {
-        this.stdinBuffer = new StdinBuffer({ timeout: 10 });
+        this.stdinBuffer = new StdinBuffer({ escapeTimeout: resolveEscapeTimeoutMs() });
         // Forward individual sequences to the input handler
         this.stdinBuffer.on("data", (sequence) => {
             const negotiationSequence = this.readKeyboardProtocolNegotiationSequence(sequence);
@@ -229,8 +249,8 @@ export class ProcessTerminal {
     forwardInputSequence(sequence) {
         if (!this.inputHandler)
             return;
-        const isAppleTerminal = sequence === "\r" && isAppleTerminalSession();
-        const input = normalizeAppleTerminalInput(sequence, isAppleTerminal, isAppleTerminal && isNativeModifierPressed("shift"));
+        const shouldDetectNativeShiftEnter = sequence === "\r" && (isAppleTerminalSession() || process.platform === "win32");
+        const input = normalizeNativeShiftEnterInput(sequence, shouldDetectNativeShiftEnter, shouldDetectNativeShiftEnter && isNativeModifierPressed("shift"));
         this.inputHandler(input);
     }
     enableModifyOtherKeys() {
@@ -259,16 +279,10 @@ export class ProcessTerminal {
             if (arch !== "x64" && arch !== "arm64")
                 return;
             // Dynamic require so non-Windows and bundled/browser paths never load the
-            // native helper. In the npm package native/ is next to dist/; in compiled
-            // binary archives native/ is copied next to the executable.
-            const moduleDir = path.dirname(fileURLToPath(import.meta.url));
+            // native helper. Installed packages resolve it from pi-tui; standalone
+            // binaries resolve the copy next to the executable.
             const nativePath = path.join("native", "win32", "prebuilds", `win32-${arch}`, "win32-console-mode.node");
-            const candidates = [
-                path.join(moduleDir, "..", nativePath),
-                path.join(moduleDir, nativePath),
-                path.join(path.dirname(process.execPath), nativePath),
-            ];
-            for (const modulePath of candidates) {
+            for (const modulePath of getNativeModuleCandidates(nativePath)) {
                 try {
                     const helper = cjsRequire(modulePath);
                     helper.enableVirtualTerminalInput?.();

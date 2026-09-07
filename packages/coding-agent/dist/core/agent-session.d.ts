@@ -13,15 +13,15 @@
  * Modes use this class and add their own I/O layer on top.
  */
 import type { Agent, AgentEvent, AgentMessage, AgentState, AgentTool, ThinkingLevel } from "@liyuan/agent-core";
-import type { ImageContent, Model, TextContent } from "@liyuan/ai/compat";
+import type { ImageContent, Message, Model, TextContent } from "@liyuan/ai/compat";
 import { type BashResult } from "./bash-executor.ts";
 import { type CompactionResult } from "./compaction/index.ts";
 import { type ContextUsage, type ExtensionCommandContextActions, type ExtensionErrorListener, type ExtensionMode, ExtensionRunner, type ExtensionUIContext, type InputSource, type ReplacedSessionContext, type SessionStartEvent, type ShutdownHandler, type ToolDefinition, type ToolInfo } from "./extensions/index.ts";
 import type { CustomMessage } from "./messages.ts";
-import type { ModelRegistry } from "./model-registry.ts";
+import type { ModelRuntime } from "./model-runtime.ts";
 import { type PromptTemplate } from "./prompt-templates.ts";
 import type { ResourceLoader } from "./resource-loader.ts";
-import type { BranchSummaryEntry, SessionManager } from "./session-manager.ts";
+import type { BranchSummaryEntry, SessionEntry, SessionManager } from "./session-manager.ts";
 import type { SettingsManager } from "./settings-manager.ts";
 import { type BashOperations } from "./tools/bash.ts";
 /** Parsed skill block from a user message */
@@ -44,12 +44,17 @@ export type AgentSessionEvent = Exclude<AgentEvent, {
     messages: AgentMessage[];
     willRetry: boolean;
 } | {
+    type: "agent_settled";
+} | {
     type: "queue_update";
     steering: readonly string[];
     followUp: readonly string[];
 } | {
     type: "compaction_start";
     reason: "manual" | "threshold" | "overflow";
+} | {
+    type: "entry_appended";
+    entry: SessionEntry;
 } | {
     type: "session_info_changed";
     name: string | undefined;
@@ -74,6 +79,30 @@ export type AgentSessionEvent = Exclude<AgentEvent, {
     success: boolean;
     attempt: number;
     finalError?: string;
+} | {
+    type: "summarization_retry_scheduled";
+    attempt: number;
+    maxAttempts: number;
+    delayMs: number;
+    errorMessage: string;
+} | {
+    type: "summarization_retry_attempt_start";
+    source: "branchSummary";
+} | {
+    type: "summarization_retry_attempt_start";
+    source: "compaction";
+    reason: "manual" | "threshold" | "overflow";
+} | {
+    type: "summarization_retry_finished";
+} | {
+    type: "auto_retry_end";
+    success: boolean;
+    attempt: number;
+    finalError?: string;
+} | {
+    type: "bash_execution_update";
+    id?: string;
+    delta: string;
 };
 /** Listener function for agent session events */
 export type AgentSessionEventListener = (event: AgentSessionEvent) => void;
@@ -87,12 +116,12 @@ export interface AgentSessionConfig {
         model: Model<any>;
         thinkingLevel?: ThinkingLevel;
     }>;
-    /** Resource loader for skills, prompts, themes, context files, system prompt */
+    /** Resource loader for extensions, skills, prompts, themes, context files, and system prompt */
     resourceLoader: ResourceLoader;
     /** SDK custom tools registered outside extensions */
     customTools?: ToolDefinition[];
-    /** Model registry for API key resolution and model discovery */
-    modelRegistry: ModelRegistry;
+    /** Canonical model/auth runtime used by coding-agent internals. */
+    modelRuntime: ModelRuntime;
     /** Initial active built-in tool names. Default: [read, bash, edit, write] */
     initialActiveToolNames?: string[];
     /** Optional allowlist of tool names. When provided, only these tool names are exposed. */
@@ -123,8 +152,10 @@ export interface ExtensionBindings {
 }
 /** Options for AgentSession.prompt() */
 export interface PromptOptions {
-    /** Whether to expand file-based prompt templates (default: true) */
+    /** Whether to dispatch extension commands and expand skill commands and prompt templates (default: true) */
     expandPromptTemplates?: boolean;
+    /** Generate another reply to the user message at the current leaf, without appending it again. */
+    reuseUserMessage?: boolean;
     /** Image attachments */
     images?: ImageContent[];
     /** When streaming, how to queue the message: "steer" (interrupt) or "followUp" (wait). Required if streaming. */
@@ -133,6 +164,11 @@ export interface PromptOptions {
     source?: InputSource;
     /** Internal hook used by RPC mode to observe prompt preflight acceptance or rejection. */
     preflightResult?: (success: boolean) => void;
+}
+/** Options for model/thinking mutations. */
+export interface ModelMutationOptions {
+    /** Persist the new value to global defaults. Defaults to session-only. */
+    persist?: boolean;
 }
 /** Result from cycleModel() */
 export interface ModelCycleResult {
@@ -167,19 +203,24 @@ export declare class AgentSession {
     private _scopedModels;
     private _unsubscribeAgent?;
     private _eventListeners;
+    private _isAgentRunActive;
+    private _idleWaitPromise;
+    private _resolveIdleWait;
     /** Tracks pending steering messages for UI display. Removed when delivered. */
     private _steeringMessages;
     /** Tracks pending follow-up messages for UI display. Removed when delivered. */
     private _followUpMessages;
     /** Messages queued to be included with the next user prompt as context ("asides"). */
     private _pendingNextTurnMessages;
+    /** Context-only custom messages queued during a run, flushed once the current turn's tool results are in. */
+    private _pendingCustomMessages;
     private _compactionAbortController;
     private _autoCompactionAbortController;
     private _overflowRecoveryAttempted;
     private _branchSummaryAbortController;
     private _retryAbortController;
     private _retryAttempt;
-    private _bashAbortController;
+    private readonly _bashAbortControllers;
     private _pendingBashMessages;
     private _extensionRunner;
     private _turnIndex;
@@ -200,7 +241,7 @@ export declare class AgentSession {
     private _extensionShutdownHandler?;
     private _extensionErrorListener?;
     private _extensionErrorUnsubscriber?;
-    private _modelRegistry;
+    private _modelRuntime;
     private _toolRegistry;
     private _toolDefinitions;
     private _toolPromptSnippets;
@@ -209,10 +250,9 @@ export declare class AgentSession {
     private _baseSystemPromptOptions;
     private _systemPromptOverride?;
     constructor(config: AgentSessionConfig);
-    /** Model registry for API key resolution and model discovery */
-    get modelRegistry(): ModelRegistry;
+    get modelRuntime(): ModelRuntime;
     private _getRequiredRequestAuth;
-    private _getCompactionRequestAuth;
+    private _getSummarizationRequestAuth;
     /**
      * Install tool hooks once on the Agent instance.
      *
@@ -222,19 +262,25 @@ export declare class AgentSession {
      * happens here instead of in wrappers.
      */
     private _installAgentToolHooks;
+    private _compactBeforeNextAssistantResponse;
     private _installAgentNextTurnRefresh;
     /** Emit an event to all listeners */
     private _emit;
     private _emitQueueUpdate;
+    private _emitSessionCompactFailed;
+    private _getIdleWaitPromise;
+    private _resolveIdleWaitIfIdle;
+    private _emitAgentSettled;
     private _lastAssistantMessage;
+    private _transientMessages;
+    private _discardTransientMessages;
     /** Internal handler for agent events - shared by subscribe and reconnect */
     private _handleAgentEvent;
     private _willRetryAfterAgentEnd;
-    /** Extract text content from a message */
-    private _getUserMessageText;
     /** Find the last assistant message in agent state (including aborted ones) */
     private _findLastAssistantMessage;
     private _replaceMessageInPlace;
+    /** Emit extension events based on agent events */
     private _emitExtensionEvent;
     /**
      * Subscribe to agent events.
@@ -242,17 +288,8 @@ export declare class AgentSession {
      * Multiple listeners can be added. Returns unsubscribe function for this listener.
      */
     subscribe(listener: AgentSessionEventListener): () => void;
-    /**
-     * Temporarily disconnect from agent events.
-     * User listeners are preserved and will receive events again after resubscribe().
-     * Used internally during operations that need to pause event processing.
-     */
+    /** Disconnect from agent events during disposal. */
     private _disconnectFromAgent;
-    /**
-     * Reconnect to agent events after _disconnectFromAgent().
-     * Preserves all existing listeners.
-     */
-    private _reconnectToAgent;
     /**
      * Remove all listeners and disconnect from agent.
      * Call this when completely done with the session.
@@ -264,8 +301,10 @@ export declare class AgentSession {
     get model(): Model<any> | undefined;
     /** Current thinking level */
     get thinkingLevel(): ThinkingLevel;
-    /** Whether agent is currently streaming a response */
+    /** Whether the session is currently processing an agent run or post-run continuation. */
     get isStreaming(): boolean;
+    /** Whether the session has no active agent run, retry, auto-compaction, or queued continuation. */
+    get isIdle(): boolean;
     /** Current effective system prompt (includes any per-turn extension modifications) */
     get systemPrompt(): string;
     /** Current retry attempt (0 if not retrying) */
@@ -328,6 +367,13 @@ export declare class AgentSession {
      * @throws Error if no model selected or no API key available (when not streaming)
      */
     prompt(text: string, options?: PromptOptions): Promise<void>;
+    /** Record an already-produced message in both durable and in-memory history. Does not start a turn. */
+    appendMessage(message: Message): string;
+    /** Select an exact leaf without putting user/custom messages into the editor. */
+    setLeaf(entryId: string | null): void;
+    /**
+     * Try to execute an extension command. Returns true if command was found and executed.
+     */
     private _tryExecuteExtensionCommand;
     /**
      * Expand skill commands (/skill:name args) to their full content.
@@ -352,7 +398,13 @@ export declare class AgentSession {
      * @throws Error if text is an extension command
      */
     followUp(text: string, images?: ImageContent[]): Promise<void>;
+    /**
+     * Internal: Queue a steering message (already expanded, no extension command check).
+     */
     private _queueSteer;
+    /**
+     * Internal: Queue a follow-up message (already expanded, no extension command check).
+     */
     private _queueFollowUp;
     /**
      * Throw an error if the text is an extension command.
@@ -361,8 +413,9 @@ export declare class AgentSession {
     /**
      * Send a custom message to the session. Creates a CustomMessageEntry.
      *
-     * Handles three cases:
+     * Handles four cases:
      * - Streaming: queues message, processed when loop pulls from queue
+     * - Streaming + triggerTurn false: appended to state/session once the current turn ends
      * - Not streaming + triggerTurn: appends to state/session, starts new turn
      * - Not streaming + no trigger: appends to state/session, no turn
      *
@@ -374,15 +427,23 @@ export declare class AgentSession {
         triggerTurn?: boolean;
         deliverAs?: "steer" | "followUp" | "nextTurn";
     }): Promise<void>;
+    private _appendCustomMessage;
+    /**
+     * Append custom messages queued while the agent was running.
+     * Called once the current turn's tool results are in agent state and session history.
+     */
+    private _flushPendingCustomMessages;
     /**
      * Send a user message to the agent. Always triggers a turn.
      * When the agent is streaming, use deliverAs to specify how to queue the message.
      *
      * @param content User message content (string or content array)
      * @param options.deliverAs Delivery mode when streaming: "steer" or "followUp"
+     * @param options.expandPromptTemplates Whether to dispatch extension commands and expand skill commands and prompt templates. Default: false.
      */
     sendUserMessage(content: string | (TextContent | ImageContent)[], options?: {
         deliverAs?: "steer" | "followUp";
+        expandPromptTemplates?: boolean;
     }): Promise<void>;
     /**
      * Clear all queued messages and return them.
@@ -402,35 +463,42 @@ export declare class AgentSession {
     get resourceLoader(): ResourceLoader;
     /**
      * Abort current operation and wait for agent to become idle.
+     * Also cancels compaction/bash side-runs and drops queued steer/follow-ups
+     * so Stop cannot be followed by a spontaneous extra turn.
+     * Caps wait so a hung provider stream cannot leave Stop blocked forever.
      */
     abort(): Promise<void>;
+    waitForIdle(): Promise<void>;
     private _emitModelSelect;
     /**
      * Set model directly.
-     * Validates that auth is configured, saves to session and settings.
+     * Validates that auth is configured and saves to the session transcript.
+     * Persists to global defaults only when options.persist is true.
      * @throws Error if no auth is configured for the model
      */
-    setModel(model: Model<any>): Promise<void>;
+    setModel(model: Model<any>, options?: ModelMutationOptions): Promise<void>;
+    private _addPersistedDefaultToNonEmptyScope;
     /**
      * Cycle to next/previous model.
      * Uses scoped models (from --models flag) if available, otherwise all available models.
      * @param direction - "forward" (default) or "backward"
      * @returns The new model info, or undefined if only one model available
      */
-    cycleModel(direction?: "forward" | "backward"): Promise<ModelCycleResult | undefined>;
+    cycleModel(direction?: "forward" | "backward", options?: ModelMutationOptions): Promise<ModelCycleResult | undefined>;
     private _cycleScopedModel;
     private _cycleAvailableModel;
     /**
      * Set thinking level.
      * Clamps to model capabilities based on available thinking levels.
-     * Saves to session and settings only if the level actually changes.
+     * Saves the clamped level to the session transcript only if the level actually changes.
+     * Persists the requested level to global defaults only when options.persist is true.
      */
-    setThinkingLevel(level: ThinkingLevel): void;
+    setThinkingLevel(level: ThinkingLevel, options?: ModelMutationOptions): void;
     /**
      * Cycle to next thinking level.
      * @returns New level, or undefined if model doesn't support thinking
      */
-    cycleThinkingLevel(): ThinkingLevel | undefined;
+    cycleThinkingLevel(options?: ModelMutationOptions): ThinkingLevel | undefined;
     /**
      * Get available thinking levels for current model.
      * The provider will clamp to what the specific model supports internally.
@@ -453,9 +521,21 @@ export declare class AgentSession {
      * Saves to settings.
      */
     setFollowUpMode(mode: "all" | "one-at-a-time"): void;
+    /** Generate Pi's built-in compaction summary for manual and automatic compaction. */
+    private _runDefaultCompaction;
     /**
      * Manually compact the session context.
-     * Aborts current agent operation first.
+     *
+     * This is the manual entry point used by `/compact`, RPC, and extensions. It is
+     * separate from automatic threshold/overflow compaction, which enters through
+     * `_checkCompaction()` and `_runAutoCompaction()`. After preparation and the
+     * `session_before_compact` hook, both paths call the lower-level `compact()`
+     * function imported from `./compaction/index.ts`, unless the hook cancels or
+     * supplies a custom result.
+     *
+     * Aborts the current agent operation first. Manual compaction never retries or
+     * continues the interrupted agent turn.
+     *
      * @param customInstructions Optional instructions for the compaction summary
      */
     compact(customInstructions?: string): Promise<CompactionResult>;
@@ -467,7 +547,38 @@ export declare class AgentSession {
      * Cancel in-progress branch summarization.
      */
     abortBranchSummary(): void;
+    /**
+     * Dispatch automatic compaction after `agent_end` or before prompt submission.
+     * Manual compaction does not call this method; it enters through `compact()`.
+     *
+     * Automatic cases:
+     * 1. Overflow with retry: a context-overflow error or recoverable length stop;
+     *    remove the failed assistant message, compact, and retry the turn once.
+     * 2. Overflow without retry: a successful response exceeded the configured
+     *    context window; compact but preserve the completed response.
+     * 3. Threshold without retry: valid or estimated context usage crossed the
+     *    configured threshold; compact without retrying the completed response.
+     *
+     * Each case calls `_runAutoCompaction()`. After preparation and the
+     * `session_before_compact` hook, that method calls the lower-level `compact()`
+     * function imported from `./compaction/index.ts`, unless the hook cancels or
+     * supplies a custom result.
+     *
+     * @param assistantMessage The assistant message to check
+     * @param skipAbortedCheck If false, include aborted messages (for pre-prompt check). Default: true
+     * @returns Whether the post-run loop should call `agent.continue()` for overflow recovery or queued messages
+     */
     private _checkCompaction;
+    /**
+     * Execute threshold or overflow compaction. Manual compaction uses
+     * `AgentSession.compact()` instead. Both paths call the lower-level `compact()`
+     * function imported from `./compaction/index.ts` after preparation and extension
+     * interception.
+     *
+     * @param reason Automatic trigger selected by `_checkCompaction()`
+     * @param willRetry Whether to continue the interrupted turn after overflow compaction
+     * @returns Whether the post-run loop should call `agent.continue()`
+     */
     private _runAutoCompaction;
     /**
      * Toggle auto-compaction setting.
@@ -492,6 +603,17 @@ export declare class AgentSession {
      * Context overflow errors are NOT retryable (handled by compaction instead).
      */
     private _isRetryableError;
+    /**
+     * Retry policy + callbacks shared by compaction and branch-summary summarization calls.
+     * Uses the same `settings.retry` budget/backoff as agent-turn retries so a single transient
+     * stream drop no longer fails the whole operation. `source` carries the context
+     * the TUI needs to render the retry and recreate the underlying indicator.
+     */
+    private _summarizationRetryCallbacks;
+    /**
+     * Prepare a retryable error for continuation with exponential backoff.
+     * @returns true if the caller should continue the agent, false otherwise
+     */
     private _prepareRetry;
     /**
      * Cancel in-progress retry.
@@ -511,10 +633,12 @@ export declare class AgentSession {
      * @param command The bash command to execute
      * @param onChunk Optional streaming callback for output
      * @param options.excludeFromContext If true, command output won't be sent to LLM (!! prefix)
+     * @param options.id Optional identifier included in bash execution update events
      * @param options.operations Custom BashOperations for remote execution
      */
     executeBash(command: string, onChunk?: (chunk: string) => void, options?: {
         excludeFromContext?: boolean;
+        id?: string;
         operations?: BashOperations;
     }): Promise<BashResult>;
     /**
@@ -570,18 +694,22 @@ export declare class AgentSession {
         entryId: string;
         text: string;
     }>;
-    private _extractUserMessageText;
     /**
-     * Get session statistics.
+     * Get session statistics. Aggregates over ALL session entries (including
+     * history that was compacted away), so token/cost totals reflect what was
+     * actually billed across the session.
      */
     getSessionStats(): SessionStats;
     getContextUsage(): ContextUsage | undefined;
     /**
      * Export session to HTML.
      * @param outputPath Optional output path (defaults to session directory)
+     * @param options Optional export presentation settings
      * @returns Path to exported file
      */
-    exportToHtml(outputPath?: string): Promise<string>;
+    exportToHtml(outputPath?: string, options?: {
+        themeName?: string;
+    }): Promise<string>;
     /**
      * Export the current session branch to a JSONL file.
      * Writes the session header followed by all entries on the current branch path.

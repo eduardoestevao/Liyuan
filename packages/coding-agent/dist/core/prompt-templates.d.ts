@@ -21,6 +21,7 @@ export declare function parseCommandArgs(argsString: string): string[];
  * - $1, $2, ... for positional args
  * - $@ and $ARGUMENTS for all args
  * - ${N:-default} for positional arg N with default when missing/empty
+ * - ${@:-default} and ${ARGUMENTS:-default} for all args with a default when empty
  * - ${@:N} for args from Nth onwards (bash-style slicing)
  * - ${@:N:L} for L args starting from Nth
  *

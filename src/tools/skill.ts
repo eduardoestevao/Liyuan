@@ -30,6 +30,8 @@ export interface StageSkillLike {
 	name: string;
 	description: string;
 	body: string;
+	scope?: "global" | "card";
+	shadowed?: boolean;
 }
 
 export interface StageSkillDeps {
@@ -44,9 +46,10 @@ export interface StageSkillDeps {
 		name: string;
 		description: string;
 		body: string;
+		scope?: "global" | "card";
 	}) => { dir: string };
 	/** 删除整个 skill 目录（含附件）；目录不存在时抛 */
-	deleteStageSkill?: (dir: string) => void;
+	deleteStageSkill?: (dir: string, scope?: "global" | "card") => void;
 }
 
 /**
@@ -67,6 +70,7 @@ export const stageSkillList: ToolSpec<StageSkillDeps> = {
 		type: "object",
 		properties: {
 			name: { type: "string", description: "只看这一条的全文（名称或存储目录名）" },
+			scope: { type: "string", enum: ["global", "card"], description: "指定全局或当前卡的来源" },
 		},
 		required: [],
 	}),
@@ -81,18 +85,21 @@ export const stageSkillList: ToolSpec<StageSkillDeps> = {
 		}
 		if (all.length === 0) return { text: "台上 skill 库是空的。", activity: "列 skill · 0 条" };
 
+		const scope = strArg(args, "scope");
+		if (scope) all = all.filter((s) => s.scope === scope);
 		const want = strArg(args, "name");
 		if (want) {
-			const hit = all.find((s) => s.name === want || s.dir === want)
-				?? all.find((s) => s.name.includes(want) || s.dir.includes(want));
+			const matches = all.filter((s) => s.name === want || s.dir === want);
+			if (matches.length > 1) return { text: "该名称有多个来源，请指定 scope（global/card）。", isError: true };
+			const hit = matches[0] ?? all.find((s) => s.name.includes(want) || s.dir.includes(want));
 			if (!hit) return { text: `没有名为「${want}」的 skill（用不带参数的 stage_skill_list 看全部）。` };
 			return {
-				text: `「${hit.name}」（目录 ${hit.dir}）\n说明：${hit.description}\n\n${hit.body}`,
+				text: `「${hit.name}」（目录 ${hit.dir}，scope=${hit.scope ?? "global"}）\n说明：${hit.description}\n\n${hit.body}`,
 				activity: `读 skill「${hit.name}」`,
 			};
 		}
 
-		const lines = all.map((s) => `- ${s.name}｜${s.body.length} 字｜目录 ${s.dir}\n  ${s.description}`);
+		const lines = all.map((s) => `- ${s.name}｜${s.body.length} 字｜目录 ${s.dir}｜scope=${s.scope ?? "global"}${s.shadowed ? "（被当前卡同名技能覆盖）" : ""}\n  ${s.description}`);
 		return {
 			text: `台上 skill ${all.length} 条：\n${lines.join("\n")}`,
 			activity: `列 skill · ${all.length} 条`,
@@ -121,6 +128,7 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 			name: { type: "string", description: "skill 名称" },
 			description: { type: "string", description: "一句话说清「什么时候该读这条」" },
 			body: { type: "string", description: "正文（方法论本身，Markdown）" },
+			scope: { type: "string", enum: ["global", "card"], description: "修改时沿用 list 的来源；新建默认当前卡，没有卡则全局" },
 		},
 		required: ["name", "description", "body"],
 	}),
@@ -138,14 +146,15 @@ export const stageSkillWrite: ToolSpec<StageSkillDeps> = {
 
 		let r: { dir: string };
 		try {
-			r = deps.saveStageSkill({
-				...(dir ? { dir } : {}),
+				r = deps.saveStageSkill({
+					...(dir ? { dir } : {}),
+					...(args.scope === "global" || args.scope === "card" ? { scope: args.scope } : {}),
 				name,
 				description,
 				body,
 			});
 		} catch (err) {
-			return { text: `写入 skill 失败：${errText(err)}` };
+				return { text: `写入 skill 失败：${errText(err)}` };
 		}
 		return {
 			text: `已${dir ? "修改" : "新建"} skill「${name}」（目录 ${r.dir}）。剧情模型下一拍装载即生效。`,
@@ -173,6 +182,7 @@ export const stageSkillDelete: ToolSpec<StageSkillDeps> = {
 		type: "object",
 		properties: {
 			dir: { type: "string", description: "skill 存储目录名（从 stage_skill_list 取）" },
+			scope: { type: "string", enum: ["global", "card"], description: "要删除的来源，与 list 返回值一致" },
 		},
 		required: ["dir"],
 	}),
@@ -183,7 +193,7 @@ export const stageSkillDelete: ToolSpec<StageSkillDeps> = {
 		if (!dir) return { text: "缺少 dir 参数（目录名从 stage_skill_list 取）。" };
 
 		try {
-			deps.deleteStageSkill(dir);
+			deps.deleteStageSkill(dir, args.scope === "global" || args.scope === "card" ? args.scope : undefined);
 		} catch (err) {
 			return { text: `删除 skill 失败：${errText(err)}` };
 		}

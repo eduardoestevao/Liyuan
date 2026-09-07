@@ -3,6 +3,7 @@
  */
 import type { ThinkingLevel } from "@liyuan/agent-core";
 import type { ExtensionFlag } from "../core/extensions/types.ts";
+import type { TuiMode } from "../core/settings-manager.ts";
 export type Mode = "text" | "json" | "rpc";
 export interface Args {
     provider?: string;
@@ -36,10 +37,12 @@ export interface Args {
     promptTemplates?: string[];
     noPromptTemplates?: boolean;
     themes?: string[];
+    useTheme?: string;
     noThemes?: boolean;
     noContextFiles?: boolean;
     listModels?: string | true;
     offline?: boolean;
+    tuiMode?: TuiMode;
     verbose?: boolean;
     projectTrustOverride?: boolean;
     messages: string[];
@@ -52,6 +55,7 @@ export interface Args {
     }>;
 }
 export declare function isValidThinkingLevel(level: string): level is ThinkingLevel;
+export declare function normalizeSessionName(value: string): string | undefined;
 export declare function parseArgs(args: string[]): Args;
 export declare function printHelp(extensionFlags?: ExtensionFlag[]): void;
 //# sourceMappingURL=args.d.ts.map

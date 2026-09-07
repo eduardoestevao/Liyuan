@@ -1,6 +1,10 @@
 import { type Component } from "@liyuan/tui";
 import type { AgentSession } from "../../../core/agent-session.ts";
 import type { ReadonlyFooterDataProvider } from "../../../core/footer-data-provider.ts";
+/**
+ * Format token counts for compact footer display.
+ */
+export declare function formatTokens(count: number): string;
 export declare function formatCwdForFooter(cwd: string, home: string | undefined): string;
 /**
  * Footer component that shows pwd, token stats, and context usage.

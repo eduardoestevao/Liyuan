@@ -2,18 +2,23 @@
  * Interactive mode for the coding agent.
  * Handles TUI rendering and user interaction, delegating business logic to AgentSession.
  */
-import { type ImageContent } from "@liyuan/ai/compat";
+import type { ImageContent } from "@liyuan/ai/compat";
+import type { Terminal } from "@liyuan/tui";
+import { type TUI, TuiAltScreen, TuiMainScreen } from "@liyuan/tui";
 import { type AgentSessionRuntime } from "../../core/agent-session-runtime.ts";
+import type { AgentSessionRuntimeDiagnostic } from "../../core/agent-session-services.ts";
 import { SessionManager } from "../../core/session-manager.ts";
+import type { FullscreenExitOutput, TuiMode } from "../../core/settings-manager.ts";
 import { type LatestPiRelease } from "../../utils/version-check.ts";
 export declare function formatResumeCommand(sessionManager: SessionManager): string | undefined;
-export declare function isApiKeyLoginProvider(providerId: string, oauthProviderIds: ReadonlySet<string>, builtInProviderIds?: ReadonlySet<string>): boolean;
 /**
  * Options for InteractiveMode initialization.
  */
 export interface InteractiveModeOptions {
     /** Providers that were migrated to auth.json (shows warning) */
     migratedProviders?: string[];
+    /** Diagnostics collected before the interactive TUI was initialized. */
+    startupDiagnostics?: AgentSessionRuntimeDiagnostic[];
     /** Warning message if session model couldn't be restored */
     modelFallbackMessage?: string;
     /** Cwd to trust after reload if it gained a .pi directory during this implicitly trusted session. */
@@ -26,12 +31,33 @@ export interface InteractiveModeOptions {
     initialMessages?: string[];
     /** Force verbose startup (overrides quietStartup setting) */
     verbose?: boolean;
+    /** TUI layout mode. */
+    tuiMode?: TuiMode;
+    /** Initial interactive theme setting for this invocation. */
+    initialThemeSetting?: string;
 }
+interface InteractiveTuiOptions {
+    tuiMode: TuiMode;
+    showHardwareCursor: boolean;
+    logDirectory: string;
+    terminal?: Terminal;
+    onRightClickPaste?: () => void;
+    fullscreenCopyOnSelect?: boolean;
+}
+/** Composition root for selecting the interactive terminal renderer. */
+export declare function createInteractiveTui(options: InteractiveTuiOptions): TuiMainScreen | TuiAltScreen;
+/** Stable reference for components while InteractiveMode replaces the active renderer. */
+export declare function createInteractiveTuiReference(getTui: () => TUI): TUI;
 export declare class InteractiveMode {
     private runtimeHost;
+    private renderer;
     private ui;
+    private mainScreenRenderState;
     private loadedResourcesContainer;
     private chatContainer;
+    private documentContainer;
+    private transcriptScrollView;
+    private fullscreenLayoutRoot;
     private pendingMessagesContainer;
     private statusContainer;
     private defaultEditor;
@@ -41,7 +67,10 @@ export declare class InteractiveMode {
     private autocompleteProviderWrappers;
     private fdPath;
     private editorContainer;
+    private activeSelectorToken?;
+    private activeSelectorDispose?;
     private footer;
+    private footerContainer;
     private footerDataProvider;
     private keybindings;
     private version;
@@ -63,12 +92,14 @@ export declare class InteractiveMode {
     private anthropicSubscriptionWarningShown;
     private lastStatusSpacer;
     private lastStatusText;
+    private managedToolStatusStarted;
     private streamingComponent;
     private streamingMessage;
     private pendingTools;
     private toolOutputExpanded;
     private hideThinkingBlock;
     private outputPad;
+    private readonly mermaidMarkdownTransformer;
     private skillCommands;
     private unsubscribe?;
     private signalCleanupHandlers;
@@ -82,7 +113,7 @@ export declare class InteractiveMode {
     private extensionSelector;
     private extensionInput;
     private extensionEditor;
-    private extensionTerminalInputUnsubscribers;
+    private extensionTerminalInputSubscriptions;
     private extensionWidgetsAbove;
     private extensionWidgetsBelow;
     private widgetContainerAbove;
@@ -92,6 +123,7 @@ export declare class InteractiveMode {
     private builtInHeader;
     private customHeader;
     private options;
+    private readonly onRightClickPaste;
     private autoTrustOnReloadCwd;
     private themeController;
     private get session();
@@ -105,6 +137,9 @@ export declare class InteractiveMode {
     private createBaseAutocompleteProvider;
     private setupAutocompleteProvider;
     private showStartupNoticesIfNeeded;
+    private mountInteractiveTui;
+    private stopInteractiveTui;
+    private switchTuiMode;
     init(): Promise<void>;
     /**
      * Update terminal title with session name and cwd.
@@ -147,7 +182,11 @@ export declare class InteractiveMode {
     private formatPathWithSource;
     private formatDiagnostics;
     private showLoadedResources;
+    /**
+     * Initialize the extension system with TUI-based UI context.
+     */
     private bindCurrentSessionExtensions;
+    private applyFullscreenScrollbarSetting;
     private applyRuntimeSettings;
     private rebindCurrentSession;
     private handleFatalRuntimeError;
@@ -156,6 +195,7 @@ export declare class InteractiveMode {
      * Get a registered tool definition by name (for custom rendering).
      */
     private getRegisteredToolDefinition;
+    private getMarkdownTransformers;
     /**
      * Set up keyboard shortcuts registered by extensions.
      */
@@ -166,6 +206,7 @@ export declare class InteractiveMode {
     private setExtensionStatus;
     private showStatusIndicator;
     private clearStatusIndicator;
+    private showWorkingStatusIndicator;
     private setWorkingVisible;
     private setWorkingIndicator;
     private setHiddenThinkingLabel;
@@ -190,6 +231,7 @@ export declare class InteractiveMode {
      */
     private setExtensionHeader;
     private addExtensionTerminalInputListener;
+    private rebindExtensionTerminalInputListeners;
     private clearExtensionTerminalInputListeners;
     /**
      * Create the ExtensionUIContext for extensions.
@@ -204,6 +246,9 @@ export declare class InteractiveMode {
      * Hide the extension selector.
      */
     private hideExtensionSelector;
+    /**
+     * Show a confirmation dialog for extensions.
+     */
     private showExtensionConfirm;
     private promptForMissingSessionCwd;
     /**
@@ -231,18 +276,23 @@ export declare class InteractiveMode {
      * Show a notification for extensions.
      */
     private showExtensionNotify;
+    /** Show a custom component with keyboard focus. Overlay mode renders on top of existing content. */
     private showExtensionCustom;
     /**
      * Show an extension error in the UI.
      */
     private showExtensionError;
     private setupKeyHandlers;
-    private handleClipboardImagePaste;
+    private handleRightClickPaste;
+    private handleClipboardPaste;
+    private handleStartupSubmit;
     private setupEditorSubmitHandler;
     private subscribeToAgent;
     private handleEvent;
     /** Extract text content from a user message */
     private getUserMessageText;
+    /** Show a managed-tool status update in the chat. */
+    private showManagedToolStatus;
     /**
      * Show a status message in the chat.
      *
@@ -250,14 +300,28 @@ export declare class InteractiveMode {
      * we update the previous status line instead of appending new ones to avoid log spam.
      */
     private showStatus;
+    private addCustomEntryToChat;
     private addMessageToChat;
+    private renderSessionItems;
     /**
-     * Render session context to chat. Used for initial load and rebuild after compaction.
-     * @param sessionContext Session context to render
+     * Render session entries to chat. Used for initial load and rebuild after compaction.
+     * @param entries Compaction-aware session entries to render
      * @param options.updateFooter Update footer state
      * @param options.populateHistory Add user messages to editor history
      */
-    private renderSessionContext;
+    private renderSessionEntries;
+    /**
+     * Render billing usage for a compaction or branch summary. The notice is derived
+     * from persisted summary usage and is not stored as a separate session entry.
+     */
+    private addCompactionCostNotice;
+    /**
+     * Show a transcript notice when a completed assistant message paid for a
+     * significant cache miss. Only states observable facts: the miss itself,
+     * a model switch, or an idle gap past the cache TTL.
+     */
+    private maybeShowCacheMissNotice;
+    private addCacheMissNotice;
     renderInitialMessages(): void;
     private renderProjectTrustWarningIfNeeded;
     getUserInput(): Promise<string>;
@@ -284,6 +348,9 @@ export declare class InteractiveMode {
      * paste / Kitty / modifyOtherKeys sequences.
      */
     private uncaughtCrash;
+    /**
+     * Check if shutdown was requested and perform shutdown if so.
+     */
     private checkShutdownRequested;
     private registerSignalHandlers;
     private unregisterSignalHandlers;
@@ -295,8 +362,10 @@ export declare class InteractiveMode {
     private cycleModel;
     private toggleToolOutputExpansion;
     private setToolsExpanded;
+    /** Update rendered assistant messages without rebuilding live tool components. */
+    private updateThinkingBlockVisibility;
     private toggleThinkingBlockVisibility;
-    private openExternalEditor;
+    private handleOpenExternalEditor;
     clearEditor(): void;
     showError(errorMessage: string): void;
     showWarning(warningMessage: string): void;
@@ -319,15 +388,19 @@ export declare class InteractiveMode {
     private flushCompactionQueue;
     /** Move pending bash components from pending area to chat */
     private flushPendingBashComponents;
+    private disposeActiveSelector;
     /**
      * Shows a selector component in place of the editor.
      * @param create Factory that receives a `done` callback and returns the component and focus target
      */
     private showSelector;
     private showSettingsSelector;
+    private handleThinkingCommand;
+    private selectThinkingLevel;
+    private showThinkingSelector;
     private handleModelCommand;
     private findExactModelMatch;
-    private getModelCandidates;
+    /** Update the footer's available provider count from the current snapshot without refreshing catalogs. */
     private updateAvailableProviderCount;
     private maybeWarnAboutAnthropicSubscriptionAuth;
     private maybeSaveImplicitProjectTrustAfterReload;
@@ -341,13 +414,19 @@ export declare class InteractiveMode {
     private handleResumeSession;
     private getLoginProviderOptions;
     private getLogoutProviderOptions;
+    private findLoginProviderOptions;
+    private handleLoginCommand;
+    private startProviderLogin;
     private showLoginAuthTypeSelector;
     private showLoginProviderSelector;
     private showOAuthSelector;
     private completeProviderAuthentication;
-    private showBedrockSetupDialog;
+    private showAmbientAuthDialog;
     private showApiKeyLoginDialog;
-    private showOAuthLoginSelect;
+    private showAuthSelect;
+    private showAuthPrompt;
+    private notifyAuthDialog;
+    private loginProvider;
     private showLoginDialog;
     private handleReloadCommand;
     private handleExportCommand;
@@ -375,6 +454,7 @@ export declare class InteractiveMode {
     private checkDaxnutsEasterEgg;
     private handleBashCommand;
     private handleCompactCommand;
-    stop(): void;
+    stop(fullscreenExitOutput?: FullscreenExitOutput): void;
 }
+export {};
 //# sourceMappingURL=interactive-mode.d.ts.map

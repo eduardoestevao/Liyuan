@@ -22,10 +22,11 @@ export function assistantToolDefs<D>(specs: ToolSpec<D>[], deps: D, language: st
 			description: spec.description(ctx),
 			// 裸 JSON Schema 直接交给校验层（见文件头）
 			parameters: spec.parameters(ctx) as unknown as TSchema,
-			async execute(_id, params) {
-				const r = await spec.run((params ?? {}) as Record<string, unknown>, deps, ctx);
-				return { content: [{ type: "text" as const, text: r.text }] };
-			},
+				async execute(_id, params) {
+					const r = await spec.run((params ?? {}) as Record<string, unknown>, deps, ctx);
+					if (r.isError) throw new Error(r.text);
+					return { content: [{ type: "text" as const, text: r.text }], details: r.details };
+				},
 		}),
 	);
 }

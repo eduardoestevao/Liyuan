@@ -6,6 +6,10 @@ declare const lsSchema: Type.TObject<{
     path: Type.TOptional<Type.TString>;
     limit: Type.TOptional<Type.TNumber>;
 }>;
+export declare const lsToolSystemPromptContribution: {
+    readonly snippet: "List directory contents";
+    readonly guidelines: readonly [];
+};
 export type LsToolInput = Static<typeof lsSchema>;
 export interface LsToolDetails {
     truncation?: TruncationResult;

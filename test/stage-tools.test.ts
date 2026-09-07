@@ -37,7 +37,7 @@ test("工具清单：注入世界书写侧依赖后，写侧/列举/启停才上
 	);
 	assert.deepEqual(
 		full.map((t) => t.name).sort(),
-		["lorebook_list", "lorebook_search", "lorebook_toggle", "lorebook_write", "memory_search", "world_state_get"],
+		["lorebook_list", "lorebook_read", "lorebook_search", "lorebook_toggle", "lorebook_write", "memory_search", "world_state_get"],
 	);
 });
 

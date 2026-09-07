@@ -7,6 +7,10 @@ declare const readSchema: Type.TObject<{
     offset: Type.TOptional<Type.TNumber>;
     limit: Type.TOptional<Type.TNumber>;
 }>;
+export declare const readToolSystemPromptContribution: {
+    readonly snippet: "Read file contents";
+    readonly guidelines: readonly ["Use read to examine files instead of cat or sed."];
+};
 export type ReadToolInput = Static<typeof readSchema>;
 export interface ReadToolDetails {
     truncation?: TruncationResult;

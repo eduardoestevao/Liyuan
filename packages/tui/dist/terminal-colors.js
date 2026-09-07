@@ -16,7 +16,7 @@ function parseOscHexChannel(channel) {
     return Math.round((parseInt(channel, 16) / max) * 255);
 }
 const OSC11_BACKGROUND_COLOR_RESPONSE_PATTERN = /^\x1b\]11;([^\x07\x1b]*)(?:\x07|\x1b\\)$/i;
-const COLOR_SCHEME_REPORT_PATTERN = /^\x1b\[\?997;(1|2)n$/;
+const COLOR_SCHEME_REPORT_PATTERN = /^(?:\x1b\[\?997;(1|2)n)+$/;
 export function isOsc11BackgroundColorResponse(data) {
     return OSC11_BACKGROUND_COLOR_RESPONSE_PATTERN.test(data);
 }

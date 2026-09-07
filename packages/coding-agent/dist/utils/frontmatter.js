@@ -1,7 +1,8 @@
 import { parse } from "yaml";
+import { stripBom } from "./text.js";
 const normalizeNewlines = (value) => value.replace(/\r\n/g, "\n").replace(/\r/g, "\n");
 const extractFrontmatter = (content) => {
-    const normalized = normalizeNewlines(content);
+    const normalized = normalizeNewlines(stripBom(content));
     if (!normalized.startsWith("---")) {
         return { yamlString: null, body: normalized };
     }

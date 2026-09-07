@@ -3,8 +3,9 @@ import { calculateCost, clampThinkingLevel } from "../models.js";
 import { formatProviderError, normalizeProviderError } from "../utils/error-body.js";
 import { AssistantMessageEventStream } from "../utils/event-stream.js";
 import { providerHeadersToRecord } from "../utils/headers.js";
+import { getPiUserAgent } from "../utils/pi-user-agent.js";
 import { sanitizeSurrogates } from "../utils/sanitize-unicode.js";
-import { convertMessages, convertTools, isThinkingPart, mapStopReason, mapToolChoice, retainThoughtSignature, } from "./google-shared.js";
+import { convertMessages, convertTools, isThinkingPart, mapStopReason, resolveGoogleFunctionCallingMode, resolveGoogleThinkingLevel, retainThoughtSignature, retryGoogleRequest, supportsGoogleStrictToolSampling, } from "./google-shared.js";
 import { buildBaseOptions } from "./simple-options.js";
 // Counter for generating unique tool call IDs
 let toolCallCounter = 0;
@@ -25,10 +26,13 @@ export const stream = (model, context, options) => {
                 totalTokens: 0,
                 cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, total: 0 },
             },
-            stopReason: "stop",
+            stopReason: "pending",
             timestamp: Date.now(),
         };
         try {
+            if (options?.fetch && options.fetch !== globalThis.fetch) {
+                throw new Error("Custom fetch is not supported by the Google Generative AI adapter");
+            }
             const apiKey = options?.apiKey;
             if (!apiKey) {
                 throw new Error(`No API key for provider: ${model.provider}`);
@@ -39,12 +43,16 @@ export const stream = (model, context, options) => {
             if (nextParams !== undefined) {
                 params = nextParams;
             }
-            const googleStream = await client.models.generateContentStream(params);
+            const googleCompat = model.compat;
+            const useStreaming = googleCompat?.streaming !== false;
+            const chunks = useStreaming
+                ? await retryGoogleRequest(() => client.models.generateContentStream(params), options)
+                : [await retryGoogleRequest(() => client.models.generateContent(params), options)];
             stream.push({ type: "start", partial: output });
             let currentBlock = null;
             const blocks = output.content;
             const blockIndex = () => blocks.length - 1;
-            for await (const chunk of googleStream) {
+            for await (const chunk of chunks) {
                 // @google/genai documents GenerateContentResponse.responseId as an output-only field
                 // used to identify each response. Keep the first non-empty one from the stream.
                 output.responseId ||= chunk.responseId;
@@ -152,8 +160,9 @@ export const stream = (model, context, options) => {
                     }
                 }
                 if (candidate?.finishReason) {
+                    output.rawStopReason = candidate.finishReason;
                     output.stopReason = mapStopReason(candidate.finishReason);
-                    if (output.content.some((b) => b.type === "toolCall")) {
+                    if (output.content.some((b) => b.type === "toolCall") && output.stopReason === "stop") {
                         output.stopReason = "toolUse";
                     }
                 }
@@ -197,8 +206,14 @@ export const stream = (model, context, options) => {
             if (options?.signal?.aborted) {
                 throw new Error("Request was aborted");
             }
+            if (output.stopReason === "pending") {
+                throw new Error("Google stream ended without a finish reason");
+            }
             if (output.stopReason === "aborted" || output.stopReason === "error") {
-                throw new Error("An unknown error occurred");
+                const errorMessage = output.rawStopReason
+                    ? `Provider stopped with: ${output.rawStopReason}`
+                    : "An unknown error occurred";
+                throw new Error(errorMessage);
             }
             stream.push({ type: "done", reason: output.stopReason, message: output });
             stream.end();
@@ -223,19 +238,22 @@ export const streamSimple = (model, context, options) => {
     if (!apiKey) {
         throw new Error(`No API key for provider: ${model.provider}`);
     }
-    const base = buildBaseOptions(model, context, options, apiKey);
+    const base = {
+        ...buildBaseOptions(model, context, options, apiKey),
+        toolChoice: options?.toolChoice,
+    };
     if (!options?.reasoning) {
         return stream(model, context, { ...base, thinking: { enabled: false } });
     }
     const clampedReasoning = clampThinkingLevel(model, options.reasoning);
-    const effort = (clampedReasoning === "off" ? "high" : clampedReasoning);
+    const resolvedLevel = resolveGoogleThinkingLevel(model, clampedReasoning);
     const googleModel = model;
     if (isGemini3ProModel(googleModel) || isGemini3FlashModel(googleModel) || isGemma4Model(googleModel)) {
         return stream(model, context, {
             ...base,
             thinking: {
                 enabled: true,
-                level: getThinkingLevel(effort, googleModel),
+                level: getThinkingLevel(resolvedLevel, googleModel),
             },
         });
     }
@@ -243,7 +261,7 @@ export const streamSimple = (model, context, options) => {
         ...base,
         thinking: {
             enabled: true,
-            budgetTokens: getGoogleBudget(googleModel, effort, options.thinkingBudgets),
+            budgetTokens: getGoogleBudget(googleModel, resolvedLevel, options.thinkingBudgets),
         },
     });
 };
@@ -253,7 +271,7 @@ function createClient(model, apiKey, optionsHeaders) {
         httpOptions.baseUrl = model.baseUrl;
         httpOptions.apiVersion = ""; // baseUrl already includes version path, don't append
     }
-    const headers = providerHeadersToRecord({ ...model.headers, ...optionsHeaders });
+    const headers = providerHeadersToRecord({ "User-Agent": getPiUserAgent(), ...model.headers, ...optionsHeaders });
     if (headers) {
         httpOptions.headers = headers;
     }
@@ -271,25 +289,25 @@ function buildParams(model, context, options = {}) {
     if (options.maxTokens !== undefined) {
         generationConfig.maxOutputTokens = options.maxTokens;
     }
+    const supportsStrictMode = supportsGoogleStrictToolSampling(model.id);
+    const functionCallingMode = context.tools?.length
+        ? resolveGoogleFunctionCallingMode(context.tools, options.toolChoice, supportsStrictMode)
+        : undefined;
     const config = {
         ...(Object.keys(generationConfig).length > 0 && generationConfig),
         ...(context.systemPrompt && { systemInstruction: sanitizeSurrogates(context.systemPrompt) }),
-        ...(context.tools && context.tools.length > 0 && { tools: convertTools(context.tools) }),
+        ...(context.tools &&
+            context.tools.length > 0 && {
+            tools: convertTools(context.tools, false, supportsStrictMode),
+        }),
+        ...(functionCallingMode !== undefined && {
+            toolConfig: { functionCallingConfig: { mode: functionCallingMode } },
+        }),
     };
-    if (context.tools && context.tools.length > 0 && options.toolChoice) {
-        config.toolConfig = {
-            functionCallingConfig: {
-                mode: mapToolChoice(options.toolChoice),
-            },
-        };
-    }
-    else {
-        config.toolConfig = undefined;
-    }
     if (options.thinking?.enabled && model.reasoning) {
         const thinkingConfig = { includeThoughts: true };
         if (options.thinking.level !== undefined) {
-            // Cast to any since our GoogleThinkingLevel mirrors Google's ThinkingLevel enum values
+            // Cast to any since our GoogleApiThinkingLevel mirrors Google's ThinkingLevel enum values
             thinkingConfig.thinkingLevel = options.thinking.level;
         }
         else if (options.thinking.budgetTokens !== undefined) {
@@ -371,9 +389,9 @@ function getThinkingLevel(effort, model) {
             return "HIGH";
     }
 }
-function getGoogleBudget(model, effort, customBudgets) {
-    if (customBudgets?.[effort] !== undefined) {
-        return customBudgets[effort];
+function getGoogleBudget(model, level, customBudgets) {
+    if (customBudgets?.[level] !== undefined) {
+        return customBudgets[level];
     }
     if (model.id.includes("2.5-pro")) {
         const budgets = {
@@ -382,7 +400,7 @@ function getGoogleBudget(model, effort, customBudgets) {
             medium: 8192,
             high: 32768,
         };
-        return budgets[effort];
+        return budgets[level];
     }
     if (model.id.includes("2.5-flash-lite")) {
         const budgets = {
@@ -391,7 +409,7 @@ function getGoogleBudget(model, effort, customBudgets) {
             medium: 8192,
             high: 24576,
         };
-        return budgets[effort];
+        return budgets[level];
     }
     if (model.id.includes("2.5-flash")) {
         const budgets = {
@@ -400,7 +418,7 @@ function getGoogleBudget(model, effort, customBudgets) {
             medium: 8192,
             high: 24576,
         };
-        return budgets[effort];
+        return budgets[level];
     }
     return -1;
 }

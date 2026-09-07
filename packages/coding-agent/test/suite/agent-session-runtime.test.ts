@@ -1,7 +1,8 @@
 import { existsSync, mkdirSync, realpathSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join, parse } from "node:path";
-import { fauxAssistantMessage, registerFauxProvider } from "@liyuan/ai/compat";
+import { fauxAssistantMessage, fauxToolCall, registerFauxProvider } from "@liyuan/ai/compat";
+import { Type } from "typebox";
 import { afterEach, describe, expect, it } from "vitest";
 import {
 	type CreateAgentSessionRuntimeFactory,
@@ -10,8 +11,10 @@ import {
 	createAgentSessionServices,
 } from "../../src/core/agent-session-runtime.ts";
 import { AuthStorage } from "../../src/core/auth-storage.ts";
+import { ModelRuntime } from "../../src/core/model-runtime.ts";
 import { SessionManager } from "../../src/core/session-manager.ts";
 import type {
+	AgentToolResult,
 	ExtensionAPI,
 	ExtensionFactory,
 	SessionBeforeForkEvent,
@@ -52,11 +55,11 @@ describe("AgentSessionRuntime characterization", () => {
 		faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
 
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 
 		const runtimeOptions = {
 			agentDir: tempDir,
-			authStorage,
+			modelRuntime: await ModelRuntime.create({ credentials: authStorage, modelsPath: null }),
 			model: options?.bootstrapModel === false ? undefined : faux.getModel(),
 			thinkingLevel: options?.bootstrapThinkingLevel === false ? undefined : undefined,
 			resourceLoaderOptions: {
@@ -105,7 +108,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const runtime = await createAgentSessionRuntime(createRuntime, {
 			cwd: tempDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(tempDir),
+			sessionManager: SessionManager.create(tempDir, join(tempDir, "sessions")),
 		});
 		await runtime.session.bindExtensions({});
 
@@ -159,6 +162,102 @@ describe("AgentSessionRuntime characterization", () => {
 			throw new Error("missing persisted assistant message");
 		}
 		expect(persistedAssistant.usage.cost.total).toBe(0.123);
+	});
+
+	it("keeps transient messages for the run, then persists only the canonical result", async () => {
+		const endSnapshots: string[][] = [];
+		const completed: string[] = [];
+		const { runtime } = await createRuntimeForTest((pi: ExtensionAPI) => {
+			pi.on("message_end", (event) => event.message.role === "assistant" ? { persist: false } : undefined);
+			pi.on("message_end", (event) => event.message.role === "assistant"
+				? { message: { ...event.message, content: [{ type: "text", text: "processed" }] } }
+				: undefined);
+			pi.on("agent_end", (event) => {
+				endSnapshots.push(runtime.session.messages.map(message => message.role));
+				completed.push(JSON.stringify(event.messages));
+				runtime.session.appendMessage(fauxAssistantMessage("canonical"));
+			});
+		});
+
+		await runtime.session.prompt("hello");
+		expect(endSnapshots).toEqual([["user"]]);
+		expect(completed[0]).toContain("processed");
+		expect(JSON.stringify(runtime.session.messages)).not.toContain("processed");
+		expect(JSON.stringify(runtime.session.messages)).toContain("canonical");
+		expect(runtime.session.messages).toEqual(runtime.session.sessionManager.buildSessionContext().messages);
+		const persisted = runtime.session.sessionManager.getEntries().filter(entry => entry.type === "message");
+		expect(persisted.map(entry => entry.message.role)).toEqual(["user", "assistant"]);
+		expect(persisted[1].parentId).toBe(persisted[0].id);
+
+		await runtime.session.prompt("again");
+		expect(endSnapshots[1]).toEqual(["user", "assistant", "user"]);
+		expect(runtime.session.messages).toEqual(runtime.session.sessionManager.buildSessionContext().messages);
+	});
+
+	it("reuses an unchanged user leaf without duplicating it or retaining the old reply", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		await runtime.session.prompt("hello");
+		const sm = runtime.session.sessionManager;
+		const user = sm.getEntries().find(entry => entry.type === "message" && entry.message.role === "user")!;
+		runtime.session.setLeaf(user.id);
+		expect(runtime.session.messages.map(message => message.role)).toEqual(["user"]);
+		await expect(runtime.session.prompt("changed", { reuseUserMessage: true })).rejects.toThrow("unchanged user message");
+		await runtime.session.prompt("hello", { reuseUserMessage: true });
+		expect(sm.getEntries().filter(entry => entry.type === "message" && entry.message.role === "user")).toHaveLength(1);
+		expect(sm.getEntries().filter(entry => entry.type === "message" && entry.message.role === "assistant" && entry.parentId === user.id)).toHaveLength(2);
+		expect(runtime.session.messages).toEqual(sm.buildSessionContext().messages);
+		const current = runtime.session.messages.at(-1)!;
+		expect(JSON.stringify(current)).toContain("two");
+		runtime.session.setLeaf(null);
+		expect(runtime.session.messages).toEqual([]);
+	});
+
+	it("settles the active response before session replacement", async () => {
+		let toolStarted!: () => void;
+		const toolStartedPromise = new Promise<void>((resolve) => {
+			toolStarted = resolve;
+		});
+		const { runtime, faux } = await createRuntimeForTest((pi: ExtensionAPI) => {
+			pi.registerTool({
+				name: "block",
+				label: "Block",
+				description: "Blocks until aborted",
+				parameters: Type.Object({}),
+				execute: (_toolCallId, _params, signal) =>
+					new Promise<AgentToolResult<unknown>>((resolve) => {
+						toolStarted();
+						signal?.addEventListener("abort", () =>
+							resolve({ content: [{ type: "text", text: "tool aborted" }], details: {} }),
+						);
+					}),
+			});
+		});
+
+		await runtime.session.prompt("hello");
+		const firstSessionFile = runtime.session.sessionFile!;
+		await runtime.newSession();
+		await runtime.session.bindExtensions({});
+
+		faux.setResponses([fauxAssistantMessage(fauxToolCall("block", {}), { stopReason: "toolUse" })]);
+		const outgoingSession = runtime.session;
+		const promptPromise = outgoingSession.prompt("start blocking tool");
+		await toolStartedPromise;
+
+		const switchResult = await runtime.switchSession(firstSessionFile);
+		await promptPromise;
+
+		expect(switchResult.cancelled).toBe(false);
+		expect(runtime.session.sessionFile).toBe(firstSessionFile);
+		// The outgoing session settled before replacement: the interrupted tool
+		// call has a persisted tool result instead of dangling forever.
+		const outgoingEntries = SessionManager.open(outgoingSession.sessionFile!)
+			.getEntries()
+			.filter((entry) => entry.type === "message");
+		expect(outgoingEntries.map((entry) => entry.message.role)).toEqual([
+			"user",
+			"assistant",
+			"toolResult",
+		]);
 	});
 
 	it("emits session_before_switch and session_start for new and resume flows", async () => {
@@ -232,7 +331,7 @@ describe("AgentSessionRuntime characterization", () => {
 		events.length = 0;
 		const otherDir = join(tmpdir(), `pi-runtime-other-${Date.now()}-${Math.random().toString(36).slice(2)}`);
 		mkdirSync(otherDir, { recursive: true });
-		const otherSession = SessionManager.create(otherDir);
+		const otherSession = SessionManager.create(otherDir, join(otherDir, "sessions"));
 		otherSession.appendMessage({ role: "user", content: [{ type: "text", text: "other" }], timestamp: Date.now() });
 		const otherSessionFile = otherSession.getSessionFile();
 		cancelReason = "resume";
@@ -290,6 +389,19 @@ describe("AgentSessionRuntime characterization", () => {
 		expect(events).toEqual([{ type: "session_before_fork", entryId: "missing-entry", position: "at" }]);
 	});
 
+	it("reports why an unflushed session cannot be forked", async () => {
+		const { runtime } = await createRuntimeForTest(() => {});
+		const sessionFile = runtime.session.sessionFile;
+		const leafId = runtime.session.sessionManager.getLeafId();
+		expect(sessionFile).toBeDefined();
+		expect(existsSync(sessionFile!)).toBe(false);
+		expect(leafId).toBeTruthy();
+
+		await expect(runtime.fork(leafId!, { position: "at" })).rejects.toThrow(
+			"This session has not been saved yet. Wait for the first assistant response before cloning or forking it.",
+		);
+	});
+
 	it("duplicates the current active branch when forking at the current position", async () => {
 		const { runtime } = await createRuntimeForTest(() => {});
 		await runtime.session.prompt("hello");
@@ -343,7 +455,7 @@ describe("AgentSessionRuntime characterization", () => {
 		faux.setResponses([fauxAssistantMessage("one"), fauxAssistantMessage("two"), fauxAssistantMessage("three")]);
 
 		const authStorage = AuthStorage.inMemory();
-		authStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		await authStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 
 		const runtimeOptions = {
 			agentDir: tempDir,
@@ -454,7 +566,7 @@ describe("AgentSessionRuntime characterization", () => {
 		mkdirSync(secondDir, { recursive: true });
 		const { runtime, faux, tempDir } = await createRuntimeForTest(() => {}, { cwd: firstDir });
 		const otherAuthStorage = AuthStorage.inMemory();
-		otherAuthStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		await otherAuthStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const otherRuntimeOptions = {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
@@ -505,7 +617,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: secondDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(secondDir),
+			sessionManager: SessionManager.create(secondDir, join(secondDir, "sessions")),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();
@@ -527,7 +639,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherDir = join(tempDir, "other");
 		mkdirSync(otherDir, { recursive: true });
 		const otherAuthStorage = AuthStorage.inMemory();
-		otherAuthStorage.setRuntimeApiKey(faux.getModel().provider, "faux-key");
+		await otherAuthStorage.modify(faux.getModel().provider, async () => ({ type: "api_key", key: "faux-key" }));
 		const otherRuntimeOptions = {
 			agentDir: tempDir,
 			authStorage: otherAuthStorage,
@@ -578,7 +690,7 @@ describe("AgentSessionRuntime characterization", () => {
 		const otherRuntime = await createAgentSessionRuntime(createOtherRuntime, {
 			cwd: otherDir,
 			agentDir: tempDir,
-			sessionManager: SessionManager.create(otherDir),
+			sessionManager: SessionManager.create(otherDir, join(otherDir, "sessions")),
 		});
 		cleanups.push(async () => {
 			await otherRuntime.dispose();

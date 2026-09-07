@@ -34,13 +34,22 @@ import { errText, intArg, strArg, type ToolResult, type ToolSpec } from "./regis
 /** 命中条目的结构子集（与 stage 的 MemoryHitLike 同形，便于离线单测） */
 export interface MemoryHitLike {
 	text: string;
+	ref?: string;
+	version?: string;
 	score?: number;
-	meta?: { title?: string; fileName?: string; source?: string };
+	meta?: { title?: string; fileName?: string; source?: string; scope?: string; nodeId?: string; chatId?: string };
 }
+
+export interface MemorySearchResult {
+	hits: MemoryHitLike[];
+	sources: Array<{ scope: string; status: "ok" | "disabled" | "unavailable" | "error"; error?: string }>;
+}
+export interface MemoryDocument extends MemoryHitLike { ref: string; version: string; relatedRefs?: string[]; note?: string }
 
 /** 列表条目的结构子集 */
 export interface MemoryChunkLike {
 	id: string;
+	ref?: string;
 	text: string;
 	textLen?: number;
 	createdAt?: string;
@@ -49,7 +58,9 @@ export interface MemoryChunkLike {
 
 export interface MemoryDeps {
 	/** 检索本对话记忆（合并两库，宿主已按 scope 绑定）；未注入＝台上无 memory_search */
-	searchMemory: (query: string) => Promise<MemoryHitLike[]>;
+	searchMemory: (query: string) => Promise<MemoryHitLike[] | MemorySearchResult>;
+	readMemory?: (ref: string) => MemoryDocument | undefined;
+	updateMemory?: (ref: string, version: string, content: string) => MemoryDocument;
 
 	// ---- 以下为 M-D3 新增；未注入则该工具不上清单（依赖缺失的工具不上清单，见 adapters/stage.ts） ----
 
@@ -58,13 +69,13 @@ export interface MemoryDeps {
 	/** 列举某库条目（不含向量）；storeId 缺省 external */
 	listMemory?: (storeId: string) => MemoryChunkLike[];
 	/** 按 id 删除；返回是否删到 */
-	deleteMemory?: (storeId: string, id: string) => boolean;
+	deleteMemory?: (storeId: string, id: string, version?: string) => boolean;
 	/** 本拍用户原文 + 门禁档位（写侧门禁判定用，见 gate.ts） */
 	gate?: () => { lastUserText: string; creationMode?: "ask" | "silent" };
 }
 
 /** 两个内置库的对外名字（服务层 id → 模型可读标签） */
-const STORE_LABEL: Record<string, string> = { narrative: "剧情库", external: "额外库" };
+const STORE_LABEL: Record<string, string> = { narrative: "剧情库", external: "额外库", card: "卡级记忆" };
 
 /** 列举默认/最大条数：目录太长会挤爆上下文，且模型只是要个纵览 */
 const LIST_LIMIT = 20;
@@ -99,7 +110,7 @@ export const memorySearch: ToolSpec<MemoryDeps> = {
 	label: "检索剧情记忆",
 	description: (ctx) =>
 		ctx.surface === "stage"
-			? `检索本对话的记忆库：被压缩出上下文的早期正文、滚动摘要、导入资料。` +
+			? `检索当前分支的会话记忆，以及当前卡的 Markdown 手册、常驻摘要与各局复盘。每条带来源与 ref；往局复盘不等于本局已发生的事实。` +
 				`重新带回【登场名录】里那些你已记不清细节的人物/物品/剧情线之前，必须先查——不得臆造早先已确立的事实。` +
 				`用${ctx.language}检索。`
 			: `检索当前剧情对话的记忆库（剧情摘要、早期归档正文、导入资料），用于诊断「模型记得什么」。` +
@@ -117,10 +128,14 @@ export const memorySearch: ToolSpec<MemoryDeps> = {
 		if (!query) return { text: "缺少 query 参数。" };
 
 		let hits: MemoryHitLike[] = [];
+		let sourceReport: MemorySearchResult["sources"] = [];
 		try {
-			hits = await deps.searchMemory(query);
+			const result = await deps.searchMemory(query);
+			hits = Array.isArray(result) ? result : result.hits;
+			if (!Array.isArray(result)) sourceReport = result.sources;
 		} catch (err) {
 			return {
+				isError: true,
 				text: stage
 					? `剧情库检索失败：${errText(err)}。按已知事实继续写。`
 					: `剧情库检索失败：${errText(err)}`,
@@ -128,6 +143,11 @@ export const memorySearch: ToolSpec<MemoryDeps> = {
 		}
 
 		if (hits.length === 0) {
+			if (sourceReport.length) return {
+				text: JSON.stringify({ hits: [], sources: sourceReport }),
+				isError: sourceReport.every((s) => s.status === "error" || s.status === "unavailable"),
+				activity: `查记忆「${query}」· 无命中`,
+			};
 			return {
 				text: stage
 					? "剧情库无命中（可能未启用向量记忆，或该内容未被归档）。不要臆造当年的具体细节——" +
@@ -140,11 +160,11 @@ export const memorySearch: ToolSpec<MemoryDeps> = {
 		const text = hits
 			.map((h, i) => {
 				const tag = h.meta?.title || h.meta?.fileName || h.meta?.source || "记忆";
-				return `${i + 1}. 〔${tag}〕${h.text}`;
+				return `${i + 1}. 〔${tag}〕${h.ref ? ` ref: ${h.ref}` : ""}${h.meta?.scope ? ` 来源范围: ${h.meta.scope}` : ""}${h.meta?.chatId ? ` 局: ${h.meta.chatId}` : ""}${h.meta?.nodeId ? ` 节点: ${h.meta.nodeId}` : ""}\n${h.text}`;
 			})
 			.join("\n\n");
 		return {
-			text,
+			text: (sourceReport.length ? JSON.stringify({ sources: sourceReport }) + "\n\n" : "") + text,
 			activity: `查剧情库「${query}」· ${hits.length} 条`,
 			details: { count: hits.length },
 		};
@@ -236,7 +256,7 @@ export const memoryList: ToolSpec<MemoryDeps> = {
 		properties: {
 			store: {
 				type: "string",
-				enum: ["external", "narrative"],
+					enum: ["external", "narrative", "card"],
 				description: "external＝手动录入与导入的资料（缺省）；narrative＝自动生成的剧情摘要与早期归档",
 			},
 			keyword: { type: "string", description: "只列正文或标题含此字样的条目（缺省列全部）" },
@@ -247,7 +267,7 @@ export const memoryList: ToolSpec<MemoryDeps> = {
 	async run(args, deps): Promise<ToolResult> {
 		if (!deps.listMemory) return { text: "本环境不支持列举记忆条目。" };
 
-		const store = strArg(args, "store") === "narrative" ? "narrative" : "external";
+		const store = ["narrative", "card"].includes(strArg(args, "store")) ? strArg(args, "store") : "external";
 		const label = STORE_LABEL[store] ?? store;
 
 		let all: MemoryChunkLike[];
@@ -280,7 +300,7 @@ export const memoryList: ToolSpec<MemoryDeps> = {
 			const src = c.meta?.source ? SOURCE_LABEL[c.meta.source] ?? c.meta.source : "";
 			const tag = c.meta?.title || c.meta?.fileName || "";
 			const marks = [tag, src, `${c.textLen ?? c.text.length} 字`].filter(Boolean).join("·");
-			return `- [${c.id}] ${previewOf(c.text)}${marks ? `｜${marks}` : ""}`;
+			return `- [${c.id}] ref: ${c.ref ?? `session:${store}:${c.id}`} ${previewOf(c.text)}${marks ? `｜${marks}` : ""}`;
 		});
 		// 截断必须说出来：只报 shown 会让模型以为库里就这些（"no silent caps"）
 		const head =
@@ -315,9 +335,10 @@ export const memoryDelete: ToolSpec<MemoryDeps> = {
 		type: "object",
 		properties: {
 			id: { type: "string", description: "条目编号（从 memory_list 的 [编号] 取）" },
+			version: { type: "string", description: "删除卡级文档必填，取自 memory_read。" },
 			store: {
 				type: "string",
-				enum: ["external", "narrative"],
+				enum: ["external", "narrative", "card"],
 				description: "该条目所在的库（与 memory_list 时用的一致；缺省 external）",
 			},
 		},
@@ -340,11 +361,11 @@ export const memoryDelete: ToolSpec<MemoryDeps> = {
 			if (!verdict.allow) return { text: verdict.reason, activity: "删记忆 · 门禁拦下" };
 		}
 
-		const store = strArg(args, "store") === "narrative" ? "narrative" : "external";
+		const store = ["narrative", "card"].includes(strArg(args, "store")) ? strArg(args, "store") : "external";
 		const label = STORE_LABEL[store] ?? store;
 		let ok: boolean;
 		try {
-			ok = deps.deleteMemory(store, id);
+			ok = deps.deleteMemory(store, id, strArg(args, "version") || undefined);
 		} catch (err) {
 			return { text: `删除记忆失败：${errText(err)}` };
 		}
@@ -363,4 +384,36 @@ export const memoryDelete: ToolSpec<MemoryDeps> = {
 };
 
 /** 向量库族全部工具（M-D3；memory_search 由本族接管，原台上/扩展两份实现合一） */
-export const memoryTools: ToolSpec<MemoryDeps>[] = [memorySearch, memoryAdd, memoryList, memoryDelete];
+export const memoryRead: ToolSpec<MemoryDeps> = {
+	name: "memory_read", domain: "memory", mode: "read", surfaces: ["stage", "assistant"], label: "读取记忆原文",
+	description: () => "按 memory_search/list 的 ref 精确读取记忆及内容版本。保留来源、局与分支范围；start/end 为字符偏移，end 不含。",
+	parameters: () => ({ type: "object", properties: { ref: { type: "string" }, start: { type: "integer", minimum: 0 }, end: { type: "integer", minimum: 0 } }, required: ["ref"] }),
+	async run(args, deps) {
+		try {
+			if (!deps.readMemory) throw new Error("记忆读取不可用");
+			const doc = deps.readMemory(strArg(args, "ref"));
+			if (!doc) throw new Error("引用已失效或不在当前允许的记忆范围");
+			const start = args.start === undefined ? 0 : Number(args.start), end = args.end === undefined ? doc.text.length : Number(args.end);
+			if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > doc.text.length) throw new Error("读取范围无效");
+			return { text: JSON.stringify({ ...doc, text: doc.text.slice(start, end), start, end, total: doc.text.length }), activity: "读记忆原文" };
+		} catch (e) { return { text: errText(e), isError: true }; }
+	},
+};
+
+export const memoryUpdate: ToolSpec<MemoryDeps> = {
+	name: "memory_update", domain: "memory", mode: "write", surfaces: ["stage", "assistant"], label: "更正卡级记忆",
+	description: () => "用户明确要求更正记忆时，按 ref 与版本替换当前卡的 Markdown 记忆原文。修改源复盘会使旧汇总失效；手工修改汇总后暂停自动覆盖，并隐藏已被它取代的旧来源。回执说明影响，相关来源由 memory_read 提供。",
+	parameters: () => ({ type: "object", properties: { ref: { type: "string" }, version: { type: "string" }, content: { type: "string" } }, required: ["ref", "version", "content"] }),
+	async run(args, deps) {
+		try {
+			const g = deps.gate?.();
+			if (g) { const verdict = checkWriteGate({ toolName: "memory_update", ...g }); if (!verdict.allow) throw new Error(verdict.reason); }
+			if (!deps.updateMemory) throw new Error("卡级记忆修改不可用");
+			if (typeof args.content !== "string" || !args.content.trim()) throw new Error("content 为空；遗忘文档请用 memory_delete");
+			const doc = deps.updateMemory(strArg(args, "ref"), strArg(args, "version"), args.content);
+			return { text: JSON.stringify(doc), activity: "已更正卡级记忆" };
+		} catch (e) { return { text: errText(e), isError: true }; }
+	},
+};
+
+export const memoryTools: ToolSpec<MemoryDeps>[] = [memorySearch, memoryRead, memoryUpdate, memoryAdd, memoryList, memoryDelete];

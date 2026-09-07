@@ -1,36 +1,47 @@
-/**
- * 回合工作区（PLAN-RP-AGENT-EXEC M-A §2.2）——正文成为工件的落点。
- *
- * 一拍一个工作区：模型直出正文由引擎代收落稿，
- * harness 只执行与验证，不替模型生成任何内容（控制反转的落地处）。
- *
- * 三条铁律：
- * - draft_write 是唯一交稿入口，且已不是模型可调工具——引擎「直出代收」按名调它落地正文；
- * - 记账不在台上：world_state_update 已撤出，账本归封笔后的场记旁路（scribe-run.ts）；
- * - 工作区只活在引擎单拍内，不跨模块共享（jiti 二象性红线，不触 globalThis）。
- *
- * 纯函数 + 注入依赖，零 pi 依赖、可单测（执行器全部复用 draft.ts / state.ts 现成代码）。
- */
+/** Beat-local, versioned text. pi owns the loop; this module owns artifact transactions. */
 
-import { type DraftRules } from "../draft.ts";
+import { randomUUID } from "node:crypto";
+import { applyDraftEdits, locateEdit, searchDraft, type DraftEditItem, type DraftRules } from "../draft.ts";
+
+export type BeatMode = "explore" | "write";
+export type BeatPhase = "exploring" | "writing" | "waiting" | "sealed" | "stopped" | "error";
+export interface BeatStep { id: string; text: string; status: "pending" | "in_progress" | "done" | "cancelled" }
+export interface DraftRevision { version: number; text: string; reason: string; at: number }
 
 export interface TurnWorkspace {
+	id: string;
+	sessionId: string;
+	parentId: string | null;
+	userId?: string;
+	entryId?: string;
+	/** This workspace revises an existing reply; it does not create a new story beat. */
+	revision?: { targetId: string; requestId: string; sourceDraftId?: string; sourceVersion: number };
+	/** Recovery journal for a text revision whose session receipt has not been flushed yet. */
+	restorePending?: boolean;
+	version: number;
+	mode: BeatMode;
+	phase: BeatPhase;
+	plan: BeatStep[];
+	/** Answers made inside this beat are user input, not disposable tool chatter. */
+	choices?: Array<{ question: string; answer: string }>;
+	revisions: DraftRevision[];
+	updatedAt: number;
+	/** Uncommitted argument/text stream, retained for interruption/restart recovery. */
+	preview?: { name: "draft_write" | "draft_append" | "direct"; content: string; version: number; separator?: string };
+	context?: { messages: number; chars: number; toolChars: number; prunedChars: number; prunedResults: number };
 	/** 当前稿（draft_write 全量替换语义；draft_append 追加语义） */
 	draft: string;
 	/** 已封笔（M-E）：正文写完了（8/10 起封笔只是状态切换，不触发任何检验） */
 	sealed: boolean;
 	/** 交稿次数（含宽进严出代收） */
 	writes: number;
+	explicitWrites: number;
+	directWrites: number;
 	/** draft_append 追加段数（M-E KPI：分段续写是否真发生） */
 	appends: number;
 	/** draft_edit 成功套用的次数（M-B KPI：定点改稿是否真替代了全文重交） */
 	edits: number;
-	/**
-	 * 本拍查过几次世界（lorebook / memory / world_state_get；不含 skill_read）。
-	 *
-	 * 用作「这一拍有没有戏」的外部事实：查过世界＝中途确实遇到了需要停下来处理的
-	 * 事，那这一拍本该一段一段演。draft_write 的门禁据此判定（见 runWriteTool）。
-	 */
+	/** 本拍事实读取次数（lorebook / memory / world_state_get；不含 skill_read）。仅作观测。 */
 	lookups: number;
 	/**
 	 * 本拍面板写入次数（panel_write / panel_close 调用计数，engine 维护）。
@@ -57,7 +68,7 @@ export interface TurnWorkspace {
 	 * 剥离工具轨迹——故媒体结果在此收集，谢幕后随正文一起落成 toolResult 条目，
 	 * 让 live 推送与刷新重放走同一条路径。
 	 */
-	mediaDeliveries?: Array<{ toolName: string; details: Record<string, unknown>; text: string }>;
+	mediaDeliveries?: Array<{ toolName: string; toolCallId?: string; details: Record<string, unknown>; text: string }>;
 }
 
 /** 时间线段：与前端 web/src/timeline.ts 的 TurnSegment 同构（跨边界只走 JSON） */
@@ -67,11 +78,16 @@ export type TurnSegment =
 	| { kind: "text"; text: string; draft?: boolean }
 	| { kind: "tool"; activities: Array<{ kind: string; name: string; detail?: string; isError?: boolean }> };
 
-export function createWorkspace(): TurnWorkspace {
+export function createWorkspace(identity: Partial<Pick<TurnWorkspace, "id" | "sessionId" | "parentId" | "userId">> = {}): TurnWorkspace {
 	return {
+		id: identity.id ?? randomUUID(), sessionId: identity.sessionId ?? "memory", parentId: identity.parentId ?? null,
+		...(identity.userId ? { userId: identity.userId } : {}),
+		version: 0, mode: "write", phase: "writing", plan: [], revisions: [], updatedAt: Date.now(),
 		draft: "",
 		sealed: false,
 		writes: 0,
+		explicitWrites: 0,
+		directWrites: 0,
 		appends: 0,
 		edits: 0,
 		lookups: 0,
@@ -117,14 +133,13 @@ export function finalTimeline(ws: TurnWorkspace, finalText: string): TurnSegment
 	// mergeFinalText 的产物必为「稿全文」或「稿全文 + 尾巴」，故 startsWith 成立时
 	// 尾巴 = 稿之后的部分（状态栏等 text 通道产出），收成独立末段（不带 draft）。
 	// 非稿 text 段（尾巴的流式记档）丢弃——内容已归并进尾巴段，避免重复。
-	const draft = ws.draft.trim();
-	const flat = (s: string) => s.replace(/\s+/g, "");
+	const draft = ws.draft;
 	const draftSegs = ws.timeline.filter(
 		(s): s is Extract<TurnSegment, { kind: "text" }> => s.kind === "text" && s.draft === true,
 	);
-	const joined = draftSegs.map((s) => s.text).join("\n\n");
-	if (draft && finalText.startsWith(draft) && flat(joined) === flat(draft)) {
-		const tail = finalText.slice(draft.length).trim();
+	const joined = draftSegs.map((s) => s.text).join("");
+	if (draft && finalText.startsWith(draft) && joined === draft) {
+		const tail = finalText.slice(draft.length);
 		const out: TurnSegment[] = [];
 		for (const s of ws.timeline) {
 			if (s.kind === "tool") {
@@ -166,12 +181,12 @@ export function finalTimeline(ws: TurnWorkspace, finalText: string): TurnSegment
  *
  * 多稿重交（M-B 实弹的 882→849→838）与定点改稿都作用在同一份稿上，
  * 逐次追加会让同一段正文在屏上叠出几份（EXEC §4.5.4 记的重复上屏欠账）。
- * 故先摘掉此前记过的稿段，再把最新稿记在当前位置——位置随最后一次动笔走，
- * 前面的思考与工具轨迹不动。
+	 * 故摘掉此前稿段，把最新稿放回首个稿段位置；思考与工具轨迹保留。
  */
 function replaceDraftSegment(ws: TurnWorkspace, content: string): void {
+	const first = ws.timeline.findIndex((s) => s.kind === "text" && s.draft === true);
 	ws.timeline = ws.timeline.filter((s) => !(s.kind === "text" && s.draft === true));
-	ws.timeline.push({ kind: "text", text: content, draft: true });
+	ws.timeline.splice(first < 0 ? ws.timeline.length : first, 0, { kind: "text", text: content, draft: true });
 }
 
 /**
@@ -179,13 +194,17 @@ function replaceDraftSegment(ws: TurnWorkspace, content: string): void {
  * 引擎的 draft_resync 帧（修复后前端原位替换稿段）都用它，保证前后端看到同一套分段。
  */
 export function splitDraftSegments(draft: string): string[] {
-	return draft.split(/\n\s*\n/).filter((p) => p.trim().length > 0);
+	return draft.match(/[\s\S]+?(?:\n[\t ]*\n|$)/g) ?? [];
 }
 
 export interface WorkspaceDeps {
 	rules: DraftRules;
 	userName: string;
 	charName: string;
+	/** Called before the in-memory commit. Throwing leaves both draft and revision unchanged. */
+	persist?: (next: TurnWorkspace) => void;
+	reload?: () => TurnWorkspace | undefined;
+	file?: string;
 }
 
 export interface WriteToolResult {
@@ -195,6 +214,8 @@ export interface WriteToolResult {
 	activity?: string;
 	/** true = 本次调用是有效交稿/记账（引擎统计与流转用） */
 	ok: boolean;
+	isError?: boolean;
+	details?: Record<string, unknown>;
 }
 
 /**
@@ -202,49 +223,160 @@ export interface WriteToolResult {
  * 禁词/比喻/句式的匹配统计连同 checkDraft 已全部删除——落笔之后 harness
  * 不对稿件内容说任何话；质量投资全在落笔前（预设原文＋素材＋思考空间）。
  */
-function sealFacts(ws: TurnWorkspace): string {
-	const stray = (ws.strayText ?? "").trim();
-	if (!stray) return "";
-	const chars = stray.replace(/\s+/g, "").length;
-	return `
-另：text 通道有约 ${chars} 字直出不在稿内（起头「${stray.slice(0, 15)}…」）。`;
+export function commitWorkspace(ws: TurnWorkspace, deps: WorkspaceDeps, next: TurnWorkspace): void {
+	next.updatedAt = Date.now();
+	deps.persist?.(next);
+	Object.assign(ws, next);
+	if (!next.preview) delete ws.preview;
+	if (!next.restorePending) delete ws.restorePending;
 }
 
-/**
- * 执行一次写侧工具调用。未知工具/参数缺失都返回可读文本（不抛，不打断本拍）。
- * 读侧三件（lorebook/memory/world_state_get）仍走 tools.ts runStageTool。
- */
+export function reviseDraft(ws: TurnWorkspace, text: string, reason: string, force = false): void {
+	if (!force && text === ws.draft && ws.version > 0) return;
+	ws.draft = text;
+	ws.version++;
+	ws.revisions.push({ version: ws.version, text, reason, at: Date.now() });
+	delete ws.preview;
+}
+
+/** Preserve the chronological paragraph/tool layout when an edit crosses paragraph boundaries. */
+function editTimeline(ws: TurnWorkspace, text: string, edits: DraftEditItem[]): void {
+	const spans = edits.map((edit) => {
+		const match = locateEdit(ws.draft, edit.old);
+		if (match.ok === false) throw new Error(match.error);
+		return { ...match.at, length: edit.new.length };
+	}).sort((a, b) => a.start - b.start);
+	const map = (pos: number) => {
+		let delta = 0;
+		for (const s of spans) {
+			if (pos <= s.start) break;
+			if (pos < s.end) return s.start + delta + s.length;
+			delta += s.length - (s.end - s.start);
+		}
+		return pos + delta;
+	};
+	let cursor = 0;
+	for (const s of ws.timeline) if (s.kind === "text" && s.draft) {
+		const end = cursor + s.text.length;
+		s.text = text.slice(map(cursor), map(end));
+		cursor = end;
+	}
+	if (cursor !== ws.draft.length) replaceDraftSegment(ws, text);
+}
+
+/** User-only operation. Never registered as a model tool. */
+export function restoreDraftVersion(ws: TurnWorkspace, deps: WorkspaceDeps, version: number, expectedVersion: number): void {
+	if (expectedVersion !== ws.version) throw new Error(`稿件版本已变为 v${ws.version}，请刷新后再恢复。`);
+	const prior = ws.revisions.find((r) => r.version === version);
+	if (!prior) throw new Error("该稿件版本不存在。");
+	const next = structuredClone(ws);
+	reviseDraft(next, prior.text, `user_restore:v${version}`, true);
+	next.timeline = next.timeline.filter((s) => s.kind !== "text" || s.draft);
+	replaceDraftSegment(next, prior.text);
+	commitWorkspace(ws, deps, next);
+}
+
+export function workspaceToolBlock(ws: TurnWorkspace, name: string, mode?: "read" | "write"): string | undefined {
+	if (ws.revision && (mode !== "read" || name === "ask")) return "上一拍修订已完成，本次请求不能继续写入或提问。";
+	if (name === "beat_plan" || name === "ask") return undefined;
+	if (ws.mode === "explore" && mode !== "read") return "当前为探索阶段；beat_plan(mode=write) 后才能写入。";
+	if (ws.sealed && mode !== "read") return "当前稿已收笔，不能继续写入。";
+	return undefined;
+}
+
 export function runWriteTool(
 	ws: TurnWorkspace,
 	deps: WorkspaceDeps,
 	name: string,
 	args: Record<string, unknown>,
-	/**
-	 * 内部代收（宽进严出）：跳过 draft_write 门禁。
-	 *
-	 * 引擎把模型直出的正文代收为 draft_write 时，那不是模型的选择而是兜底——
-	 * 若被门禁拦下，这拍的正文就凭空丢了。只有 engine #agentLoop 传 true。
-	 */
-	internal = false,
+	internal: boolean | "capture" = false,
 ): WriteToolResult {
-	// draft_write / draft_seal 不再是模型可调工具（第三步：撤出模型视野）——但 handler 保留：
-	// 引擎在「直出代收」时按名调 draft_write(internal=true) 落地正文（engine #agentLoop），
-	// 收束时兜底调 draft_seal。append/edit/read/search 是「分段续写/改稿」工作流，随预设主导
-	// 一次性输出而整体退役（打磨回到思考里），连 handler 一并删。
-	if (name === "draft_write") {
-		const content = typeof args.content === "string" ? args.content : "";
-		if (!content.trim()) return { text: "content 为空。", ok: false };
-		ws.draft = content;
-		ws.writes++;
-		ws.sealed = true; // 全量交稿即完整稿，天然封笔
-		replaceDraftSegment(ws, content);
-		return { text: `已收稿（第 ${ws.writes} 稿）。${sealFacts(ws)}`, activity: `交稿 ${content.length} 字`, ok: true };
-	}
-
-	if (name === "draft_seal") {
-		if (!ws.draft.trim()) return { text: "工作区还没有稿件。", ok: false };
-		ws.sealed = true;
-		return { text: `已封笔。${sealFacts(ws)}`, activity: "封笔", ok: true };
-	}
-
-	return { text: `未知写侧工具 ${name}。`, ok: false };}
+	const fail = (text: string): WriteToolResult => ({ text, ok: false, isError: true, details: { draftId: ws.id, version: ws.version } });
+	const receipt = (text: string, activity?: string): WriteToolResult => ({ text, activity, ok: true,
+		details: { draftId: ws.id, version: ws.version, phase: ws.phase, ...(deps.file ? { file: deps.file } : {}) } });
+	try {
+		if ((name === "draft_read" || name === "draft_search") && deps.reload) {
+			const latest = deps.reload();
+			if (latest) {
+				if (latest.id !== ws.id || latest.sessionId !== ws.sessionId) return fail("稿件身份不匹配。");
+				Object.assign(ws, latest);
+			}
+		}
+		if (name === "draft_read") {
+			const start = args.start === undefined ? 0 : Number(args.start);
+			const end = args.end === undefined ? ws.draft.length : Number(args.end);
+			if (!Number.isInteger(start) || !Number.isInteger(end) || start < 0 || end < start || end > ws.draft.length) return fail("start/end 必须是稿件范围内的字符偏移（从 0 开始，end 不含）。");
+			return receipt(JSON.stringify({ version: ws.version, start, end, total: ws.draft.length, content: ws.draft.slice(start, end) }), "读现稿");
+		}
+		if (name === "draft_search") {
+			if (typeof args.query !== "string" || !args.query.trim()) return fail("query 不能为空。");
+			const result = searchDraft(ws.draft, args.query, Math.max(1, Math.min(50, Number(args.limit) || 8)));
+			return receipt(JSON.stringify({ version: ws.version, ...result }), "查现稿");
+		}
+		if (name === "beat_plan") {
+			const next = structuredClone(ws);
+			if (args.mode !== undefined) {
+				if (args.mode !== "explore" && args.mode !== "write") return fail("mode 须为 explore 或 write。");
+				if (ws.sealed) return fail("当前稿已收笔。");
+				next.mode = args.mode;
+				next.phase = args.mode === "explore" ? "exploring" : "writing";
+			}
+			if (args.steps !== undefined) {
+				if (!Array.isArray(args.steps) || args.steps.length > 20) return fail("steps 须为不超过 20 项的数组。");
+				const ids = new Set<string>();
+				next.plan = args.steps.map((s: Record<string, unknown>, i: number) => {
+					if (!s || typeof s.text !== "string" || !s.text.trim()) throw new Error("计划项 text 不能为空。");
+					const id = typeof s.id === "string" && s.id ? s.id : String(i + 1);
+					if (ids.has(id)) throw new Error("计划项 id 不可重复。");
+					ids.add(id);
+					const status = s.status ?? "pending";
+					if (!["pending", "in_progress", "done", "cancelled"].includes(String(status))) throw new Error("计划项 status 无效。");
+					return { id, text: s.text, status: status as BeatStep["status"] };
+				});
+			}
+			commitWorkspace(ws, deps, next);
+			return receipt(JSON.stringify({ mode: ws.mode, steps: ws.plan, version: ws.version }), "更新本拍计划");
+		}
+		if (!["draft_write", "draft_append", "draft_edit", "draft_seal"].includes(name)) return fail(`未知稿件工具 ${name}。`);
+		if (!internal) {
+			const block = workspaceToolBlock(ws, name, "write");
+			if (block) return fail(block);
+			if (args.version !== ws.version) return fail(`版本冲突：当前为 v${ws.version}，收到 ${String(args.version)}。本次未修改；draft_read 可读取当前版本。`);
+		}
+		const next = structuredClone(ws);
+		let activity = "";
+		let detail = "";
+		if (name !== "draft_seal") {
+			if (internal) next.directWrites++; else next.explicitWrites++;
+		}
+		if (name === "draft_seal") {
+			if (!ws.draft.trim()) return fail("工作区还没有稿件。");
+			next.sealed = true; next.phase = "sealed"; activity = "收笔";
+		} else if (name === "draft_edit") {
+			if (!Array.isArray(args.edits)) return fail("edits 须为 old/new 数组。");
+			const result = applyDraftEdits(ws.draft, args.edits as DraftEditItem[]);
+			if (!result.ok) return fail(result.details.join("\n"));
+			editTimeline(next, result.text!, args.edits as DraftEditItem[]);
+			reviseDraft(next, result.text!, name); next.edits++;
+			activity = `改稿 ${args.edits.length} 处`; detail = result.details.join("\n");
+		} else {
+			if (typeof args.content !== "string" || !args.content.trim()) return fail("content 不能为空。");
+			if (name === "draft_append") {
+				const separator = ws.draft ? (typeof args.separator === "string" ? args.separator : "\n\n") : "";
+				const chunk = separator + args.content;
+				reviseDraft(next, ws.draft + chunk, name); next.appends++;
+				next.timeline.push({ kind: "text", text: chunk, draft: true });
+				activity = "续写一段";
+			} else {
+				reviseDraft(next, args.content, internal ? "direct" : name); next.writes++;
+				replaceDraftSegment(next, args.content); activity = internal ? "直出正文已保存" : "写入现稿";
+			}
+			if (internal === true) { next.sealed = true; next.phase = "sealed"; }
+		}
+		// Non-draft text is a transient response stream, not another copy of the committed artifact.
+		if (name !== "draft_seal") next.timeline = next.timeline.filter((s) => s.kind !== "text" || s.draft);
+		delete next.preview;
+		commitWorkspace(ws, deps, next);
+		return receipt(`${activity}，v${ws.version}（${ws.phase}）。${detail ? "\n" + detail : ""}`, activity);
+	} catch (error) { return fail(error instanceof Error ? error.message : String(error)); }
+}

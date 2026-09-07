@@ -29,6 +29,8 @@ import type {
 	MemoryStoreStats,
 } from "./types.ts";
 import { DEFAULT_MEMORY_CONFIG } from "./types.ts";
+import { memoryTextVersion } from "../card-memory-tools.ts";
+import type { MemoryDocument, MemorySearchResult } from "../tools/memory.ts";
 
 function embedCtxFrom(cfg: MemoryConfig): EmbedContext {
 	return { mode: cfg.embedMode, cloud: cfg.cloudEmbed };
@@ -60,7 +62,7 @@ function assertExtraStore(storeId: string): void {
  *  3. 老条目没有 nodeId（本次改动之前入的库）
  */
 function onCurrentBranch(meta: MemoryChunkMeta, branchIds?: ReadonlySet<string>): boolean {
-	if (!branchIds || branchIds.size === 0) return true;
+	if (!branchIds) return true;
 	if (meta.source !== "narrative") return true;
 	if (!meta.nodeId) return true;
 	return branchIds.has(meta.nodeId);
@@ -142,11 +144,33 @@ export function memoryListChunks(
 	cwd: string,
 	scope: MemoryScope,
 	storeId: string,
+	branchIds?: ReadonlySet<string>,
 ): MemoryChunkListItem[] {
 	const cfg = loadMemoryConfig(cwd);
 	const store = cfg.stores.find((s) => s.id === storeId);
 	if (!store) throw new Error(`库不存在：${storeId}`);
-	return listChunks(cwd, normalizeScope(scope), storeId);
+	return listChunks(cwd, normalizeScope(scope), storeId).filter((c) => onCurrentBranch(c.meta, branchIds));
+}
+
+export async function memorySearchReport(cwd: string, scope: MemoryScope, query: string, branchIds: ReadonlySet<string>): Promise<MemorySearchResult> {
+	const cfg = loadMemoryConfig(cwd);
+	const results = await Promise.all(["narrative", "external"].map(async (store) => {
+		if (!cfg.enabled || !cfg.stores.find((s) => s.id === store)?.enabled) return { hits: [], source: { scope: `session:${store}`, status: "disabled" as const } };
+		try {
+			const hits = await memorySearch(cwd, scope, store, query, undefined, branchIds);
+			return { hits: hits.map((h) => ({ ...h, ref: `session:${store}:${h.id}`, meta: { ...h.meta, scope: h.meta.nodeId ? "current-branch" : "session" } })), source: { scope: `session:${store}`, status: "ok" as const } };
+		} catch (e) { return { hits: [], source: { scope: `session:${store}`, status: "error" as const, error: e instanceof Error ? e.message : String(e) } }; }
+	}));
+	return { hits: results.flatMap((r) => r.hits).sort((a, b) => (b.score ?? 0) - (a.score ?? 0)).slice(0, 6), sources: results.map((r) => r.source) };
+}
+
+export function memoryReadChunk(cwd: string, scope: MemoryScope, ref: string, branchIds: ReadonlySet<string>): MemoryDocument | undefined {
+	const match = /^session:(external|narrative):(.+)$/.exec(ref);
+	if (!match) return undefined;
+	const cfg = loadMemoryConfig(cwd);
+	if (!cfg.enabled || !cfg.stores.find((s) => s.id === match[1])?.enabled) throw new Error("该会话记忆库已停用。");
+	const chunk = memoryListChunks(cwd, scope, match[1], branchIds).find((c) => c.id === match[2]);
+	return chunk ? { ref, text: chunk.text, version: memoryTextVersion(chunk.text), meta: { ...chunk.meta, scope: chunk.meta.nodeId ? "current-branch" : "session" } } : undefined;
 }
 
 /** 删除单条 */
