@@ -15,7 +15,7 @@ import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSyn
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { createHash, randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
-import { basename, dirname, extname, isAbsolute, join, normalize } from "node:path";
+import { basename, dirname, extname, isAbsolute, join, normalize, relative } from "node:path";
 import { WebSocketServer, type WebSocket } from "ws";
 import {
 	createAgentSessionFromServices,
@@ -58,6 +58,7 @@ import {
 	dir,
 	migrateLegacyLayout,
 	preferLiyuanAgentHome,
+	seedStageSystemPrompt,
 	resolveConfigPath,
 	takeAgentMergeLog,
 } from "../src/paths.ts";
@@ -168,6 +169,9 @@ import {
 import { mcpEnabledFromBranch } from "../src/stage/mcp-stage.ts";
 
 const cwd = process.cwd();
+// 扮演骨架播种（刀1，docs/PLAN-AGENT-SLOTS.md §七）：首次启动把随包的
+// assets/SYSTEM.md 落到 <agentDir>/SYSTEM.md；已存在不覆盖——改了就是用户的。
+seedStageSystemPrompt(cwd, agentHome);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT ?? 7620);
 const newSessionFlag = process.argv.includes("--new");
@@ -253,7 +257,21 @@ refreshNamesFromConfig();
 // ---------- pi 会话宿主 ----------
 
 const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionManager, sessionStartEvent }) => {
-	const services = await createAgentSessionServices({ cwd });
+	const services = await createAgentSessionServices({
+		cwd,
+		// 刀1（PLAN-AGENT-SLOTS §一）：打开 pi 的上下文文件槽位后，应用根目录自己的
+		// AGENTS.md/CLAUDE.md（开发者指令：铁律、src 索引、测试命令）会顺着 cwd 进
+		// 扮演基座——那是给改梨园代码的 agent 看的，不是剧情素材。只滤应用根这一层；
+		// 卡目录及用户自建的 AGENTS.md（刀3 的正主）照常继承。
+		resourceLoaderOptions: {
+			agentsFilesOverride: (base) => ({
+				agentsFiles: base.agentsFiles.filter((f) => {
+					const rel = relative(cwd, f.path);
+					return !(rel === "AGENTS.md" || rel === "CLAUDE.md" || rel === "AGENTS.override.md");
+				}),
+			}),
+		},
+	});
 	return {
 		...(await createAgentSessionFromServices({ services, sessionManager, sessionStartEvent })),
 		services,

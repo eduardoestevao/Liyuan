@@ -298,6 +298,31 @@ export function takeAgentMergeLog(): string[] {
 }
 
 /**
+ * 播种梨园的扮演骨架到 `<agentDir>/SYSTEM.md`（pi 的 customPrompt 槽位，
+ * `resource-loader.ts:1029` 全局档）。随包发行件在 `assets/SYSTEM.md`。
+ *
+ * **只在文件不存在时播种**：这份文件用户可以改，改了就是他的了，升级不许覆盖。
+ * 用户把它删空/删掉 ⇒ pi 回落自己的 coding 基座，扮演骨架消失——这是用户的选择，
+ * 不做「文件缺失就偷偷用内置副本」的兜底（那就是又一个不可观测的决定，
+ * docs/PLAN-AGENT-SLOTS.md §六）。
+ *
+ * 助手会话共用同一个 agentDir，已在 `server/assistant.ts` 显式退出这个槽位。
+ */
+export function seedStageSystemPrompt(cwd: string, agentDir: string): void {
+	const target = join(agentDir, "SYSTEM.md");
+	if (existsSync(target)) return;
+	const shipped = join(cwd, "assets", "SYSTEM.md");
+	if (!existsSync(shipped)) return;
+	try {
+		mkdirSync(agentDir, { recursive: true });
+		copyFileSync(shipped, target);
+		lastAgentMergeLog.push(`已播种扮演骨架 SYSTEM.md → ${target}`);
+	} catch (err) {
+		console.error(`[liyuan] 播种 SYSTEM.md 失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+}
+
+/**
  * 把 ~/.pi/agent 中缺失或更新的文件并入 ~/.liyuan/agent。
  * - models/auth/settings：目标不存在则拷贝
  * - sessions/**：目标不存在，或源 mtime 更新 → 拷贝（绝不覆盖更新的目标）

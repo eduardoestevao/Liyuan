@@ -242,7 +242,7 @@ function inputStamp(cwd: string, config: RpConfig): string {
 	const parts = [fileStamp(resolveConfigPath(cwd)), fileStamp(resolvePath(cwd, config.card))];
 	for (const rel of mountedLorebookPaths(config)) parts.push(fileStamp(resolvePath(cwd, rel)));
 	parts.push(fileStamp(join(cwd, ".liyuan", "preset-override.json")));
-	parts.push(fileStamp(config.preset ? resolvePath(cwd, config.preset) : join(cwd, "presets", "默认.json")));
+	if (config.preset) parts.push(fileStamp(resolvePath(cwd, config.preset)));
 	// disabledLore 住在 config 里，已被 config 指纹覆盖
 	return parts.join("|");
 }
@@ -327,11 +327,12 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		const name = (config.preset.split(/[\\/]/).pop() ?? config.preset).replace(/\.json$/i, "");
 		presetDoc =
 			readDoc(join(cwd, ".liyuan", "preset-override.json"), name) ?? readDoc(resolvePath(cwd, config.preset), name);
-	} else {
-		// §4.A 默认预设：文风兜底迁出源码，数据发行（presets/默认.json，用户可见可改可换）。
-		// 只在没有用户预设时装；用户预设在场完全不装（不叠加）。
-		presetDoc = readDoc(join(cwd, "presets", "默认.json"), "默认");
 	}
+	// 无预设＝真的无预设（2026-09-08，docs/PLAN-AGENT-SLOTS.md §三）。
+	// 曾有一份 presets/默认.json 在这里兜底文风（7 块 299 字），已整份删除：
+	// 「用户主权」那句与「用户输入本身就是替角色行动」结构性互斥——实测同卡同输入
+	// 两拍，low 档 47%(514/1104 字)、high 档 39%(1965/4986 字) 的思考耗在跟它谈判边界上。
+	// 其余六句是文风要求：无预设态平淡是**条件不是回归**，要文风写 APPEND_SYSTEM.md（用户自己的槽）。
 
 	// marker 材料：梨园按酒馆的槽位交货，**位置由预设作者的 prompt_order 决定**。
 	// 填的是原文——包装（标题/小节名）归预设作者，梨园不替他们加话（铁律一）。

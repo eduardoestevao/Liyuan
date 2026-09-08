@@ -348,29 +348,22 @@ test("loadStageMaterials：启用块全量进提示词——拆层退场后不�
 	}
 });
 
-test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；用户预设在场完全不装", () => {
+test("无预设＝真的无预设（刀1）：config.preset 空 → 零兜底、零主权句、零字数行", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-def-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", first_mes: "你来了。" } }));
 		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟" }));
-		mkdirSync(join(cwd, "presets"), { recursive: true });
-		// 用仓库真身（数据发行件）——验的是「随包发行的那份」能被装载
-		const real = readFileSync(join(process.cwd(), "presets", "默认.json"), "utf8");
-		writeFileSync(join(cwd, "presets", "默认.json"), real);
 
 		const m = loadStageMaterials(cwd);
-		assert.equal(m.presetDoc?.name, "默认", "默认预设装载");
-		assert.equal(m.presetActive, true, "presetActive 恒真（§4.A）");
+		assert.equal(m.presetDoc, null, "默认预设已删除，无预设时 presetDoc 为 null");
+		assert.equal(m.presetActive, false, "presetActive 为假");
+		assert.deepEqual(m.presetBefore, [], "零装配段");
 		const resident = m.presetBefore.map((p) => p.text).join("\n");
-		assert.ok(resident.includes("绝不替 沈舟"), "主权兜底由默认预设承接（宏已求值）");
-		assert.ok(resident.includes("斜体"), "视角/排版承接");
-		assert.ok(resident.includes("感官细节"), "感官承接");
-		assert.ok(resident.includes("忌 AI 腔"), "忌AI腔承接");
-		// 篇幅兜底数据化：extractDraftRules 能从默认预设提出 wordRange
+		assert.ok(!resident.includes("绝不替"), "主权硬边界句不在场（吃掉 39~47% 思考的来源，PLAN-AGENT-SLOTS §三）");
 		const rules = extractDraftRules(m.presetRuleTexts);
-		assert.deepEqual(rules.wordRange, { min: 800, max: 1500 }, "篇幅从默认预设提取");
+		assert.equal(rules.wordRange, undefined, "没有预设就没有字数来源，不补兜底");
 
-		// 用户预设在场：默认预设完全不装（不叠加）
+		// 用户预设在场：照常装载（presets/ 删除不影响用户预设路径）
 		writeFileSync(
 			join(cwd, "preset.json"),
 			JSON.stringify({ name: "用户预设", samplers: {}, blocks: [{ id: "u1", channel: "system", enabled: true, content: "用户自己的文风。" }] }),
@@ -381,7 +374,7 @@ test("默认预设（§4.A）：config.preset 空 → 装 presets/默认.json；
 		);
 		const m2 = loadStageMaterials(cwd);
 		assert.equal(m2.presetDoc?.name, "preset", "预设名取文件名，不取文件里写的 name");
-		assert.ok(!m2.presetBefore.map((p) => p.text).join("").includes("绝不替"), "默认预设零叠加");
+		assert.ok(m2.presetBefore.map((p) => p.text).join("").includes("用户自己的文风"), "用户预设正文在场");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

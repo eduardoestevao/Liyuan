@@ -19,7 +19,8 @@ COPY assets ./assets
 # skills/ 默认已无内置 skill（三档退役后 git rm）；git 不存空目录，clean clone 里没有它，
 # 硬 COPY 会挂（CI docker build："/skills": not found）。运行时 /app/skills 由卷提供，
 # 用户自建的 skill 落在那里；下面的 mkdir 保证镜像里有个空目录。
-COPY presets ./presets
+# presets/（默认预设）刀1 已删：presets/默认.json 随「无预设＝真的无预设」退役，
+# 用户预设住在 assets/presets（随包剔除）。扮演骨架在 assets/SYSTEM.md（上面已 COPY）。
 COPY .liyuan/extensions ./.liyuan/extensions
 COPY liyuan.config.example.json liyuan.agent.example.json ./
 COPY start.sh docker-entrypoint.sh ./

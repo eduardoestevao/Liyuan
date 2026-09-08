@@ -284,6 +284,9 @@ function Stage-Clean {
     "_*",
     "TESTING.md",
     "CLAUDE.md",
+    # 根 AGENTS.md 同为开发者指令（铁律/src 索引/测试命令）；扮演会话的
+    # ResourceLoader 已按路径滤掉它，发布包也不再分发（cards/ 内的不受影响）
+    "AGENTS.md",
     "docs\st-ux-inventory.md",
     "docs\superpowers",
     # 内部架构设计文档：研发过程记录（含逆向分析路径、未修问题定位、

@@ -1286,7 +1286,40 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	// 回归 pi · 刀1：通道的唯一入口。主生成循环归 AgentSession，
 	// Stage 只处理每拍素材/稿纸/收尾；after_provider_response 是 HTTP 元数据，
 	// 模型增量与完整消息分别经 message_update / message_end。
-	pi.on("before_agent_start", () => activeStage ? { systemPrompt: activeStage.systemPrompt } : undefined);
+	//
+	// 刀1（docs/PLAN-AGENT-SLOTS.md §一/§七）：system 从「整份替换」改为「贡献」。
+	// pi 的基座串（SYSTEM.md 扮演骨架 + APPEND_SYSTEM.md 用户规矩 + AGENTS.md 链
+	// + skills 索引 + cwd 行）在前，梨园的每卡运行时段（用户身份/卡字段/常驻设定/
+	// 消息流约定/MCP）接在其后。三个文件槽位从此对用户生效。
+	//
+	// SYSTEM.md 缺席（customPrompt 为空：未播种或被清空）时 pi 会回落 coding 基座，
+	// 与「你是角色扮演 agent」互斥——此时退回随包骨架原文并每拍告警。这不是隐形兜底：
+	// 告警可见，用户要么建回文件、要么看着告警知道发生了什么。
+	let skeletonCache: string | null = null;
+	const stageSystemSkeleton = (): string => {
+		if (skeletonCache !== null) return skeletonCache;
+		try {
+			skeletonCache = readFileSync(new URL("../../assets/SYSTEM.md", import.meta.url), "utf-8");
+		} catch (err) {
+			skeletonCache = "";
+			console.error(
+				`[stage] 扮演骨架不可读（assets/SYSTEM.md）：${err instanceof Error ? err.message : String(err)}` +
+					"；本拍 system 无骨架，只有运行时段",
+			);
+		}
+		return skeletonCache;
+	};
+	pi.on("before_agent_start", (event) => {
+		if (!activeStage) return undefined;
+		let base = event.systemPrompt;
+		if (!event.systemPromptOptions?.customPrompt) {
+			const skeleton = stageSystemSkeleton();
+			if (!skeleton) return { systemPrompt: activeStage.systemPrompt };
+			console.error("[stage] SYSTEM.md 缺席，本拍用随包扮演骨架（建回 <agentDir>/SYSTEM.md 可停用本告警）");
+			base = skeleton;
+		}
+		return { systemPrompt: `${base}\n\n${activeStage.systemPrompt}` };
+	});
 	pi.on("context", (event) => activeStage ? { messages: activeStage.context(event.messages) as typeof event.messages } : undefined);
 	pi.on("before_provider_request", (event, ctx) => activeStage?.providerPayload(event.payload, ctx.model as never));
 	pi.on("message_update", (event) => activeStage?.update(event.assistantMessageEvent as never));

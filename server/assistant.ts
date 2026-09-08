@@ -1250,6 +1250,12 @@ export async function createAssistantHost(opts: CreateAssistantHostOptions): Pro
 			noPromptTemplates: true,
 			noThemes: true,
 			noContextFiles: true,
+			// SYSTEM.md / APPEND_SYSTEM.md 是**扮演侧**的槽位（docs/PLAN-AGENT-SLOTS.md §一）：
+			// 前者装梨园的扮演骨架，后者装用户的扮演规矩。两者都住 agentDir，而 agentDir 被
+			// 扮演会话与助手会话共用 ⇒ 不显式退出，助手的基座会被换成「你是角色扮演 agent」。
+			// 助手是 coding agent，用 pi 自己的基座。
+			systemPromptOverride: () => undefined,
+			appendSystemPromptOverride: () => [],
 			extensionFactories: [stagehandExtension(cwd, bridge, selfInfo, isDelegating)],
 		});
 		await loader.reload();
