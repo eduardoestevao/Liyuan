@@ -66,22 +66,27 @@ function diffPreview(base: string, mine: string): string {
 /** 条目形提示词文件的双视图编辑器（GitHub 式 条目|源码）：文件是真源，条目是投影 */
 function EntriesEditor({
 	title,
-	hint,
 	initial,
 	onSave,
 	busy,
+	effect = "beat",
 }: {
 	title: string;
-	hint: string;
 	initial: string;
 	onSave: (content: string) => Promise<void>;
 	busy: boolean;
+	/** 保存后何时生效：beat=下一拍（默认），restart=需重启 */
+	effect?: "beat" | "restart";
 }) {
 	const [text, setText] = useState(initial);
 	const [dirty, setDirty] = useState(false);
 	const [view, setView] = useState<"entries" | "source">("entries");
 	const [open, setOpen] = useState<string | null>(null);
 	const [drafts, setDrafts] = useState<Record<string, string>>({});
+	const [creating, setCreating] = useState(false);
+	const [newName, setNewName] = useState("");
+	const [newContent, setNewContent] = useState("");
+	const [createError, setCreateError] = useState<string | null>(null);
 	const lastInitial = useRef(initial);
 	useEffect(() => {
 		if (!dirty && initial !== lastInitial.current) setText(initial);
@@ -94,6 +99,26 @@ function EntriesEditor({
 			setText(next);
 			setDirty(true);
 		}
+	};
+	const effectNote = effect === "restart" ? "保存后重启生效" : "保存后下一拍生效";
+
+	const confirmCreate = () => {
+		const name = newName.trim();
+		if (!name) return;
+		if (entries.some((e) => e.name === name)) {
+			setCreateError(`已有同名条目「${name}」`);
+			return;
+		}
+		const next = appendEntry(text, name, newContent);
+		if (next === null) return;
+		apply(next);
+		setCreating(false);
+		setOpen(name);
+		setDrafts((d) => ({ ...d, [name]: newContent }));
+	};
+	const cancelCreate = () => {
+		setCreating(false);
+		setCreateError(null);
 	};
 
 	return (
@@ -130,7 +155,6 @@ function EntriesEditor({
 					</button>
 				</div>
 			</div>
-			<div className="field-hint">{hint}</div>
 			{view === "source" ? (
 				<textarea
 					className="panel-search ta preset-block-ta"
@@ -211,51 +235,89 @@ function EntriesEditor({
 							)}
 						</div>
 					))}
+					{creating && (
+						<div className="lore-item preset-block open">
+							<div className="lore-head">
+								<div className="block-info" style={{ flex: 1 }}>
+									<input
+										className="panel-search"
+										placeholder="条目名（## 小节标题）"
+										value={newName}
+										disabled={busy}
+										autoFocus
+										onChange={(ev) => {
+											setNewName(ev.target.value);
+											setCreateError(null);
+										}}
+										onKeyDown={(ev) => {
+											if (ev.key === "Enter") void confirmCreate();
+											if (ev.key === "Escape") cancelCreate();
+										}}
+									/>
+								</div>
+							</div>
+							<div className="preset-block-body">
+								<label className="field-label">正文</label>
+								<textarea
+									className="panel-search ta preset-block-ta"
+									rows={6}
+									spellCheck={false}
+									value={newContent}
+									disabled={busy}
+									onChange={(ev) => setNewContent(ev.target.value)}
+								/>
+								{createError && (
+									<div className="field-hint" style={{ color: "var(--danger, #e07a5f)" }}>
+										{createError}
+									</div>
+								)}
+								<div className="panel-row" style={{ marginTop: 6 }}>
+									<button className="act" disabled={busy || !newName.trim()} onClick={() => void confirmCreate()}>
+										添加
+									</button>
+									<button className="act" onClick={() => cancelCreate()}>
+										取消
+									</button>
+								</div>
+							</div>
+						</div>
+					)}
 					<div className="panel-row" style={{ marginTop: 6 }}>
 						<button
 							className="act"
-							disabled={busy}
+							disabled={busy || creating}
 							onClick={() => {
-								const name = prompt("条目名（## 小节标题）：", "");
-								if (!name?.trim()) return;
-								const next = appendEntry(text, name.trim(), "（内容）");
-								if (next === null) {
-									alert("已有同名条目");
-									return;
-								}
-								apply(next);
-								setOpen(name.trim());
-								setDrafts((d) => ({ ...d, [name.trim()]: "（内容）" }));
+								setCreating(true);
+								setNewName("");
+								setNewContent("");
+								setCreateError(null);
 							}}
 						>
 							＋ 添加条目
 						</button>
 					</div>
-					<div className="field-hint">
-						关闭的条目在文件里被 HTML 注释包裹；两视图改的是同一份文件，开关即切换（下一拍生效）。
-					</div>
 				</>
 			)}
 			<div className="field-hint">
-				{text.length.toLocaleString()} 字{dirty ? " · 未保存" : ""} · 保存后下一拍生效
+				{text.length.toLocaleString()} 字{dirty ? " · 未保存" : ""} · {effectNote}
 			</div>
 		</section>
 	);
 }
 
-/** 一份规矩文件的编辑器：读 / 改 / 存 */
+/** 底座 blob 编辑器（SYSTEM.md 用）：纯源码 */
 function RulesEditor({
 	title,
-	hint,
 	initial,
 	onSave,
 	busy,
+	effect = "beat",
 }: {
 	title: string;
-	hint: string;
 	initial: string;
 	onSave: (content: string) => Promise<void>;
 	busy: boolean;
+	effect?: "beat" | "restart";
 }) {
 	const [text, setText] = useState(initial);
 	const [dirty, setDirty] = useState(false);
@@ -280,20 +342,21 @@ function RulesEditor({
 					{dirty ? "保存 *" : "保存"}
 				</button>
 			</div>
-			<div className="field-hint">{hint}</div>
 			<textarea
 				className="panel-search ta preset-block-ta"
 				rows={12}
 				spellCheck={false}
 				value={text}
 				disabled={busy}
-				placeholder="写给模型的常驻规矩（markdown）…"
+				placeholder="写给模型的常驻提示词（markdown）…"
 				onChange={(e) => {
 					setText(e.target.value);
 					setDirty(true);
 				}}
 			/>
-			<div className="field-hint">{text.length.toLocaleString()} 字 · 保存后下一拍生效</div>
+			<div className="field-hint">
+				{text.length.toLocaleString()} 字{dirty ? " · 未保存" : ""} · {effect === "restart" ? "保存后重启生效" : "保存后下一拍生效"}
+			</div>
 		</section>
 	);
 }
@@ -342,11 +405,7 @@ export function PresetPanel({
 				);
 				return;
 			}
-			toast(
-				"info",
-				`已转译为本卡 APPEND_SYSTEM.md（${(r.chars ?? 0).toLocaleString()} 字，${r.lines ?? 0} 块` +
-					`；采样参数 ${r.samplersMoved ?? 0} 项迁入 config；报告见 ${r.report ?? ""}）`,
-			);
+			toast("info", `已转译为本卡 APPEND_SYSTEM.md（${(r.chars ?? 0).toLocaleString()} 字）`);
 			files.reload();
 			rules.reload();
 		});
@@ -612,14 +671,13 @@ export function PresetPanel({
 						<>
 							<RulesEditor
 								title="SYSTEM.md"
-								hint={`环境底座（最小，参照 pi 原版）：只说你是谁、工作区里有什么——不规定怎么做事。改它要重启梨园才生效 · 文件：${rules.data.system.path}`}
+								effect="restart"
 								initial={rules.data.system.content}
 								onSave={(c) => saveSystem(c)}
 								busy={busy}
 							/>
 							<EntriesEditor
 								title="APPEND_SYSTEM.md（全局）"
-								hint={`对所有卡生效的常驻提示词——默认装着梨园的扮演定义（一拍/稿纸/检索/岔口），可改可换；想换成全局 agent 式的应答也改这里 · 文件：${rules.data.global.path}`}
 								initial={rules.data.global.content}
 								onSave={(c) => saveRules("global", c)}
 								busy={busy}
@@ -652,11 +710,9 @@ export function PresetPanel({
 									)}
 								</div>
 							</div>
-							<div className="field-hint">
-								{agents.data.active === "file"
-									? `文件为准：卡常驻内容（卡身份/字段/常驻设定/作者指令）全部来自 ${agents.data.path}`
-									: `还没有卡档案——当前卡内容以**自动投影**提供（每次装配现拼）。点「让助手生成」把卡内容落成可编辑的档案。`}
-							</div>
+							{agents.data.active === "projection" && (
+								<div className="field-hint">还没有卡档案——当前卡内容以自动投影提供。</div>
+							)}
 							{showDiff && (
 								<pre className="field-hint" style={{ whiteSpace: "pre-wrap", maxHeight: 260, overflow: "auto" }}>
 									{diffPreview(agents.data.projection, agents.data.content || agents.data.projection)}
@@ -667,7 +723,6 @@ export function PresetPanel({
 					{agents.data && (
 						<EntriesEditor
 							title="AGENTS.md（卡档案）"
-							hint={`这张卡的常驻内容（卡身份/设定/版式）${agents.data.exists ? "" : "（还不存在——保存即建立，卡内容从此以文件为准）"} · 文件：${agents.data.path}`}
 							initial={agents.data.content}
 							onSave={saveAgents}
 							busy={busy}
@@ -676,7 +731,6 @@ export function PresetPanel({
 					{rules.data && (
 						<EntriesEditor
 							title="APPEND_SYSTEM.md（这张卡）"
-							hint={`只对「${rules.data.card.cardName}」生效的常驻提示词，接在全局之后 · 文件：${rules.data.card.path}`}
 							initial={rules.data.card.content}
 							onSave={(c) => saveRules("card", c)}
 							busy={busy}
@@ -704,10 +758,7 @@ export function PresetPanel({
 								/>
 							</label>
 						</div>
-						<div className="field-hint">
-							预设不再是「活物」：转译一次，落成本卡规矩文件；采样参数进 config。原文永远留在库里，可重新转译。
-						</div>
-						<PanelStatus loading={files.loading} error={files.error} hasData={!!files.data} />
+							<PanelStatus loading={files.loading} error={files.error} hasData={!!files.data} />
 						{files.data?.presets.map((p) => (
 							<div key={p.file} className="lore-item">
 								<div className="lore-head">
@@ -742,7 +793,7 @@ export function PresetPanel({
 							</div>
 						))}
 						{files.data && files.data.presets.length === 0 && (
-							<div className="sp-empty">预设库是空的。没有预设也完全可以——常驻提示词直接写在「全局系统提示词」里。</div>
+							<div className="sp-empty">预设库是空的。</div>
 						)}
 					</section>
 
@@ -754,10 +805,7 @@ export function PresetPanel({
 									转译并停用预设
 								</button>
 							</div>
-							<div className="field-hint">
-								这份预设仍按旧管线装配。转译后它只留档，内容进「局部提示词」，此编辑器随之消失。
-							</div>
-							<div className="panel-row list-toolbar preset-actions">
+									<div className="panel-row list-toolbar preset-actions">
 								<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={() => void saveToDisk()}>
 									{dirty ? "保存 *" : "保存"}
 								</button>
