@@ -130,6 +130,7 @@ import {
 	globalRulesPath,
 	readUserRules,
 	rulesAgentDir,
+	systemPromptPath,
 	translatePresetToRules,
 	translateReport,
 } from "../src/user-rules.ts";
@@ -2754,13 +2755,15 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				sendJson(res, 200, { name: presetNameFromFile(file), json: JSON.parse(readFileSync(abs, "utf8")) });
 				return true;
 			}
-			// ---- 用户规矩（刀2，docs/PLAN-AGENT-SLOTS.md §七）：全局 + 卡级两份 ----
-			case "GET /api/rules": {				const config = loadConfig(host.cwd);
+			// ---- 用户提示词（刀2/前端重构）：SYSTEM.md + 两级 APPEND_SYSTEM.md ----
+			case "GET /api/rules": {
+				const config = loadConfig(host.cwd);
 				const cardDir = dirname(resolvePath(host.cwd, config.card));
 				const rules = readUserRules(cardDir);
 				sendJson(res, 200, {
 					global: { content: rules.global, path: globalRulesPath() },
 					card: { content: rules.card, path: cardRulesPath(cardDir), cardName: config.displayName ?? basename(config.card).replace(/\.(png|json)$/i, "") },
+					system: { content: existsSync(systemPromptPath()) ? readFileSync(systemPromptPath(), "utf8") : "", path: systemPromptPath() },
 				});
 				return true;
 			}
@@ -2770,7 +2773,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				if (typeof body.content !== "string") throw new Error("缺少 content");
 				const config = loadConfig(host.cwd);
 				let abs: string;
-				if (body.scope === "global") {
+				if (body.scope === "system") {
+					abs = systemPromptPath();
+					mkdirSync(rulesAgentDir(), { recursive: true });
+				} else if (body.scope === "global") {
 					abs = globalRulesPath();
 					mkdirSync(rulesAgentDir(), { recursive: true });
 				} else if (body.scope === "card") {
@@ -2778,7 +2784,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					mkdirSync(cardDir, { recursive: true });
 					abs = cardRulesPath(cardDir);
 				} else {
-					throw new Error("scope 必须是 global 或 card");
+					throw new Error("scope 必须是 system、global 或 card");
 				}
 				writeFileSync(abs, body.content, "utf8");
 				await host.softRefreshConfig();

@@ -36,6 +36,15 @@ export function globalRulesPath(): string {
 	return join(rulesAgentDir(), USER_RULES_FILE);
 }
 
+/**
+ * SYSTEM.md（刀1 播种的扮演骨架）：pi customPrompt 槽位，启动时装载缓存——
+ * 与两级规矩文件（每拍现读）不同，改它要**重启梨园**才生效；清空/删除则退回
+ * 随包骨架并每拍告警（roleplay.ts 兜底）。前端「全局系统提示词」编辑器用。
+ */
+export function systemPromptPath(): string {
+	return join(rulesAgentDir(), "SYSTEM.md");
+}
+
 export function cardRulesPath(cardDir: string): string {
 	return join(cardDir, USER_RULES_FILE);
 }

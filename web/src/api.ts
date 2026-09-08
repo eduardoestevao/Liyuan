@@ -564,10 +564,11 @@ export interface PresetsResponse {
 	presets: PresetFileInfo[];
 }
 
-/** 用户规矩（刀2）：全局 + 卡级两份 APPEND_SYSTEM.md */
+/** 用户提示词：SYSTEM.md（全局系统提示词）+ 两级 APPEND_SYSTEM.md（全局/这张卡） */
 export interface RulesResponse {
 	global: { content: string; path: string };
 	card: { content: string; path: string; cardName: string };
+	system: { content: string; path: string };
 }
 
 export interface RulesSaveResponse {

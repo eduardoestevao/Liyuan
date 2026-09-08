@@ -277,6 +277,20 @@ AGENTS.md（开发者指令：铁律、src 索引、测试命令）顺着 cwd �
 3. 检索体验（B6/B7 前端面）：命中条目的展示、lorebook_search 结果的呈现；
 4. 预设库页签在全部用户转译完后的最终退役形状。
 
+## 七F、命名与分栏定案（2026-09-08，用户回来看过前端后）
+
+板块叫**「提示词」**（「规矩」一词弃用——玩 agent 的用户默认有水平，用 agent 术语）。
+两栏四块：
+
+| 栏目 | 板块 | 文件 |
+|---|---|---|
+| **全局系统提示词** | SYSTEM.md / APPEND_SYSTEM.md（全局） | `<agentDir>/SYSTEM.md`、`<agentDir>/APPEND_SYSTEM.md` |
+| **局部提示词** | AGENTS.md（卡档案）/ APPEND_SYSTEM.md（这张卡） | `cards/<卡>/AGENTS.md`、`cards/<卡>/APPEND_SYSTEM.md` |
+
+用户定的语义：**全局 APPEND_SYSTEM.md 的角色＝原来的预设**（对所有卡的常驻自定义），
+卡级 APPEND_SYSTEM.md 才是针对这张卡的。SYSTEM.md 编辑器随本次落地（改后重启生效、
+清空退回随包骨架——提示语写进编辑器 hint，不装作热生效）。
+
 ## 八、五个岔口的裁定（2026-09-08，用户授权我定）
 **1. project trust —— 问题不存在，无需选。**
 

@@ -1,10 +1,11 @@
 /**
- * 「我的规矩」面板（刀2，docs/PLAN-AGENT-SLOTS.md §七）：
- * - 我的规矩：两级 APPEND_SYSTEM.md 编辑器（全局一份 + 当前卡一份），保存即落盘，
- *   下一拍生效（stage 每拍现读）
- * - 预设库：酒馆预设退场为一次性转译——导入原文 → 转译成本卡规矩文件 + 采样参数进
- *   config + 逐块去向报告。旧的块级编辑 UI 只在 config.preset 仍指向某文件时作为
- *   遗留态出现（未迁移用户不受影响，不强制）。
+ * 「提示词」面板（docs/PLAN-AGENT-SLOTS.md §七，2026-09-08 用户定名与分栏）：
+ * - 全局系统提示词：SYSTEM.md（梨园扮演骨架，改后重启生效）+ APPEND_SYSTEM.md
+ *   （全局，对所有卡生效——角色相当于原来的预设）
+ * - 局部提示词：这张卡的 AGENTS.md（卡档案）+ 这张卡的 APPEND_SYSTEM.md
+ * - 预设库：酒馆预设退场为一次性转译——导入原文 → 转译成本卡 APPEND_SYSTEM.md +
+ *   采样参数进 config + 逐块去向报告。旧的块级编辑 UI 只在 config.preset 仍指向
+ *   某文件时作为遗留态出现（未迁移用户不受影响，不强制）。
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
@@ -123,7 +124,7 @@ export function PresetPanel({
 	const agents = usePanelData(() => apiGet<CardAgentsResponse>("/api/card-agents"), { cacheKey: "/api/card-agents" });
 	const { busy, run } = useAction(toast);
 
-	const [tab, setTab] = useState<"rules" | "card" | "library">("rules");
+	const [tab, setTab] = useState<"global" | "local" | "library">("global");
 	const [showDiff, setShowDiff] = useState(false);
 
 	const saveRules = useCallback(
@@ -134,20 +135,29 @@ export function PresetPanel({
 		[toast],
 	);
 
-	/** 预设 → 本卡规矩文件（一次性转译） */
+	/** SYSTEM.md：全局系统提示词（改后重启生效，提示语随保存回执） */
+	const saveSystem = useCallback(
+		async (content: string) => {
+			const r = await apiPut<RulesSaveResponse>("/api/rules", { scope: "system", content });
+			toast("info", `SYSTEM.md 已保存（${r.chars.toLocaleString()} 字）——重启梨园后生效`);
+		},
+		[toast],
+	);
+
+	/** 预设 → 本卡提示词文件（一次性转译） */
 	const translate = (file: string, overwrite: boolean) =>
 		run(async () => {
 			const r = await apiPost<PresetTranslateResponse>("/api/presets/translate", { file, overwrite });
 			if (r.exists) {
 				toast(
 					"warning",
-					"本卡已有规矩文件——再点一次「转译」将覆盖（现有内容请先自行备份）",
+					"本卡已有 APPEND_SYSTEM.md——再点一次「转译」将覆盖（现有内容请先自行备份）",
 				);
 				return;
 			}
 			toast(
 				"info",
-				`已转译为本卡规矩文件（${(r.chars ?? 0).toLocaleString()} 字，${r.lines ?? 0} 块` +
+				`已转译为本卡 APPEND_SYSTEM.md（${(r.chars ?? 0).toLocaleString()} 字，${r.lines ?? 0} 块` +
 					`；采样参数 ${r.samplersMoved ?? 0} 项迁入 config；报告见 ${r.report ?? ""}）`,
 			);
 			files.reload();
@@ -352,7 +362,7 @@ export function PresetPanel({
 				"/api/presets/import",
 				{ name: file.name.replace(/\.json$/i, ""), json },
 			);
-			toast("info", `已导入预设库（${r.blockCount} 条 · 启用 ${r.enabledCount}）——点「转译」生成本卡规矩文件`);
+			toast("info", `已导入预设库（${r.blockCount} 条 · 启用 ${r.enabledCount}）——点「转译」生成本卡 APPEND_SYSTEM.md`);
 			files.reload();
 		} catch (e) {
 			toast("error", e instanceof Error ? e.message : String(e));
@@ -380,20 +390,20 @@ export function PresetPanel({
 				<button
 					type="button"
 					role="tab"
-					aria-selected={tab === "rules"}
-					className={`preset-tab ${tab === "rules" ? "active" : ""}`}
-					onClick={() => setTab("rules")}
+					aria-selected={tab === "global"}
+					className={`preset-tab ${tab === "global" ? "active" : ""}`}
+					onClick={() => setTab("global")}
 				>
-					我的规矩
+					全局系统提示词
 				</button>
 				<button
 					type="button"
 					role="tab"
-					aria-selected={tab === "card"}
-					className={`preset-tab ${tab === "card" ? "active" : ""}`}
-					onClick={() => setTab("card")}
+					aria-selected={tab === "local"}
+					className={`preset-tab ${tab === "local" ? "active" : ""}`}
+					onClick={() => setTab("local")}
 				>
-					这张卡
+					局部提示词
 					{agents.data?.active === "projection" ? <span className="preset-tab-count">投影</span> : null}
 				</button>
 				<button
@@ -408,23 +418,23 @@ export function PresetPanel({
 				</button>
 			</div>
 
-			{tab === "rules" && (
+			{tab === "global" && (
 				<>
 					<PanelStatus loading={rules.loading} error={rules.error} hasData={!!rules.data} />
 					{rules.data && (
 						<>
 							<RulesEditor
-								title="全局规矩"
-								hint={`对每张卡生效 · 文件：${rules.data.global.path}`}
-								initial={rules.data.global.content}
-								onSave={(c) => saveRules("global", c)}
+								title="SYSTEM.md"
+								hint={`梨园的扮演骨架（一拍/稿纸/检索纪律）。改它要重启梨园才生效；清空则退回随包骨架并每拍告警 · 文件：${rules.data.system.path}`}
+								initial={rules.data.system.content}
+								onSave={(c) => saveSystem(c)}
 								busy={busy}
 							/>
 							<RulesEditor
-								title={`这张卡（${rules.data.card.cardName}）`}
-								hint={`只对当前卡生效，接在全局之后 · 文件：${rules.data.card.path}`}
-								initial={rules.data.card.content}
-								onSave={(c) => saveRules("card", c)}
+								title="APPEND_SYSTEM.md（全局）"
+								hint={`对所有卡生效的常驻提示词——角色相当于原来的预设 · 文件：${rules.data.global.path}`}
+								initial={rules.data.global.content}
+								onSave={(c) => saveRules("global", c)}
 								busy={busy}
 							/>
 						</>
@@ -432,7 +442,7 @@ export function PresetPanel({
 				</>
 			)}
 
-			{tab === "card" && (
+			{tab === "local" && (
 				<>
 					<PanelStatus loading={agents.loading} error={agents.error} hasData={!!agents.data} />
 					{agents.data && (
@@ -469,10 +479,19 @@ export function PresetPanel({
 					)}
 					{agents.data && (
 						<RulesEditor
-							title={"cards/<卡>/AGENTS.md"}
-							hint={`卡常驻内容档案${agents.data.exists ? "" : "（还不存在——保存即建立，卡内容从此以文件为准）"} · 文件：${agents.data.path}`}
+							title="AGENTS.md（卡档案）"
+							hint={`这张卡的常驻内容（卡身份/设定/版式）${agents.data.exists ? "" : "（还不存在——保存即建立，卡内容从此以文件为准）"} · 文件：${agents.data.path}`}
 							initial={agents.data.content}
 							onSave={saveAgents}
+							busy={busy}
+						/>
+					)}
+					{rules.data && (
+						<RulesEditor
+							title="APPEND_SYSTEM.md（这张卡）"
+							hint={`只对「${rules.data.card.cardName}」生效的常驻提示词，接在全局之后 · 文件：${rules.data.card.path}`}
+							initial={rules.data.card.content}
+							onSave={(c) => saveRules("card", c)}
 							busy={busy}
 						/>
 					)}
@@ -536,7 +555,7 @@ export function PresetPanel({
 							</div>
 						))}
 						{files.data && files.data.presets.length === 0 && (
-							<div className="sp-empty">预设库是空的。没有预设也完全可以——规矩直接写在「我的规矩」里。</div>
+							<div className="sp-empty">预设库是空的。没有预设也完全可以——常驻提示词直接写在「全局系统提示词」里。</div>
 						)}
 					</section>
 
@@ -549,7 +568,7 @@ export function PresetPanel({
 								</button>
 							</div>
 							<div className="field-hint">
-								这份预设仍按旧管线装配。转译后它只留档，规矩进「我的规矩」，此编辑器随之消失。
+								这份预设仍按旧管线装配。转译后它只留档，内容进「局部提示词」，此编辑器随之消失。
 							</div>
 							<div className="panel-row list-toolbar preset-actions">
 								<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={() => void saveToDisk()}>

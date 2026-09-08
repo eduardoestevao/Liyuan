@@ -194,7 +194,7 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	sessions: "会话",
 	worldline: "世界线",
 	connect: "连接",
-	preset: "我的规矩",
+	preset: "提示词",
 	powers: "扩展能力",
 	settings: "设置",
 	card: "角色卡",
