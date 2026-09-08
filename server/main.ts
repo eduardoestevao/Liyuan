@@ -270,6 +270,9 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 					return !(rel === "AGENTS.md" || rel === "CLAUDE.md" || rel === "AGENTS.override.md");
 				}),
 			}),
+			// 刀2：用户规矩由 stage 每拍现读（materials 指纹缓存，改完下一拍生效）；
+			// pi 原生的 APPEND_SYSTEM.md 发现是启动时缓存的，退出它＝单一主人=stage，不双份。
+			appendSystemPromptOverride: () => [],
 		},
 	});
 	return {

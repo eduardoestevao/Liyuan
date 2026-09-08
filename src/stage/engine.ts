@@ -829,6 +829,7 @@ export class StageEngine {
 			card,
 			config,
 			constantLore: constantLoreOf(materials),
+			userRules: materials.userRules,
 			// 预设装配段：原文原序，marker 已按预设作者的位置填入梨园材料
 			presetBefore: materials.presetBefore.map((p) => p.text),
 			filledMarkers: materials.filledMarkers,
@@ -938,7 +939,8 @@ export class StageEngine {
 			sm.flush();
 			return { aborted: true };
 		}
-		const samplers = materials.presetDoc?.samplers;
+		// 采样参数（刀2 D1）：config.samplers（预设转译迁来的家）优先，遗留预设文件兜底
+		const samplers = config.samplers ?? materials.presetDoc?.samplers;
 		let final: AssistantMsgLike | null = null;
 		let errored: string | undefined;
 		let text = "";

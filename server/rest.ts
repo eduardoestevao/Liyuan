@@ -125,6 +125,14 @@ import {
 	type PresetPatch,
 } from "../src/preset-doc.ts";
 import {
+	cardRulesPath,
+	globalRulesPath,
+	readUserRules,
+	rulesAgentDir,
+	translatePresetToRules,
+	translateReport,
+} from "../src/user-rules.ts";
+import {
 	allocateServerId,
 	discoverMcpCatalog,
 	getMcpHub,
@@ -440,6 +448,7 @@ const CONFIG_EDITABLE = new Set([
 	"lorebook",
 	"lorebooks",
 	"preset",
+	"samplers",
 	"disabledLore",
 	"backendControl",
 	"creationMode",
@@ -503,6 +512,18 @@ export function applyConfigPatch(config: RpConfig, patch: Record<string, unknown
 	// 挂载书：lorebooks 数组优先；兼容旧单本 lorebook
 	const paths = mountedLorebookPaths(next as RpConfig);
 	Object.assign(next, setMountedLorebooks(next as RpConfig, paths));
+	// 采样参数（刀2 D1）：只收 { 键: 数字 }，坏键丢弃
+	if (next.samplers !== undefined) {
+		const src = next.samplers as Record<string, unknown> | null;
+		const out: Record<string, number> = {};
+		if (src && typeof src === "object") {
+			for (const [k, v] of Object.entries(src)) {
+				if (typeof v === "number" && Number.isFinite(v)) out[k] = v;
+			}
+		}
+		if (Object.keys(out).length > 0) next.samplers = out;
+		else delete next.samplers;
+	}
 	return next as unknown as RpConfig;
 }
 
@@ -2720,6 +2741,87 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const file = validatePresetPath(query.get("file") ?? "");
 				const abs = resolvePath(host.cwd, file);
 				sendJson(res, 200, { name: presetNameFromFile(file), json: JSON.parse(readFileSync(abs, "utf8")) });
+				return true;
+			}
+			// ---- 用户规矩（刀2，docs/PLAN-AGENT-SLOTS.md §七）：全局 + 卡级两份 ----
+			case "GET /api/rules": {
+				const config = loadConfig(host.cwd);
+				const cardDir = dirname(resolvePath(host.cwd, config.card));
+				const rules = readUserRules(cardDir);
+				sendJson(res, 200, {
+					global: { content: rules.global, path: globalRulesPath() },
+					card: { content: rules.card, path: cardRulesPath(cardDir), cardName: config.displayName ?? basename(config.card).replace(/\.(png|json)$/i, "") },
+				});
+				return true;
+			}
+			case "PUT /api/rules": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { scope?: string; content?: string };
+				if (typeof body.content !== "string") throw new Error("缺少 content");
+				const config = loadConfig(host.cwd);
+				let abs: string;
+				if (body.scope === "global") {
+					abs = globalRulesPath();
+					mkdirSync(rulesAgentDir(), { recursive: true });
+				} else if (body.scope === "card") {
+					const cardDir = dirname(resolvePath(host.cwd, config.card));
+					mkdirSync(cardDir, { recursive: true });
+					abs = cardRulesPath(cardDir);
+				} else {
+					throw new Error("scope 必须是 global 或 card");
+				}
+				writeFileSync(abs, body.content, "utf8");
+				await host.softRefreshConfig();
+				sendJson(res, 200, { ok: true, path: abs, chars: body.content.length });
+				return true;
+			}
+			/**
+			 * 预设 → 规矩文件（一次性转译，刀2）：预设作者的文本块落本卡 APPEND_SYSTEM.md，
+			 * marker 槽位跳过（卡内容的归位归装配/AGENTS.md 链），samplers 迁 config，
+			 * 逐块去向落转译报告；config.preset 清空——预设从此只是留档的原文。
+			 */
+			case "POST /api/presets/translate": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { file?: string; overwrite?: boolean };
+				const file = validatePresetPath(body.file ?? "");
+				const abs = resolvePath(host.cwd, file);
+				if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);
+				const config = loadConfig(host.cwd);
+				const cardDir = dirname(resolvePath(host.cwd, config.card));
+				const card = loadCardFile(resolvePath(host.cwd, config.card));
+				const doc = loadPresetDoc(JSON.parse(readFileSync(abs, "utf8")), presetNameFromFile(file));
+				const r = translatePresetToRules(doc, { charName: card.name, userName: config.userName });
+
+				const target = cardRulesPath(cardDir);
+				if (existsSync(target) && body.overwrite !== true) {
+					sendJson(res, 200, { ok: false, exists: true, path: target });
+					return true;
+				}
+				mkdirSync(cardDir, { recursive: true });
+				writeFileSync(target, r.markdown, "utf8");
+
+				const reportAbs = join(cardDir, ".liyuan", `转译报告-${presetSlug(presetNameFromFile(file))}.md`);
+				mkdirSync(dirname(reportAbs), { recursive: true });
+				writeFileSync(reportAbs, translateReport(doc, r, file), "utf8");
+
+				// config：preset 指针清空；samplers 迁入（有值才写，空则连键一起删）
+				const next = applyConfigPatch(config, {
+					preset: null,
+					...(Object.keys(r.samplers).length > 0 ? { samplers: r.samplers } : { samplers: null }),
+				});
+				writeJsonWithBackup(configPath(host.cwd), next);
+				clearPresetOverride(host.cwd);
+				await host.softRefreshConfig();
+				sendJson(res, 200, {
+					ok: true,
+					chars: r.markdown.length,
+					lines: r.lines.length,
+					prefillDropped: r.lines.filter((l) => l.action === "dropped-prefill").length,
+					markersSkipped: r.lines.filter((l) => l.action === "skipped-marker").length,
+					samplersMoved: Object.keys(r.samplers).length,
+					path: target,
+					report: reportAbs,
+				});
 				return true;
 			}
 

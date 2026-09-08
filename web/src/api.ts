@@ -564,6 +564,32 @@ export interface PresetsResponse {
 	presets: PresetFileInfo[];
 }
 
+/** 用户规矩（刀2）：全局 + 卡级两份 APPEND_SYSTEM.md */
+export interface RulesResponse {
+	global: { content: string; path: string };
+	card: { content: string; path: string; cardName: string };
+}
+
+export interface RulesSaveResponse {
+	ok: boolean;
+	path: string;
+	chars: number;
+}
+
+/** 预设一次性转译（刀2）：产物是卡级规矩文件 + config 迁移 + 报告 */
+export interface PresetTranslateResponse {
+	ok: boolean;
+	/** ok=false 且 exists=true：卡级规矩文件已存在，需 overwrite=true 重试 */
+	exists?: boolean;
+	path?: string;
+	chars?: number;
+	lines?: number;
+	prefillDropped?: number;
+	markersSkipped?: number;
+	samplersMoved?: number;
+	report?: string;
+}
+
 export interface LorebookFileInfo {
 	path: string;
 	name: string;

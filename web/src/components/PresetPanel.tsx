@@ -1,15 +1,13 @@
 /**
- * 预设面板：
- * - 开关 / 改字 → 立即进运行时（下一轮生效），**不写盘**
- * - 「保存」→ 写入预设文件
- * - 切换预设再切回 → 磁盘已保存版（未保存改动丢弃）
- * - 点条目展开可改名称 / 正文（通道是 chatHistory 派生的位置，只读）
- *
- * 磁盘上存的是**酒馆原文**：这里发的是补丁（开关落 prompt_order、改字落 prompts），
- * 梨园不认识的键原样留在文件里（见 src/preset-doc.ts）。
+ * 「我的规矩」面板（刀2，docs/PLAN-AGENT-SLOTS.md §七）：
+ * - 我的规矩：两级 APPEND_SYSTEM.md 编辑器（全局一份 + 当前卡一份），保存即落盘，
+ *   下一拍生效（stage 每拍现读）
+ * - 预设库：酒馆预设退场为一次性转译——导入原文 → 转译成本卡规矩文件 + 采样参数进
+ *   config + 逐块去向报告。旧的块级编辑 UI 只在 config.preset 仍指向某文件时作为
+ *   遗留态出现（未迁移用户不受影响，不强制）。
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
 	apiDelete,
 	apiGet,
@@ -21,11 +19,11 @@ import {
 	type PresetBlockView,
 	type PresetResponse,
 	type PresetsResponse,
+	type PresetTranslateResponse,
+	type RulesResponse,
+	type RulesSaveResponse,
 } from "../api.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
-
-/** 预设正文（full=1）的 GET 路径：apiGet 与 apiGetPeek 必须逐字相同，缓存按完整 path 存 */
-const PRESET_FULL_PATH = "/api/preset?full=1&working=1";
 
 const CHANNEL_LABEL: Record<string, string> = {
 	system: "历史前",
@@ -42,181 +40,138 @@ const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number;
 	{ key: "min_p", min: 0, max: 1, step: 0.01, hint: "过滤概率低于峰值 min_p 倍的词" },
 ];
 
-type DraftBlock = PresetBlockView & { content: string };
-
-type DraftPreset = {
-	name: string;
-	samplers: Record<string, number>;
-	blocks: DraftBlock[];
-};
-
-type FullPresetResponse = PresetResponse & {
-	dirty?: boolean;
-	preset: {
-		name: string;
-		samplers: Record<string, number>;
-		blocks: Array<PresetBlockView & { content?: string }>;
-	} | null;
-};
-
-function toDraft(p: NonNullable<FullPresetResponse["preset"]>): DraftPreset {
-	return {
-		name: p.name,
-		samplers: { ...p.samplers },
-		blocks: p.blocks.map((b) => ({
-			id: b.id,
-			name: b.name,
-			channel: b.channel,
-			role: b.role,
-			enabled: b.enabled,
-			marker: b.marker === true,
-			...(typeof b.depth === "number" ? { depth: b.depth } : {}),
-			chars: b.content?.length ?? b.chars,
-			content: b.content ?? "",
-		})),
-	};
-}
-
-function PresetBlockEditor({
-	block,
+/** 一份规矩文件的编辑器：读 / 改 / 存 */
+function RulesEditor({
+	title,
+	hint,
+	initial,
+	onSave,
 	busy,
-	note,
-	onChange,
-	onDelete,
 }: {
-	block: DraftBlock;
+	title: string;
+	hint: string;
+	initial: string;
+	onSave: (content: string) => Promise<void>;
 	busy: boolean;
-	note?: string;
-	onChange: (patch: Partial<DraftBlock>) => void;
-	onDelete?: () => void;
 }) {
-	const [open, setOpen] = useState(false);
+	const [text, setText] = useState(initial);
+	const [dirty, setDirty] = useState(false);
+	// 外部重载（面板重开/换卡）时同步进编辑框：没动过的直接跟随，动过的保留用户手里的
+	const lastInitial = useRef(initial);
+	useEffect(() => {
+		if (!dirty && initial !== lastInitial.current) {
+			setText(initial);
+		}
+		lastInitial.current = initial;
+	}, [initial, dirty]);
 
 	return (
-		<div className={`lore-item preset-block ${block.enabled ? "" : "off"} ${open ? "open" : ""}`}>
-			<div className="lore-head">
+		<section className="sp-section">
+			<div className="preset-chan-head">
+				<h4>{title}</h4>
 				<button
-					type="button"
-					className="preset-block-toggle"
-					onClick={() => setOpen((v) => !v)}
-					aria-expanded={open}
-					title={open ? "收起" : "展开修改"}
+					className="drawer-btn save-btn"
+					disabled={busy || !dirty}
+					onClick={() => void onSave(text).then(() => setDirty(false))}
 				>
-					<span className={`group-caret ${open ? "open" : ""}`}>▸</span>
-					<div className="block-info">
-						<span className="lore-title">{block.name || block.id}</span>
-						<span className="lore-meta">
-							{(block.content?.length ?? block.chars).toLocaleString()} 字 ·{" "}
-							{CHANNEL_LABEL[block.channel] ?? block.channel}
-						</span>
-						{note && <span className="lore-meta preset-v2-note">{note}</span>}
-					</div>
+					{dirty ? "保存 *" : "保存"}
 				</button>
-				<div className="preset-block-acts">
-					<button
-						type="button"
-						className="act preset-edit-btn"
-						disabled={busy}
-						onClick={() => setOpen(true)}
-					>
-						修改
-					</button>
-					{onDelete && (
-						<ConfirmButton className="act preset-del-btn" disabled={busy} confirmText="确认删除" onConfirm={onDelete}>
-							删除
-						</ConfirmButton>
-					)}
-					<Toggle
-						checked={block.enabled}
-						disabled={busy}
-						onChange={(v) => onChange({ enabled: v })}
-					/>
-				</div>
 			</div>
-			{open && (
-				<div className="preset-block-body">
-					<label className="field-label">名称</label>
-					<input
-						className="panel-search"
-						value={block.name}
-						disabled={busy}
-						onChange={(e) => onChange({ name: e.target.value })}
-					/>
-					<label className="field-label" style={{ marginTop: 8 }}>
-						位置
-					</label>
-					<div className="field-hint">
-						{CHANNEL_LABEL[block.channel] ?? block.channel}
-						{block.depth !== undefined ? ` · 深度注入 depth=${block.depth}` : ""}
-						——由本块在预设里相对 Chat History 槽位的位置决定，改顺序请在酒馆里改。
-					</div>
-					<label className="field-label" style={{ marginTop: 8 }}>
-						正文
-					</label>
-					<textarea
-						className="panel-search ta preset-block-ta"
-						rows={14}
-						spellCheck={false}
-						value={block.content}
-						disabled={busy}
-						placeholder="提示词正文…"
-						onChange={(e) =>
-							onChange({
-								content: e.target.value,
-								chars: e.target.value.length,
-							})
-						}
-					/>
-					<div className="field-hint">
-						{block.content.length.toLocaleString()} 字 · 改动立即生效（未点保存则切换预设后会丢）
-					</div>
-					<div className="panel-row" style={{ marginTop: 6 }}>
-						<button type="button" className="act" onClick={() => setOpen(false)}>
-							收起
-						</button>
-					</div>
-				</div>
-			)}
-		</div>
+			<div className="field-hint">{hint}</div>
+			<textarea
+				className="panel-search ta preset-block-ta"
+				rows={12}
+				spellCheck={false}
+				value={text}
+				disabled={busy}
+				placeholder="写给模型的常驻规矩（markdown）…"
+				onChange={(e) => {
+					setText(e.target.value);
+					setDirty(true);
+				}}
+			/>
+			<div className="field-hint">{text.length.toLocaleString()} 字 · 保存后下一拍生效</div>
+		</section>
 	);
 }
 
 export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
 	const files = usePanelData(() => apiGet<PresetsResponse>("/api/presets"), { cacheKey: "/api/presets" });
+	const rules = usePanelData(() => apiGet<RulesResponse>("/api/rules"), { cacheKey: "/api/rules" });
 	const { busy, run } = useAction(toast);
+
+	const [tab, setTab] = useState<"rules" | "library">("rules");
+
+	const saveRules = useCallback(
+		async (scope: "global" | "card", content: string) => {
+			const r = await apiPut<RulesSaveResponse>("/api/rules", { scope, content });
+			toast("info", `已保存（${r.chars.toLocaleString()} 字），下一拍生效`);
+		},
+		[toast],
+	);
+
+	/** 预设 → 本卡规矩文件（一次性转译） */
+	const translate = (file: string, overwrite: boolean) =>
+		run(async () => {
+			const r = await apiPost<PresetTranslateResponse>("/api/presets/translate", { file, overwrite });
+			if (r.exists) {
+				toast(
+					"warning",
+					"本卡已有规矩文件——再点一次「转译」将覆盖（现有内容请先自行备份）",
+				);
+				return;
+			}
+			toast(
+				"info",
+				`已转译为本卡规矩文件（${(r.chars ?? 0).toLocaleString()} 字，${r.lines ?? 0} 块` +
+					`；采样参数 ${r.samplersMoved ?? 0} 项迁入 config；报告见 ${r.report ?? ""}）`,
+			);
+			files.reload();
+			rules.reload();
+		});
+
+	// ---------------- 遗留态：未迁移的活动预设（块级编辑，与旧面板一致） ----------------
+
+	type DraftBlock = PresetBlockView & { content: string };
+	type DraftPreset = { name: string; samplers: Record<string, number>; blocks: DraftBlock[] };
+	type FullPresetResponse = PresetResponse & {
+		dirty?: boolean;
+		preset: { name: string; samplers: Record<string, number>; blocks: Array<PresetBlockView & { content?: string }> } | null;
+	};
+	const PRESET_FULL_PATH = "/api/preset?full=1&working=1";
 
 	const [draft, setDraft] = useState<DraftPreset | null>(null);
 	const [dirty, setDirty] = useState(false);
 	const [missing, setMissing] = useState<string | undefined>();
 	const [loadingDetail, setLoadingDetail] = useState(false);
 	const [loadError, setLoadError] = useState<string | null>(null);
-	/** 防 apply 风暴：合并短时间多次改动 */
+	const [legacyTab, setLegacyTab] = useState<"samplers" | "prompt">("samplers");
 	const applyTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
 	const pendingRef = useRef<PresetBlockPatch[]>([]);
 	const pendingSamplersRef = useRef<Record<string, number> | null>(null);
-	const draftRef = useRef(draft);
-	draftRef.current = draft;
 	const activeFile = files.data?.active ?? null;
 
 	const loadFromDisk = useCallback(async () => {
-		// 缓存已有这份正文（预设 273KB，重复打开面板最贵的一件）：不打「读取中」，
-		// 让 apiGet 走缓存后原地填满；缓存过期/被清时才是真加载。
 		if (!apiGetPeek<FullPresetResponse>(PRESET_FULL_PATH)) setLoadingDetail(true);
 		setLoadError(null);
 		try {
-			// full=1：一次拉齐正文，方便编辑
-			// working=1：读**运行时生效版**（草稿 override 优先）。读磁盘版会让已生效的勾选在面板里
-			// 弹回原状，用户以为没生效、再点一次反而是空操作（补丁与运行时同值），只有点保存才看得见——
-			// 面板显示的必须是此刻真正送给模型的那一份。dirty 由服务端按 override 是否存在给出。
 			const r = await apiGet<FullPresetResponse>(PRESET_FULL_PATH);
 			setMissing(r.missing);
-			if (r.preset) {
-				setDraft(toDraft(r.preset));
-				setDirty(r.dirty === true);
-			} else {
-				setDraft(null);
-				setDirty(r.dirty === true);
-			}
+			setDirty(r.dirty === true);
+			setDraft(
+				r.preset
+					? {
+							name: r.preset.name,
+							samplers: { ...r.preset.samplers },
+							blocks: r.preset.blocks.map((b) => ({
+								...b,
+								marker: b.marker === true,
+								chars: b.content?.length ?? b.chars,
+								content: b.content ?? "",
+							})),
+						}
+					: null,
+			);
 		} catch (e) {
 			setLoadError(e instanceof Error ? e.message : String(e));
 			setDraft(null);
@@ -225,23 +180,21 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		}
 	}, []);
 
-	// 当前启用预设变化时从磁盘重载
 	useEffect(() => {
 		if (files.data === null) return;
-		void loadFromDisk();
+		if (activeFile) void loadFromDisk();
+		else {
+			setDraft(null);
+			setMissing(undefined);
+		}
 	}, [activeFile, files.data, loadFromDisk]);
 
-	/**
-	 * 发补丁而不是发全量：磁盘上存的是酒馆原文，开关只动 `prompt_order[].enabled`，
-	 * 改字只动 `prompts[].content`，梨园不认识的键原样留在文件里。
-	 */
 	const applyRuntime = useCallback(
 		(patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
 			pendingRef.current.push(...patches);
 			if (samplers) pendingSamplersRef.current = samplers;
 			if (applyTimer.current) clearTimeout(applyTimer.current);
 			applyTimer.current = setTimeout(() => {
-				// 同一块的多次改动按后写优先合并成一条
 				const merged = new Map<string, PresetBlockPatch>();
 				for (const p of pendingRef.current) merged.set(p.id, { ...merged.get(p.id), ...p });
 				const body: { blocks: PresetBlockPatch[]; samplers?: Record<string, number> } = {
@@ -262,21 +215,19 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 		[toast],
 	);
 
-	/** 本地视图改动 + 同步一条补丁到运行时草稿 */
-	const patchDraft = useCallback(
-		(mutator: (d: DraftPreset) => DraftPreset, patches: PresetBlockPatch[], samplers?: Record<string, number>) => {
-			setDraft((prev) => {
-				if (!prev) return prev;
-				const next = mutator(prev);
-				setDirty(true);
-				applyRuntime(patches, samplers);
-				return next;
-			});
-		},
-		[applyRuntime],
-	);
+	const patchDraft = (
+		mutator: (d: DraftPreset) => DraftPreset,
+		patches: PresetBlockPatch[],
+		samplers?: Record<string, number>,
+	) =>
+		setDraft((prev) => {
+			if (!prev) return prev;
+			setDirty(true);
+			applyRuntime(patches, samplers);
+			return mutator(prev);
+		});
 
-	const patchBlock = (id: string, patch: Partial<DraftBlock>) => {
+	const patchBlock = (id: string, patch: Partial<DraftBlock>) =>
 		patchDraft(
 			(d) => ({
 				...d,
@@ -296,9 +247,8 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 				},
 			],
 		);
-	};
 
-	const patchSamplers = (key: string, value: number) => {
+	const patchSamplers = (key: string, value: number) =>
 		setDraft((prev) => {
 			if (!prev) return prev;
 			const samplers = { ...prev.samplers, [key]: value };
@@ -306,49 +256,11 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 			applyRuntime([], samplers);
 			return { ...prev, samplers };
 		});
-	};
 
-	/** 删块：从预设整块移除（立即进运行时，dirty，保存后写盘）。8/12 用户点名：提示词/状态栏都要能删。 */
-	const removeBlock = (id: string) => {
-		patchDraft((d) => ({ ...d, blocks: d.blocks.filter((b) => b.id !== id) }), [{ id, remove: true }]);
-	};
-
-	const orderedSamplers = useMemo(() => {
-		if (!draft) return { known: [] as ((typeof SAMPLER_META)[number] & { value: number })[], unknown: [] as { key: string; value: number }[] };
-		const samplers = draft.samplers;
-		const known = SAMPLER_META.filter((m) => m.key in samplers).map((m) => ({ ...m, value: samplers[m.key] }));
-		const unknown = Object.entries(samplers)
-			.filter(([k]) => !SAMPLER_META.some((m) => m.key === k))
-			.map(([key, value]) => ({ key, value }));
-		return { known, unknown };
-	}, [draft]);
-
-	/** 页签：参数 | 提示词（装配进提示词的全部块） */
-	const [tab, setTab] = useState<"samplers" | "prompt">("samplers");
-
-	/**
-	 * 只列有正文的块。酒馆内置槽位（Chat History / Char Description / World Info…）不进前端：
-	 * 它们没有正文、只声明「角色卡/世界书/历史插在哪一段」，露在这里只会让人以为有什么要配。
-	 * 数据侧一字不动——原文里的 `prompt_order` 仍带着它们，装配照原序认领。
-	 */
-	const blocksByKind = useMemo(() => {
-		return { blocks: (draft?.blocks ?? []).filter((b) => !b.marker) };
-	}, [draft]);
-
-	const selectPreset = (file: string | null) =>
-		run(async () => {
-			if (dirty) {
-				// 切换即丢弃未保存——与需求一致；给一句提示
-				toast("info", "未保存的修改已丢弃");
-			}
-			await apiPost("/api/presets/select", { file });
-			files.reload();
-			// loadFromDisk 由 activeFile 变化触发
-		});
+	const blocks = (draft?.blocks ?? []).filter((b) => !b.marker);
 
 	const saveToDisk = () =>
 		run(async () => {
-			// 草稿已在运行时文件里（原文＋补丁），保存＝把它落到预设文件
 			await apiPost("/api/preset/save", {});
 			setDirty(false);
 			files.reload();
@@ -360,100 +272,89 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 			await loadFromDisk();
 		}, "已恢复为文件中的版本");
 
-	const rename = () => {
-		if (!activeFile || !draft) return;
-		const name = prompt("新名字（＝新文件名）：", draft.name);
-		if (!name?.trim()) return;
-		void run(async () => {
-			await apiPost("/api/presets/rename", { file: activeFile, name: name.trim() });
-			files.reload();
-		}, "已重命名（预设名就是文件名）");
-	};
-
-	const removeActive = () => {
-		if (!activeFile) return;
-		void run(async () => {
-			await apiDelete(`/api/presets?file=${encodeURIComponent(activeFile)}`);
-			setDraft(null);
-			setDirty(false);
-			files.reload();
-		}, "已删除（当前不使用预设）");
-	};
-
-	const doExport = async () => {
-		if (!activeFile) return;
+	const doImport = async (file: File) => {
 		try {
-			// 导出原文：酒馆能直接吃回去（未保存草稿请先点保存）
-			const r = await apiGet<{ name: string; json: unknown }>(`/api/presets/export?file=${encodeURIComponent(activeFile)}`);
+			const json = JSON.parse(await file.text()) as Record<string, unknown>;
+			const r = await apiPost<{ file: string; kind: "st" | "rp"; blockCount: number; enabledCount: number }>(
+				"/api/presets/import",
+				{ name: file.name.replace(/\.json$/i, ""), json },
+			);
+			toast("info", `已导入预设库（${r.blockCount} 条 · 启用 ${r.enabledCount}）——点「转译」生成本卡规矩文件`);
+			files.reload();
+		} catch (e) {
+			toast("error", e instanceof Error ? e.message : String(e));
+		}
+	};
+
+	const doExport = async (file: string) => {
+		try {
+			const r = await apiGet<{ name: string; json: unknown }>(`/api/presets/export?file=${encodeURIComponent(file)}`);
 			downloadJson(`${r.name}.json`, r.json);
 		} catch (e) {
 			toast("error", e instanceof Error ? e.message : String(e));
 		}
 	};
 
-	const doImport = async (file: File) => {
-		try {
-			const json = JSON.parse(await file.text()) as Record<string, unknown>;
-			const r = await apiPost<{ kind: "st" | "rp"; blockCount: number; enabledCount: number }>("/api/presets/import", {
-				name: file.name.replace(/\.json$/i, ""),
-				json,
-			});
-			toast(
-				"info",
-				`已导入并启用（${r.kind === "st" ? "酒馆原文原样存档" : "旧梨园格式"}：${r.blockCount} 条 · 启用 ${r.enabledCount}）`,
-			);
-			setDirty(false);
+	const removePreset = (file: string) =>
+		run(async () => {
+			await apiDelete(`/api/presets?file=${encodeURIComponent(file)}`);
 			files.reload();
-		} catch (e) {
-			toast("error", e instanceof Error ? e.message : String(e));
-		}
-	};
-
-	const toggleChannel = (blocks: DraftBlock[], enabled: boolean) => {
-		const ids = new Set(blocks.map((b) => b.id));
-		patchDraft(
-			(d) => ({ ...d, blocks: d.blocks.map((b) => (ids.has(b.id) ? { ...b, enabled } : b)) }),
-			blocks.map((b) => ({ id: b.id, enabled })),
-		);
-	};
+		}, "已从预设库删除");
 
 	return (
 		<div className="panel-body">
-			<PanelStatus loading={files.loading} error={files.error} hasData={!!files.data} />
-			{files.data && (
+			<div className="preset-tabs" role="tablist">
+				<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "rules"}
+					className={`preset-tab ${tab === "rules" ? "active" : ""}`}
+					onClick={() => setTab("rules")}
+				>
+					我的规矩
+				</button>
+				<button
+					type="button"
+					role="tab"
+					aria-selected={tab === "library"}
+					className={`preset-tab ${tab === "library" ? "active" : ""}`}
+					onClick={() => setTab("library")}
+				>
+					预设库
+					{activeFile ? <span className="preset-tab-count">未转译</span> : null}
+				</button>
+			</div>
+
+			{tab === "rules" && (
+				<>
+					<PanelStatus loading={rules.loading} error={rules.error} hasData={!!rules.data} />
+					{rules.data && (
+						<>
+							<RulesEditor
+								title="全局规矩"
+								hint={`对每张卡生效 · 文件：${rules.data.global.path}`}
+								initial={rules.data.global.content}
+								onSave={(c) => saveRules("global", c)}
+								busy={busy}
+							/>
+							<RulesEditor
+								title={`这张卡（${rules.data.card.cardName}）`}
+								hint={`只对当前卡生效，接在全局之后 · 文件：${rules.data.card.path}`}
+								initial={rules.data.card.content}
+								onSave={(c) => saveRules("card", c)}
+								busy={busy}
+							/>
+						</>
+					)}
+				</>
+			)}
+
+			{tab === "library" && (
 				<>
 					<section className="sp-section">
-						<h4>预设</h4>
-						<select
-							className="panel-search"
-							value={files.data.active ?? ""}
-							disabled={busy}
-							onChange={(e) => void selectPreset(e.target.value || null)}
-							aria-label="选择预设"
-						>
-							<option value="">（不使用预设）</option>
-							{files.data.presets.map((p) => (
-								<option key={p.file} value={p.file}>
-									{p.name}（{p.file}）
-								</option>
-							))}
-						</select>
-						<div className="panel-row list-toolbar preset-actions">
-							<button
-								className="drawer-btn save-btn"
-								disabled={busy || !draft || !dirty}
-								onClick={() => void saveToDisk()}
-								title="写入预设文件；未保存时切换预设会丢失修改"
-							>
-								{dirty ? "保存 *" : "保存"}
-							</button>
-							<button className="drawer-btn" disabled={busy || !dirty} onClick={() => void revertDraft()} title="丢弃未保存修改，从文件重载">
-								还原
-							</button>
-							<button className="drawer-btn" disabled={busy || !activeFile} onClick={rename}>
-								重命名
-							</button>
-							<label className="drawer-btn" title="导入预设 JSON（ST 预设自动转换）">
+						<div className="preset-chan-head">
+							<h4>预设库（转译用）</h4>
+							<label className="drawer-btn" title="导入酒馆预设 JSON（原文存档，不做转换）">
 								导入
 								<input
 									type="file"
@@ -466,120 +367,143 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 									}}
 								/>
 							</label>
-							<button className="drawer-btn" disabled={busy || !activeFile} onClick={() => void doExport()}>
-								导出
-							</button>
-							<ConfirmButton className="drawer-btn" disabled={busy || !activeFile} confirmText="确认删除" onConfirm={removeActive}>
-								删除
-							</ConfirmButton>
 						</div>
-						{dirty && (
-							<div className="field-hint preset-dirty-hint">
-								有未保存修改：已立即用于对话；切换预设会丢弃。点「保存」写入文件。
+						<div className="field-hint">
+							预设不再是「活物」：转译一次，落成本卡规矩文件；采样参数进 config。原文永远留在库里，可重新转译。
+						</div>
+						<PanelStatus loading={files.loading} error={files.error} hasData={!!files.data} />
+						{files.data?.presets.map((p) => (
+							<div key={p.file} className="lore-item">
+								<div className="lore-head">
+									<div className="block-info">
+										<span className="lore-title">{p.name}</span>
+										{activeFile === p.file && (
+											<span className="lore-meta">当前活动（未转译）</span>
+										)}
+									</div>
+									<div className="preset-block-acts">
+										<ConfirmButton
+											className="act"
+											disabled={busy}
+											confirmText="确认转译（覆盖本卡规矩）"
+											onConfirm={() => void translate(p.file, true)}
+										>
+											转译
+										</ConfirmButton>
+										<button className="act" disabled={busy} onClick={() => void doExport(p.file)}>
+											导出
+										</button>
+										<ConfirmButton
+											className="act preset-del-btn"
+											disabled={busy}
+											confirmText="确认删除"
+											onConfirm={() => void removePreset(p.file)}
+										>
+											删除
+										</ConfirmButton>
+									</div>
+								</div>
 							</div>
+						))}
+						{files.data && files.data.presets.length === 0 && (
+							<div className="sp-empty">预设库是空的。没有预设也完全可以——规矩直接写在「我的规矩」里。</div>
 						)}
 					</section>
 
-					<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />
-					{missing && <div className="panel-error">配置指向的预设文件不存在：{missing}</div>}
-
-					{draft && (
-						<>
-							<div className="preset-tabs" role="tablist">
-								<button
-									type="button"
-									role="tab"
-									aria-selected={tab === "samplers"}
-									className={`preset-tab ${tab === "samplers" ? "active" : ""}`}
-									onClick={() => setTab("samplers")}
-								>
-									参数
+					{activeFile && (
+						<section className="sp-section">
+							<div className="preset-chan-head">
+								<h4>未转译的活动预设（旧编辑器）</h4>
+								<button className="act" disabled={busy} onClick={() => void translate(activeFile, false)}>
+									转译并停用预设
 								</button>
-								{(() => {
-									const blocks = blocksByKind.blocks;
-									const on = blocks.filter((b) => b.enabled).length;
-									return (
+							</div>
+							<div className="field-hint">
+								这份预设仍按旧管线装配。转译后它只留档，规矩进「我的规矩」，此编辑器随之消失。
+							</div>
+							<div className="panel-row list-toolbar preset-actions">
+								<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={() => void saveToDisk()}>
+									{dirty ? "保存 *" : "保存"}
+								</button>
+								<button className="drawer-btn" disabled={busy || !dirty} onClick={() => void revertDraft()}>
+									还原
+								</button>
+							</div>
+							{dirty && (
+								<div className="field-hint preset-dirty-hint">
+									有未保存修改：已立即用于对话；转译前请先「保存」。
+								</div>
+							)}
+							<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />
+							{missing && <div className="panel-error">配置指向的预设文件不存在：{missing}</div>}
+							{draft && (
+								<>
+									<div className="preset-tabs" role="tablist">
 										<button
 											type="button"
 											role="tab"
-											aria-selected={tab === "prompt"}
-											className={`preset-tab ${tab === "prompt" ? "active" : ""}`}
-											onClick={() => setTab("prompt")}
+											aria-selected={legacyTab === "samplers"}
+											className={`preset-tab ${legacyTab === "samplers" ? "active" : ""}`}
+											onClick={() => setLegacyTab("samplers")}
+										>
+											参数
+										</button>
+										<button
+											type="button"
+											role="tab"
+											aria-selected={legacyTab === "prompt"}
+											className={`preset-tab ${legacyTab === "prompt" ? "active" : ""}`}
+											onClick={() => setLegacyTab("prompt")}
 										>
 											提示词
-											<span className="preset-tab-count">{on}/{blocks.length}</span>
+											<span className="preset-tab-count">
+												{blocks.filter((b) => b.enabled).length}/{blocks.length}
+											</span>
 										</button>
-									);
-								})()}
-							</div>
-
-							{tab === "samplers" && (
-							<section className="sp-section">
-								{Object.keys(draft.samplers).length === 0 && <div className="sp-empty">该预设未带采样参数。</div>}
-								{orderedSamplers.known.map((m) => (
-									<SliderField
-										key={m.key}
-										label={m.key}
-										hint={m.hint}
-										value={m.value}
-										min={m.min}
-										max={m.max}
-										step={m.step}
-										onChange={(nv) => patchSamplers(m.key, nv)}
-									/>
-								))}
-								{orderedSamplers.unknown.map(({ key, value }) => (
-									<div key={key} className="kv sampler-row">
-										<span className="kv-k">{key}</span>
-										<input
-											className="panel-search num"
-											type="number"
-											step="0.01"
-											value={value}
-											onChange={(e) => {
-												const n = Number(e.target.value);
-												if (Number.isFinite(n)) patchSamplers(key, n);
-											}}
-										/>
 									</div>
-								))}
-							</section>
-							)}
-
-							{tab === "prompt" &&
-								(() => {
-									const blocks = blocksByKind.blocks;
-									const onChars = blocks.reduce((n, b) => n + (b.enabled ? b.content.length : 0), 0);
-									const allOn = blocks.length > 0 && blocks.every((b) => b.enabled);
-									return (
+									{legacyTab === "samplers" && (
 										<section className="sp-section">
-											<div className="preset-chan-head">
-												<span className="lore-meta">
-													{`启用块原文按 prompt_order 原序装配进提示词：${blocks.length} 块 · 启用 ${onChars.toLocaleString()} 字`}
-												</span>
-												{blocks.length > 0 && (
-													<button className="act" disabled={busy} onClick={() => toggleChannel(blocks, !allOn)}>
-														{allOn ? "全关" : "全开"}
-													</button>
-												)}
-											</div>
-											{blocks.length === 0 && <div className="sp-empty">该预设没有内容块。</div>}
-											{blocks.map((b) => (
-												<PresetBlockEditor
-													key={b.id}
-													block={b}
-													busy={busy}
-													onChange={(patch) => patchBlock(b.id, patch)}
-													onDelete={() => removeBlock(b.id)}
+											{Object.keys(draft.samplers).length === 0 && (
+												<div className="sp-empty">该预设未带采样参数。</div>
+											)}
+											{SAMPLER_META.filter((m) => m.key in draft.samplers).map((m) => (
+												<SliderField
+													key={m.key}
+													label={m.key}
+													hint={m.hint}
+													value={draft.samplers[m.key]}
+													min={m.min}
+													max={m.max}
+													step={m.step}
+													onChange={(nv) => patchSamplers(m.key, nv)}
 												/>
 											))}
 										</section>
-									);
-								})()}
-						</>
-					)}
-					{!draft && !missing && !loadingDetail && (
-						<div className="sp-empty">当前未使用预设。可从上方「导入」一份酒馆预设（原文原样存档，不做任何转换）。</div>
+									)}
+									{legacyTab === "prompt" &&
+										blocks.map((b) => (
+											<div key={b.id} className={`lore-item preset-block ${b.enabled ? "" : "off"}`}>
+												<div className="lore-head">
+													<div className="block-info">
+														<span className="lore-title">{b.name || b.id}</span>
+														<span className="lore-meta">
+															{b.content.length.toLocaleString()} 字 ·{" "}
+															{CHANNEL_LABEL[b.channel] ?? b.channel}
+														</span>
+													</div>
+													<div className="preset-block-acts">
+														<Toggle
+															checked={b.enabled}
+															disabled={busy}
+															onChange={(v) => patchBlock(b.id, { enabled: v })}
+														/>
+													</div>
+												</div>
+											</div>
+										))}
+								</>
+							)}
+						</section>
 					)}
 				</>
 			)}

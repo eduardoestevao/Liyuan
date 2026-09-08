@@ -195,6 +195,29 @@ AGENTS.md（开发者指令：铁律、src 索引、测试命令）顺着 cwd �
   卡目录及用户自建文件（刀3 的正主）照常继承。判据是路径相对位置，不是文件名名单。
 - `scripts/pack-release.ps1` 剔除清单补 `AGENTS.md`。
 
+## 七B、刀2 执行记录（2026-09-08）
+
+**两级规矩文件**（`src/user-rules.ts`，纯函数模块）：
+- 全局 `<agentDir>/APPEND_SYSTEM.md`，卡级 `cards/<卡>/APPEND_SYSTEM.md`——文件名对齐 pi 的同名槽位；
+- **stage 每拍现读**（materials 指纹缓存收两级文件的 stamp）：改完保存，下一拍生效，不必像 pi 原生 append 那样重启；
+- RP 会话退出 pi 的原生 append 发现（`main.ts` `appendSystemPromptOverride: () => []`）——单一主人是 stage，不双份；助手会话刀1 已退出。
+- 装配位置：stage 段最前（遗留预设段之后、`# 用户扮演` 之前），原文直通零包装（铁律一）。实测序：全局(17) < 卡级(55) < 用户身份(63) < 世界设定(96)。
+
+**预设一次性转译**（`translatePresetToRules`，复用 `assemble()` 求值与分段，不另造规则）：
+- 启用且有正文的非 marker 块按原序落卡级规矩文件，`{{char}}/{{user}}` 按当前卡求值（实测两份真预设宏零残留）；
+- marker 槽位跳过（去向进报告）；末尾连续 assistant 预填丢弃（engine 同规则）；in-chat 深度注入照收（报告注明「此前从未生效」）；
+- samplers → `config.samplers`（新 RpConfig 字段，白名单＋校验：只收数字键，空对象清键）；`config.preset` 指针清空；
+- 逐块去向落 `cards/<卡>/.liyuan/转译报告-<预设名>.md`；原文留在 `assets/presets/` 永不改动，可重新转译。
+- 真预设实测：夏瑾(rp) 23 块→收入 12；双人成行(st) 249 块→收入 29、关闭 160、marker 7，产物 15481 字。
+
+**前端**：预设页签 →「我的规矩」：`我的规矩`（两级编辑器，保存即落盘）+ `预设库`（导入/转译/导出/删除）。旧块级编辑器只在 `config.preset` 仍有指向时作为遗留态出现——不强制迁移，未迁移用户行为不变。
+
+**REST**：`GET/PUT /api/rules`、`POST /api/presets/translate`（含 overwrite 保护）。
+
+**实弹验收**（隔离端口，同卡）：API 写两级规矩 → 思考里同时读到两级并计划执行 → 正文首行「【规矩验证】」（全局）、末行「（大乾）」（卡级），4 次工具调用。测试态已全部还原（规矩文件删、会话删、config 未动）。
+
+**遗留观察**：Git Bash 的 curl 发中文是 GBK——「中文 JSON 别走 curl」是既有教训，本次用 UTF-8 文件 + `--data-binary` 规避；端点本身无恙。
+
 ## 八、五个岔口的裁定（2026-09-08，用户授权我定）
 **1. project trust —— 问题不存在，无需选。**
 

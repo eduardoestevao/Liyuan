@@ -9,7 +9,7 @@
  */
 
 import { existsSync, readFileSync, readdirSync, realpathSync, statSync } from "node:fs";
-import { isAbsolute, join, relative, resolve } from "node:path";
+import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { resolveCardSpace } from "../cardspace.ts";
 
 import { loadCardFile, applyMacros, readCardRawJson } from "../card.ts";
@@ -25,6 +25,7 @@ import {
 } from "../lorebook.ts";
 import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
+import { cardRulesPath, globalRulesPath, readUserRules, type UserRules } from "../user-rules.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
 import { extractAuthorScripts } from "../authorScripts.ts";
 import {
@@ -84,6 +85,8 @@ export interface StageMaterials {
 	macroWarnings: string[];
 	/** M-C2：被判死的外部插件协议条目（世界书通道 H 类退场，进装配报告） */
 	protocolDrops: ProtocolDrop[];
+	/** 用户规矩两级文件（刀2）：全局 <agentDir>/APPEND_SYSTEM.md + 卡级 cards/<卡>/APPEND_SYSTEM.md，每拍现读 */
+	userRules: UserRules;
 	/** 送模侧作者正则（promptOnly/破坏性，预设+卡）——rebuildHistory 应用，剥「作者不想让模型看」的块 */
 	promptRules: DisplayRule[];
 }
@@ -243,6 +246,9 @@ function inputStamp(cwd: string, config: RpConfig): string {
 	for (const rel of mountedLorebookPaths(config)) parts.push(fileStamp(resolvePath(cwd, rel)));
 	parts.push(fileStamp(join(cwd, ".liyuan", "preset-override.json")));
 	if (config.preset) parts.push(fileStamp(resolvePath(cwd, config.preset)));
+	// 用户规矩两级文件（刀2）：改完下一拍即生效，靠的就是这两个指纹
+	parts.push(fileStamp(globalRulesPath()));
+	parts.push(fileStamp(cardRulesPath(dirname(resolvePath(cwd, config.card)))));
 	// disabledLore 住在 config 里，已被 config 指纹覆盖
 	return parts.join("|");
 }
@@ -404,6 +410,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetActive,
 		macroWarnings: [...unsupported],
 		protocolDrops,
+		userRules: readUserRules(dirname(cardAbs)),
 		// 送模侧作者正则：预设 + 卡（与 cardfront 显示侧同源；promptOnly/破坏性规则）
 		promptRules: promptRules([...(presetDoc?.raw?.extensions?.regex_scripts ?? []), ...cardRegexScripts]),
 	};

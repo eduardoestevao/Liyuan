@@ -166,6 +166,12 @@ export interface RpConfig {
 	sideModel?: { provider: string; entry: string };
 	/** 一档卡皮肤:显示向美化正则被用户关闭的卡路径列表(默认开;spec 2026-07-22 §7 P1) */
 	cardSkinOff?: string[];
+	/**
+	 * 采样参数（temperature/top_p 等）：预设转译时从 presetDoc.samplers 迁来
+	 * （docs/PLAN-AGENT-SLOTS.md D1——采样是数据不是文案，不进任何提示词槽位）。
+	 * 优先于遗留预设文件里的 samplers（转译后 config.preset 已清空）。
+	 */
+	samplers?: Record<string, number>;
 }
 
 export const DEFAULT_CONFIG: RpConfig = {

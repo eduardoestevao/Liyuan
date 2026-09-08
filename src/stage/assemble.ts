@@ -20,6 +20,7 @@ import { isBackstageText } from "../stance.ts";
 import type { DisplayRule } from "../cardfront.ts";
 import { hasDepthLimits, rulesAtDepth } from "../cardfront.ts";
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig, WorldState } from "../types.ts";
+import type { UserRules } from "../user-rules.ts";
 
 // ---------------- 分支 → 历史 ----------------
 
@@ -256,6 +257,11 @@ export interface StageSystemOptions {
 	config: RpConfig;
 	constantLore: LorebookEntry[];
 	/**
+	 * 用户规矩两级文件（刀2，src/user-rules.ts）：全局在前、卡级在后，原文直通
+	 * （这是用户自己的话，不包装、不加引导语——铁律一）。
+	 */
+	userRules?: UserRules;
+	/**
 	 * 预设装配产物（历史前段）：原文、原序，marker 槽位已由预设作者的位置填入梨园材料。
 	 * 它是 system prompt 的**主体**，排在最前——harness 骨架殿后（PLAN-PRESET-PIPELINES §四之四）。
 	 */
@@ -279,6 +285,7 @@ export function buildStageSystemPrompt({
 	card,
 	config,
 	constantLore,
+	userRules,
 	presetBefore,
 	filledMarkers,
 	tools,
@@ -291,6 +298,12 @@ export function buildStageSystemPrompt({
 
 	// 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
 	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
+
+	// 用户规矩（刀2）：pi 基座（SYSTEM.md/AGENTS.md 链）在前，这里是用户自己的话，
+	// 原文直通两级文件（全局→卡级），位于遗留预设段之后、梨园装配段之前。
+	for (const text of [userRules?.global, userRules?.card]) {
+		if (text && text.trim()) sections.push(text.trim());
+	}
 
 	// 2) 兜底：材料没进预设槽位的，梨园按自己的版式补——补的是位置，不是措辞之外的话。
 	const charParts: string[] = [];
