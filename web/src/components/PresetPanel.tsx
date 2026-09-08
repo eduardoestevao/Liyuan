@@ -8,7 +8,7 @@
  *   某文件时作为遗留态出现（未迁移用户不受影响，不强制）。
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
 	apiDelete,
 	apiGet,
@@ -27,6 +27,13 @@ import {
 	type RulesSaveResponse,
 } from "../api.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
+import {
+	appendEntry,
+	deleteEntry,
+	parsePromptEntries,
+	setEntryContent,
+	toggleEntry,
+} from "../../../src/prompt-entries.ts";
 
 const CHANNEL_LABEL: Record<string, string> = {
 	system: "历史前",
@@ -54,6 +61,186 @@ function diffPreview(base: string, mine: string): string {
 	for (const l of b) if (!setA.has(l)) out.push(`+ ${l.slice(0, 120)}`);
 	if (out.length === 0) return "（与投影无差异）";
 	return out.slice(0, 80).join("\n") + (out.length > 80 ? `\n… 共 ${out.length} 行差异` : "");
+}
+
+/** 条目形提示词文件的双视图编辑器（GitHub 式 条目|源码）：文件是真源，条目是投影 */
+function EntriesEditor({
+	title,
+	hint,
+	initial,
+	onSave,
+	busy,
+}: {
+	title: string;
+	hint: string;
+	initial: string;
+	onSave: (content: string) => Promise<void>;
+	busy: boolean;
+}) {
+	const [text, setText] = useState(initial);
+	const [dirty, setDirty] = useState(false);
+	const [view, setView] = useState<"entries" | "source">("entries");
+	const [open, setOpen] = useState<string | null>(null);
+	const [drafts, setDrafts] = useState<Record<string, string>>({});
+	const lastInitial = useRef(initial);
+	useEffect(() => {
+		if (!dirty && initial !== lastInitial.current) setText(initial);
+		lastInitial.current = initial;
+	}, [initial, dirty]);
+
+	const entries = useMemo(() => parsePromptEntries(text), [text]);
+	const apply = (next: string | null) => {
+		if (next !== null) {
+			setText(next);
+			setDirty(true);
+		}
+	};
+
+	return (
+		<section className="sp-section">
+			<div className="preset-chan-head">
+				<h4>{title}</h4>
+				<div className="preset-block-acts">
+					<div className="preset-tabs" role="tablist" style={{ margin: 0 }}>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={view === "entries"}
+							className={`preset-tab ${view === "entries" ? "active" : ""}`}
+							onClick={() => setView("entries")}
+						>
+							条目
+						</button>
+						<button
+							type="button"
+							role="tab"
+							aria-selected={view === "source"}
+							className={`preset-tab ${view === "source" ? "active" : ""}`}
+							onClick={() => setView("source")}
+						>
+							源码
+						</button>
+					</div>
+					<button
+						className="drawer-btn save-btn"
+						disabled={busy || !dirty}
+						onClick={() => void onSave(text).then(() => setDirty(false))}
+					>
+						{dirty ? "保存 *" : "保存"}
+					</button>
+				</div>
+			</div>
+			<div className="field-hint">{hint}</div>
+			{view === "source" ? (
+				<textarea
+					className="panel-search ta preset-block-ta"
+					rows={12}
+					spellCheck={false}
+					value={text}
+					disabled={busy}
+					placeholder="写给模型的常驻提示词（markdown）…"
+					onChange={(e) => {
+						setText(e.target.value);
+						setDirty(true);
+					}}
+				/>
+			) : (
+				<>
+					{entries.map((e) => (
+						<div key={e.name} className={`lore-item preset-block ${e.enabled ? "" : "off"} ${open === e.name ? "open" : ""}`}>
+							<div className="lore-head">
+								<button
+									type="button"
+									className="preset-block-toggle"
+									aria-expanded={open === e.name}
+									onClick={() => {
+										setOpen(open === e.name ? null : e.name);
+										setDrafts((d) => ({ ...d, [e.name]: e.content }));
+									}}
+								>
+									<span className={`group-caret ${open === e.name ? "open" : ""}`}>▸</span>
+									<div className="block-info">
+										<span className="lore-title">{e.name || "（开头）"}</span>
+										<span className="lore-meta">
+											{e.content.length.toLocaleString()} 字 · {e.enabled ? "开" : "关"}
+										</span>
+									</div>
+								</button>
+								<div className="preset-block-acts">
+									<Toggle checked={e.enabled} disabled={busy} onChange={(v) => apply(toggleEntry(text, e.name, v))} />
+								</div>
+							</div>
+							{open === e.name && (
+								<div className="preset-block-body">
+									<label className="field-label">正文</label>
+									<textarea
+										className="panel-search ta preset-block-ta"
+										rows={8}
+										spellCheck={false}
+										value={drafts[e.name] ?? e.content}
+										disabled={busy}
+										onChange={(ev) => setDrafts((d) => ({ ...d, [e.name]: ev.target.value }))}
+									/>
+									<div className="panel-row" style={{ marginTop: 6 }}>
+										<button
+											className="act"
+											disabled={busy}
+											onClick={() => {
+												apply(setEntryContent(text, e.name, drafts[e.name] ?? e.content));
+												setOpen(null);
+											}}
+										>
+											保存条目
+										</button>
+										<button className="act" onClick={() => setOpen(null)}>
+											收起
+										</button>
+										<ConfirmButton
+											className="act preset-del-btn"
+											disabled={busy}
+											confirmText="确认删除"
+											onConfirm={() => {
+												apply(deleteEntry(text, e.name));
+												setOpen(null);
+											}}
+										>
+											删除
+										</ConfirmButton>
+									</div>
+								</div>
+							)}
+						</div>
+					))}
+					<div className="panel-row" style={{ marginTop: 6 }}>
+						<button
+							className="act"
+							disabled={busy}
+							onClick={() => {
+								const name = prompt("条目名（## 小节标题）：", "");
+								if (!name?.trim()) return;
+								const next = appendEntry(text, name.trim(), "（内容）");
+								if (next === null) {
+									alert("已有同名条目");
+									return;
+								}
+								apply(next);
+								setOpen(name.trim());
+								setDrafts((d) => ({ ...d, [name.trim()]: "（内容）" }));
+							}}
+						>
+							＋ 添加条目
+						</button>
+					</div>
+					<div className="field-hint">
+						关闭的条目在文件里被 HTML 注释包裹；两视图改的是同一份文件，开关即切换（下一拍生效）。
+					</div>
+				</>
+			)}
+			<div className="field-hint">
+				{text.length.toLocaleString()} 字{dirty ? " · 未保存" : ""} · 保存后下一拍生效
+			</div>
+		</section>
+	);
 }
 
 /** 一份规矩文件的编辑器：读 / 改 / 存 */
@@ -430,7 +617,7 @@ export function PresetPanel({
 								onSave={(c) => saveSystem(c)}
 								busy={busy}
 							/>
-							<RulesEditor
+							<EntriesEditor
 								title="APPEND_SYSTEM.md（全局）"
 								hint={`对所有卡生效的常驻提示词——默认装着梨园的扮演定义（一拍/稿纸/检索/岔口），可改可换；想换成全局 agent 式的应答也改这里 · 文件：${rules.data.global.path}`}
 								initial={rules.data.global.content}
@@ -478,7 +665,7 @@ export function PresetPanel({
 						</section>
 					)}
 					{agents.data && (
-						<RulesEditor
+						<EntriesEditor
 							title="AGENTS.md（卡档案）"
 							hint={`这张卡的常驻内容（卡身份/设定/版式）${agents.data.exists ? "" : "（还不存在——保存即建立，卡内容从此以文件为准）"} · 文件：${agents.data.path}`}
 							initial={agents.data.content}
@@ -487,7 +674,7 @@ export function PresetPanel({
 						/>
 					)}
 					{rules.data && (
-						<RulesEditor
+						<EntriesEditor
 							title="APPEND_SYSTEM.md（这张卡）"
 							hint={`只对「${rules.data.card.cardName}」生效的常驻提示词，接在全局之后 · 文件：${rules.data.card.path}`}
 							initial={rules.data.card.content}

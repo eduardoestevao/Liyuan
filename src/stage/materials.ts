@@ -27,6 +27,7 @@ import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import type { ProtocolDrop } from "../protocol-detect.ts";
 import { applyDeclarations, declarationPathFor, readDeclaration } from "../lorebook-declare.ts";
 import { cardRulesPath, globalRulesPath, readUserRules, type UserRules } from "../user-rules.ts";
+import { renderForModel } from "../prompt-entries.ts";
 import { CARD_AGENTS_FILE } from "../card-agents.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
 import { extractAuthorScripts } from "../authorScripts.ts";
@@ -365,7 +366,11 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	} catch {
 		cardAgents = "";
 	}
-	const agentsActive = cardAgents.trim().length > 0;
+	// 条目引擎：卡档案的关闭节（如不要某个状态栏）与备注注释不进送模面；
+	// 「文件存在」的判据看原文（全关也是用户的明确选择）。
+	const cardAgentsRaw = cardAgents;
+	cardAgents = renderForModel(cardAgents);
+	const agentsActive = cardAgentsRaw.trim().length > 0;
 
 	// marker 材料：梨园按酒馆的槽位交货，**位置由预设作者的 prompt_order 决定**。
 	// 填的是原文——包装（标题/小节名）归预设作者，梨园不替他们加话（铁律一）。
@@ -437,7 +442,9 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		presetActive,
 		macroWarnings: [...unsupported],
 		protocolDrops,
-		userRules: readUserRules(dirname(cardAbs)),
+		// 条目引擎只作用送模面：readUserRules 给原文（REST/编辑器往返要无损），
+		// 这里渲染成开启条目＋零注释的送模文本
+		userRules: ((r) => ({ global: renderForModel(r.global), card: renderForModel(r.card) }))(readUserRules(dirname(cardAbs))),
 		cardAgents,
 		// 送模侧作者正则：预设 + 卡（与 cardfront 显示侧同源；promptOnly/破坏性规则）
 		promptRules: promptRules([...(presetDoc?.raw?.extensions?.regex_scripts ?? []), ...cardRegexScripts]),
