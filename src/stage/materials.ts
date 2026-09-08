@@ -24,7 +24,8 @@ import {
 	setMountedLorebooks,
 } from "../lorebook.ts";
 import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
-import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
+import type { ProtocolDrop } from "../protocol-detect.ts";
+import { applyDeclarations, declarationPathFor, readDeclaration } from "../lorebook-declare.ts";
 import { cardRulesPath, globalRulesPath, readUserRules, type UserRules } from "../user-rules.ts";
 import { CARD_AGENTS_FILE } from "../card-agents.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
@@ -246,7 +247,10 @@ function fileStamp(abs: string): string {
 /** 除 overlay 外的全部输入指纹（overlay 单独拼，见 MaterialsCacheEntry.overlayFile） */
 function inputStamp(cwd: string, config: RpConfig): string {
 	const parts = [fileStamp(resolveConfigPath(cwd)), fileStamp(resolvePath(cwd, config.card))];
-	for (const rel of mountedLorebookPaths(config)) parts.push(fileStamp(resolvePath(cwd, rel)));
+	for (const rel of mountedLorebookPaths(config)) {
+		const abs = resolvePath(cwd, rel);
+		parts.push(fileStamp(abs), fileStamp(declarationPathFor(abs)));
+	}
 	parts.push(fileStamp(join(cwd, ".liyuan", "preset-override.json")));
 	if (config.preset) parts.push(fileStamp(resolvePath(cwd, config.preset)));
 	// 用户规矩两级文件（刀2）：改完下一拍即生效，靠的就是这两个指纹
@@ -292,28 +296,35 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		}
 	})();
 
-	// 世界书：已挂载独立书（0..N）+ 补充设定集 overlay；卡内 character_book 不自动进上下文
+	// 世界书：已挂载独立书（0..N）+ 补充设定集 overlay；卡内 character_book 不自动进上下文。
+	// 协议判死（刀4）＝只执行**判定数据**（书旁 <书名>.判定.json，可见可改可删）；
+	// 没有判定文件的书不过滤——正则已在运行时退场，只在导入/手动检查时生产数据
+	// （src/lorebook-declare.ts）。按书应用（uid 是书内的，跨书合并后再套会误杀同号）。
 	const fileGroups: LorebookEntry[][] = [];
+	const declarationDrops: ProtocolDrop[] = [];
 	for (const rel of mountedLorebookPaths(config)) {
 		const abs = resolvePath(cwd, rel);
-		if (existsSync(abs)) fileGroups.push(loadLorebookFile(abs));
+		if (!existsSync(abs)) continue;
+		const declared = applyDeclarations(loadLorebookFile(abs), readDeclaration(abs));
+		declarationDrops.push(...declared.dropped);
+		fileGroups.push(declared.entries);
 	}
 	const fileEntries = mergeEntries(...fileGroups);
 	const overlayFile = overlayPathFor(cwd, card.name, config.card);
-	const overlayEntries = existsSync(overlayFile) ? loadLorebookFile(overlayFile) : [];
-	// 用户级停用 → 外部插件协议判死（M-C2）。协议条目是 H 类「脑内 harness」：
-	// 指望酒馆插件解析的输出格式强制令，梨园无解析器且原生 world_state_update 已覆盖其功能，
-	// 留着只会与 draft_write「纯剧情文字」互斥（实测首拍 31% 思考 + 正文污染 + 双份记账）。
-	const protocolFiltered = stripProtocolEntries(
-		applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore),
-	);
-	// 归属补一刀：MVU 变量更新规则条目里一个插件标签都没有（全是 `获得时 add` 这类操作词），
-	// 按签名判的上一步抓不到；但它已被 src/mvu.ts 认领、读者是场记，主模型不该再收到同一份。
-	// 判据是归属不是签名，见 stripMvuRuleEntries 的头注（无树的书一律不动）。
-	const mvuFiltered = stripMvuRuleEntries(protocolFiltered.entries);
+	const overlayEntries = (() => {
+		if (!existsSync(overlayFile)) return [];
+		const declared = applyDeclarations(loadLorebookFile(overlayFile), readDeclaration(overlayFile));
+		declarationDrops.push(...declared.dropped);
+		return declared.entries;
+	})();
+	// 用户级停用。
+	const disabledApplied = applyDisabledLore(mergeEntries(fileEntries, overlayEntries), config.disabledLore);
+	// 归属剥离：MVU 变量更新规则条目已被 src/mvu.ts 认领、读者是场记，主模型不该再收到同一份。
+	// 判据是归属不是签名（铁律三不禁），无树的书一律不动——见 stripMvuRuleEntries 的头注。
+	const mvuFiltered = stripMvuRuleEntries(disabledApplied);
 	const entries = mvuFiltered.entries;
 	const protocolDrops = [
-		...protocolFiltered.dropped,
+		...declarationDrops,
 		...mvuFiltered.dropped.map((d) => ({
 			title: d.title,
 			channel: "lorebook" as const,
@@ -437,7 +448,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	materialsCache = {
 		cwd,
 		entry: {
-			stamp: `${inputStamp(cwd, config)}|${fileStamp(overlayFile)}`,
+			stamp: `${inputStamp(cwd, config)}|${fileStamp(overlayFile)}|${fileStamp(declarationPathFor(overlayFile))}`,
 			overlayFile,
 			value: materials,
 		},

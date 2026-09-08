@@ -134,6 +134,7 @@ import {
 	translateReport,
 } from "../src/user-rules.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
+import { readDeclaration, removeDeclaration, writeDeclarationFromDetection } from "../src/lorebook-declare.ts";
 import { constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import {
 	allocateServerId,
@@ -1077,8 +1078,8 @@ function lorebookDirSpecs(cwd: string, config: RpConfig): Array<{ abs: string; r
 
 const lorebookMetaCache = new Map<string, { mtimeMs: number; count: number | null; displayName: string }>();
 
-function listLorebookFiles(cwd: string, config: RpConfig): Array<{ path: string; name: string; entryCount: number }> {
-	const out: Array<{ path: string; name: string; entryCount: number }> = [];
+function listLorebookFiles(cwd: string, config: RpConfig): Array<{ path: string; name: string; entryCount: number; declared: number | null }> {
+	const out: Array<{ path: string; name: string; entryCount: number; declared: number | null }> = [];
 	for (const spec of lorebookDirSpecs(cwd, config)) {
 		if (!existsSync(spec.abs)) continue;
 		for (const f of readdirSync(spec.abs)) {
@@ -1112,7 +1113,14 @@ function listLorebookFiles(cwd: string, config: RpConfig): Array<{ path: string;
 				lorebookMetaCache.set(abs, { mtimeMs, count, displayName });
 			}
 			if (count === null) continue;
-			out.push({ path: `${spec.relBase}/${f}`, name: displayName, entryCount: count });
+			const declaration = readDeclaration(abs);
+			out.push({
+				path: `${spec.relBase}/${f}`,
+				name: displayName,
+				entryCount: count,
+				/** 刀4：协议判定数据状态——null=无判定文件（不过滤），数字=已判定停用的条目数 */
+				declared: declaration ? declaration.entries.length : null,
+			});
 		}
 	}
 	return out;
@@ -2961,6 +2969,29 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				writeFileSync(dest, `${JSON.stringify(body, null, "\t")}\n`, "utf8");
 				host.notify("info", `世界书「${rawName}」已导入（${entries.length} 条）`);
 				sendJson(res, 200, { ok: true, path: `${LOREBOOKS_DIR}/${safe}`, entryCount: entries.length });
+				return true;
+			}
+			/**
+			 * 协议判定（刀4）：对一本书跑一遍检测并落成/刷新判定文件。
+			 * 返回判定概要；判 0 条时删除既有判定文件（回到不过滤）。
+			 */
+			case "POST /api/lorebooks/declare": {
+				const body = JSON.parse(await readBody(req)) as { path?: string };
+				const p = (body.path ?? "").trim();
+				if (!p) throw new Error("缺少 path");
+				const abs = resolvePath(host.cwd, p);
+				if (!existsSync(abs)) throw new Error(`世界书不存在：${p}`);
+				const before = readDeclaration(abs)?.entries.length ?? 0;
+				const declaration = writeDeclarationFromDetection(abs);
+				const count = declaration?.entries.length ?? 0;
+				if (!declaration) removeDeclaration(abs);
+				await host.softRefreshConfig();
+				sendJson(res, 200, {
+					ok: true,
+					declared: count,
+					changed: count !== before,
+					note: count > 0 ? `已判定停用 ${count} 条（书旁 ${p}.判定.json，可改可删）` : "未发现协议条目（如曾判定过，判定文件已删——本书不过滤）",
+				});
 				return true;
 			}
 			case "POST /api/lorebooks": {
