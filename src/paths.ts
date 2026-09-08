@@ -6,7 +6,7 @@
  * 旧布局 `.pi/`、`.rp-*`、`rp.config.json` 在 migrateLegacyLayout 时迁移。
  */
 
-import { copyFileSync, existsSync, mkdirSync, readdirSync, renameSync, statSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, statSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, isAbsolute, join, normalize, relative } from "node:path";
 
@@ -298,27 +298,52 @@ export function takeAgentMergeLog(): string[] {
 }
 
 /**
- * 播种梨园的扮演骨架到 `<agentDir>/SYSTEM.md`（pi 的 customPrompt 槽位，
- * `resource-loader.ts:1029` 全局档）。随包发行件在 `assets/SYSTEM.md`。
+ * 播种两个全局提示词槽位（刀1 立位 / 2026-09-08 重构定形）：
+ * - SYSTEM.md：**环境底座**，pi 形状的最小基线（一句身份＋工作区事实），不规定行为
+ * - APPEND_SYSTEM.md：**扮演定义的默认值**（一拍/稿纸/检索/岔口）——「梨园是谁、怎么演」
+ *   是用户的选择（沉浸式扮演 vs 全局 agent），住可编辑的追加槽，不进 harness 底座
  *
- * **只在文件不存在时播种**：这份文件用户可以改，改了就是他的了，升级不许覆盖。
- * 用户把它删空/删掉 ⇒ pi 回落自己的 coding 基座，扮演骨架消失——这是用户的选择，
- * 不做「文件缺失就偷偷用内置副本」的兜底（那就是又一个不可观测的决定，
- * docs/PLAN-AGENT-SLOTS.md §六）。
+ * 两个都只在缺失时播种：改过就是用户的。删除 SYSTEM.md ⇒ pi 回落 coding 基座，
+ * roleplay 扩展退随包底座并每拍告警（刀1 语义不变）。
  *
- * 助手会话共用同一个 agentDir，已在 `server/assistant.ts` 显式退出这个槽位。
+ * 一次性迁移：刀1 版把扮演定义错放在 SYSTEM.md 里（越权，用户 2026-09-08 定性）。
+ * 现存 SYSTEM.md 若以旧版开场句开头 ⇒ 那是梨园自己发的旧底座（未按用户意思改过），
+ * 把它的全文挪去 APPEND_SYSTEM.md（若 APPEND 尚不存在），SYSTEM.md 换成新底座。
+ * 用户自己改写过的（不以旧开场句开头）一律不动。
  */
+const LEGACY_SYSTEM_OPENING = "你在 **梨园**（Liyuan）里担任角色扮演 agent";
+
 export function seedStageSystemPrompt(cwd: string, agentDir: string): void {
-	const target = join(agentDir, "SYSTEM.md");
-	if (existsSync(target)) return;
-	const shipped = join(cwd, "assets", "SYSTEM.md");
-	if (!existsSync(shipped)) return;
 	try {
 		mkdirSync(agentDir, { recursive: true });
-		copyFileSync(shipped, target);
-		lastAgentMergeLog.push(`已播种扮演骨架 SYSTEM.md → ${target}`);
+		const shipped = (name: string) => join(cwd, "assets", name);
+		const target = join(agentDir, "SYSTEM.md");
+		const appendTarget = join(agentDir, "APPEND_SYSTEM.md");
+
+		// 迁移：旧底座（扮演定义错位）→ 挪进追加槽，底座换新
+		if (existsSync(target)) {
+			const current = readFileSync(target, "utf8");
+			if (current.startsWith(LEGACY_SYSTEM_OPENING)) {
+				if (!existsSync(appendTarget)) {
+					writeFileSync(appendTarget, current, "utf8");
+					lastAgentMergeLog.push(`迁移：旧 SYSTEM.md 的扮演定义已挪至 APPEND_SYSTEM.md`);
+				}
+				if (existsSync(shipped("SYSTEM.md"))) {
+					copyFileSync(shipped("SYSTEM.md"), target);
+					lastAgentMergeLog.push(`迁移：SYSTEM.md 已换成最小环境底座`);
+				}
+			}
+		} else if (existsSync(shipped("SYSTEM.md"))) {
+			copyFileSync(shipped("SYSTEM.md"), target);
+			lastAgentMergeLog.push(`已播种环境底座 SYSTEM.md → ${target}`);
+		}
+
+		if (!existsSync(appendTarget) && existsSync(shipped("APPEND_SYSTEM.md"))) {
+			copyFileSync(shipped("APPEND_SYSTEM.md"), appendTarget);
+			lastAgentMergeLog.push(`已播种扮演定义默认值 APPEND_SYSTEM.md → ${appendTarget}`);
+		}
 	} catch (err) {
-		console.error(`[liyuan] 播种 SYSTEM.md 失败：${err instanceof Error ? err.message : String(err)}`);
+		console.error(`[liyuan] 播种提示词槽位失败：${err instanceof Error ? err.message : String(err)}`);
 	}
 }
 

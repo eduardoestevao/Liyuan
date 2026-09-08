@@ -425,14 +425,14 @@ export function PresetPanel({
 						<>
 							<RulesEditor
 								title="SYSTEM.md"
-								hint={`梨园的扮演骨架（一拍/稿纸/检索纪律）。改它要重启梨园才生效；清空则退回随包骨架并每拍告警 · 文件：${rules.data.system.path}`}
+								hint={`环境底座（最小，参照 pi 原版）：只说你是谁、工作区里有什么——不规定怎么做事。改它要重启梨园才生效 · 文件：${rules.data.system.path}`}
 								initial={rules.data.system.content}
 								onSave={(c) => saveSystem(c)}
 								busy={busy}
 							/>
 							<RulesEditor
 								title="APPEND_SYSTEM.md（全局）"
-								hint={`对所有卡生效的常驻提示词——角色相当于原来的预设 · 文件：${rules.data.global.path}`}
+								hint={`对所有卡生效的常驻提示词——默认装着梨园的扮演定义（一拍/稿纸/检索/岔口），可改可换；想换成全局 agent 式的应答也改这里 · 文件：${rules.data.global.path}`}
 								initial={rules.data.global.content}
 								onSave={(c) => saveRules("global", c)}
 								busy={busy}
