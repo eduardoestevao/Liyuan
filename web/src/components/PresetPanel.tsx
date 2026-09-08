@@ -15,6 +15,8 @@ import {
 	apiPost,
 	apiPut,
 	downloadJson,
+	type CardAgentsResponse,
+	type CardAgentsSaveResponse,
 	type PresetBlockPatch,
 	type PresetBlockView,
 	type PresetResponse,
@@ -39,6 +41,19 @@ const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number;
 	{ key: "repetition_penalty", min: 1, max: 2, step: 0.01, hint: "重复惩罚（1=不惩罚）" },
 	{ key: "min_p", min: 0, max: 1, step: 0.01, hint: "过滤概率低于峰值 min_p 倍的词" },
 ];
+
+/** 行级对照（投影 vs 文件）：只给「差在哪」的直觉，不追求完整 diff 算法 */
+function diffPreview(base: string, mine: string): string {
+	const a = base.split("\n");
+	const b = mine.split("\n");
+	const setA = new Set(a);
+	const setB = new Set(b);
+	const out: string[] = [];
+	for (const l of a) if (!setB.has(l)) out.push(`- ${l.slice(0, 120)}`);
+	for (const l of b) if (!setA.has(l)) out.push(`+ ${l.slice(0, 120)}`);
+	if (out.length === 0) return "（与投影无差异）";
+	return out.slice(0, 80).join("\n") + (out.length > 80 ? `\n… 共 ${out.length} 行差异` : "");
+}
 
 /** 一份规矩文件的编辑器：读 / 改 / 存 */
 function RulesEditor({
@@ -95,12 +110,21 @@ function RulesEditor({
 	);
 }
 
-export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
+export function PresetPanel({
+	toast,
+	onAssistantPrompt,
+}: {
+	toast: (level: "info" | "warning" | "error", text: string) => void;
+	/** 发话给右栏助手（刀3 生成路径：把投影全文交给助手整理成卡档案） */
+	onAssistantPrompt?: (text: string) => void;
+}) {
 	const files = usePanelData(() => apiGet<PresetsResponse>("/api/presets"), { cacheKey: "/api/presets" });
 	const rules = usePanelData(() => apiGet<RulesResponse>("/api/rules"), { cacheKey: "/api/rules" });
+	const agents = usePanelData(() => apiGet<CardAgentsResponse>("/api/card-agents"), { cacheKey: "/api/card-agents" });
 	const { busy, run } = useAction(toast);
 
-	const [tab, setTab] = useState<"rules" | "library">("rules");
+	const [tab, setTab] = useState<"rules" | "card" | "library">("rules");
+	const [showDiff, setShowDiff] = useState(false);
 
 	const saveRules = useCallback(
 		async (scope: "global" | "card", content: string) => {
@@ -129,6 +153,55 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 			files.reload();
 			rules.reload();
 		});
+
+	/** 卡档案（刀3）：保存 / 删除回投影 / 让助手生成 */
+	const saveAgents = useCallback(
+		async (content: string) => {
+			const r = await apiPut<CardAgentsSaveResponse>("/api/card-agents", { content });
+			toast("info", `卡档案已保存（${r.chars.toLocaleString()} 字），下一拍生效`);
+			agents.reload();
+		},
+		[toast, agents],
+	);
+
+	const deleteAgents = () =>
+		run(async () => {
+			await apiDelete("/api/card-agents");
+			toast("info", "已删除卡档案——回到自动投影");
+			agents.reload();
+		});
+
+	/** 生成路径：把全量投影（含被停用条目）作为用户消息交给助手整理（模型做取舍判断，产物是看得见的文件） */
+	const generateAgents = () => {
+		if (!agents.data || !onAssistantPrompt) return;
+		const d = agents.data;
+		const droppedNote =
+			d.droppedTitles.length > 0
+				? [
+						"以下条目目前被运行时整条停用（原因附后）——逐条重新判断：真正的**输出版式**（状态栏格式、排版要求）保留进档案；纯插件协议指令（要求输出 <UpdateVariable>、JSON Patch、表格更新之类）不进——世界状态记账由梨园场记自动完成，模型照协议输出只会污染正文。",
+						...d.droppedTitles.map((t) => `- ${t}`),
+					].join("\n")
+				: "（没有条目被停用）";
+		const instruction = [
+			`给「${d.cardName}」这张卡建立 AGENTS.md（卡档案），写到 ${d.path}。`,
+			"",
+			"下面是这张卡全部常驻内容的全量投影（卡字段 + 常驻世界书 + 作者指令，含被停用条目）。整理成卡档案时：",
+			"- 保留全部事实设定与人物信息，保留状态栏等输出版式要求——那是卡作者要的格式；状态栏的标签包裹（如 <normal_status>）必须原样保留，前端据此渲染。",
+			"- 插件协议指令不进来（停用条目的处理见下）；写清你在哪些地方做了取舍。",
+			"- 关键词触发（绿灯）的世界书条目不进来——它们保持可检索。",
+			"- 结构清楚即可（markdown 小节），写事实不写元指令；这是给扮演 agent 读的常驻说明。",
+			"",
+			droppedNote,
+			"",
+			"===== 全量投影（含停用条目）=====",
+			d.unfilteredProjection,
+			"===== 投影结束 =====",
+			"",
+			`用文件工具把整理结果写到 ${d.path}，写完简要报告你做了哪些取舍。`,
+		].join("\n");
+		onAssistantPrompt(instruction);
+		toast("info", "已把卡内容全量投影发给助手整理——在右栏「助手」里看它工作");
+	};
 
 	// ---------------- 遗留态：未迁移的活动预设（块级编辑，与旧面板一致） ----------------
 
@@ -316,6 +389,16 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 				<button
 					type="button"
 					role="tab"
+					aria-selected={tab === "card"}
+					className={`preset-tab ${tab === "card" ? "active" : ""}`}
+					onClick={() => setTab("card")}
+				>
+					这张卡
+					{agents.data?.active === "projection" ? <span className="preset-tab-count">投影</span> : null}
+				</button>
+				<button
+					type="button"
+					role="tab"
 					aria-selected={tab === "library"}
 					className={`preset-tab ${tab === "library" ? "active" : ""}`}
 					onClick={() => setTab("library")}
@@ -345,6 +428,53 @@ export function PresetPanel({ toast }: { toast: (level: "info" | "warning" | "er
 								busy={busy}
 							/>
 						</>
+					)}
+				</>
+			)}
+
+			{tab === "card" && (
+				<>
+					<PanelStatus loading={agents.loading} error={agents.error} hasData={!!agents.data} />
+					{agents.data && (
+						<section className="sp-section">
+							<div className="preset-chan-head">
+								<h4>卡档案{agents.data.active === "file" ? "（生效中）" : "（未建立）"}</h4>
+								<div className="preset-block-acts">
+									{agents.data.active === "projection" && onAssistantPrompt && (
+										<button className="act" disabled={busy} onClick={generateAgents}>
+											让助手生成
+										</button>
+									)}
+									<button className="act" disabled={busy} onClick={() => setShowDiff((v) => !v)}>
+										{showDiff ? "收起对照" : "对照投影"}
+									</button>
+									{agents.data.exists && (
+										<ConfirmButton className="act preset-del-btn" disabled={busy} confirmText="确认删除（回到投影）" onConfirm={() => void deleteAgents()}>
+											删除
+										</ConfirmButton>
+									)}
+								</div>
+							</div>
+							<div className="field-hint">
+								{agents.data.active === "file"
+									? `文件为准：卡常驻内容（卡身份/字段/常驻设定/作者指令）全部来自 ${agents.data.path}`
+									: `还没有卡档案——当前卡内容以**自动投影**提供（每次装配现拼）。点「让助手生成」把卡内容落成可编辑的档案。`}
+							</div>
+							{showDiff && (
+								<pre className="field-hint" style={{ whiteSpace: "pre-wrap", maxHeight: 260, overflow: "auto" }}>
+									{diffPreview(agents.data.projection, agents.data.content || agents.data.projection)}
+								</pre>
+							)}
+						</section>
+					)}
+					{agents.data && (
+						<RulesEditor
+							title={"cards/<卡>/AGENTS.md"}
+							hint={`卡常驻内容档案${agents.data.exists ? "" : "（还不存在——保存即建立，卡内容从此以文件为准）"} · 文件：${agents.data.path}`}
+							initial={agents.data.content}
+							onSave={saveAgents}
+							busy={busy}
+						/>
 					)}
 				</>
 			)}

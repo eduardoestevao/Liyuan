@@ -26,6 +26,7 @@ import {
 import { addHistoryStripTags, resetDisplayTagExtras } from "../postprocess.ts";
 import { stripProtocolEntries, type ProtocolDrop } from "../protocol-detect.ts";
 import { cardRulesPath, globalRulesPath, readUserRules, type UserRules } from "../user-rules.ts";
+import { CARD_AGENTS_FILE } from "../card-agents.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
 import { extractAuthorScripts } from "../authorScripts.ts";
 import {
@@ -87,6 +88,8 @@ export interface StageMaterials {
 	protocolDrops: ProtocolDrop[];
 	/** 用户规矩两级文件（刀2）：全局 <agentDir>/APPEND_SYSTEM.md + 卡级 cards/<卡>/APPEND_SYSTEM.md，每拍现读 */
 	userRules: UserRules;
+	/** 卡档案（刀3）：cards/<卡>/AGENTS.md 全文；不存在＝空串（装配走今天的投影） */
+	cardAgents: string;
 	/** 送模侧作者正则（promptOnly/破坏性，预设+卡）——rebuildHistory 应用，剥「作者不想让模型看」的块 */
 	promptRules: DisplayRule[];
 }
@@ -249,6 +252,8 @@ function inputStamp(cwd: string, config: RpConfig): string {
 	// 用户规矩两级文件（刀2）：改完下一拍即生效，靠的就是这两个指纹
 	parts.push(fileStamp(globalRulesPath()));
 	parts.push(fileStamp(cardRulesPath(dirname(resolvePath(cwd, config.card)))));
+	// 卡档案（刀3）：生成/编辑/删除下一拍即生效
+	parts.push(fileStamp(join(dirname(resolvePath(cwd, config.card)), CARD_AGENTS_FILE)));
 	// disabledLore 住在 config 里，已被 config 指纹覆盖
 	return parts.join("|");
 }
@@ -340,6 +345,17 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	// 两拍，low 档 47%(514/1104 字)、high 档 39%(1965/4986 字) 的思考耗在跟它谈判边界上。
 	// 其余六句是文风要求：无预设态平淡是**条件不是回归**，要文风写 APPEND_SYSTEM.md（用户自己的槽）。
 
+	// 卡档案（刀3，src/card-agents.ts）：文件在场 ⇒ 卡常驻内容以文件为准，
+	// marker 材料里的卡字段/蓝灯同步让位（预设作者的位置留着，但不双份喂卡内容）。
+	const cardAgentsFile = join(dirname(cardAbs), CARD_AGENTS_FILE);
+	let cardAgents = "";
+	try {
+		if (existsSync(cardAgentsFile)) cardAgents = readFileSync(cardAgentsFile, "utf8");
+	} catch {
+		cardAgents = "";
+	}
+	const agentsActive = cardAgents.trim().length > 0;
+
 	// marker 材料：梨园按酒馆的槽位交货，**位置由预设作者的 prompt_order 决定**。
 	// 填的是原文——包装（标题/小节名）归预设作者，梨园不替他们加话（铁律一）。
 	const macroCtx = { charName: card.name, userName: config.userName };
@@ -347,14 +363,14 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	const putSlot = (slot: keyof MarkerMaterials, text: string | undefined): void => {
 		if (text && text.trim()) markerMaterials[slot] = applyMacros(text, macroCtx);
 	};
-	putSlot("charDescription", card.description);
-	putSlot("charPersonality", card.personality);
-	putSlot("scenario", card.scenario);
-	putSlot("dialogueExamples", card.mesExample);
+	if (!agentsActive) putSlot("charDescription", card.description);
+	if (!agentsActive) putSlot("charPersonality", card.personality);
+	if (!agentsActive) putSlot("scenario", card.scenario);
+	if (!agentsActive) putSlot("dialogueExamples", card.mesExample);
 	putSlot("personaDescription", config.userPersona);
 	// 梨园的 LorebookEntry 没有 ST 的 before/after position，常驻条目整份交 worldInfoBefore
 	const constantLore = constantEntries(entries);
-	if (constantLore.length > 0) {
+	if (!agentsActive && constantLore.length > 0) {
 		putSlot(
 			"worldInfoBefore",
 			constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${e.content}`).join("\n"),
@@ -411,6 +427,7 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		macroWarnings: [...unsupported],
 		protocolDrops,
 		userRules: readUserRules(dirname(cardAbs)),
+		cardAgents,
 		// 送模侧作者正则：预设 + 卡（与 cardfront 显示侧同源；promptOnly/破坏性规则）
 		promptRules: promptRules([...(presetDoc?.raw?.extensions?.regex_scripts ?? []), ...cardRegexScripts]),
 	};

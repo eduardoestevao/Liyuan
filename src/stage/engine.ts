@@ -830,6 +830,7 @@ export class StageEngine {
 			config,
 			constantLore: constantLoreOf(materials),
 			userRules: materials.userRules,
+			cardAgents: materials.cardAgents,
 			// 预设装配段：原文原序，marker 已按预设作者的位置填入梨园材料
 			presetBefore: materials.presetBefore.map((p) => p.text),
 			filledMarkers: materials.filledMarkers,
@@ -845,6 +846,7 @@ export class StageEngine {
 			card,
 			config,
 			languageMismatch,
+			cardAgentsActive: materials.cardAgents.trim().length > 0,
 			panelIndex,
 			...(wsDeps.rules.wordRange ? { wordRange: wsDeps.rules.wordRange } : {}),
 			loreIndex: formatLoreIndex(materials.entries),
@@ -1664,6 +1666,10 @@ export class StageEngine {
 					depth: chars(materials.presetDepth),
 				},
 				filledMarkers: [...materials.filledMarkers],
+				// 刀3：卡常驻内容的来源——file=卡 AGENTS.md（chars 是文件字数）；projection=自动投影
+				cardAgents: materials.cardAgents.trim()
+					? { source: "file", chars: materials.cardAgents.length }
+					: { source: "projection" },
 				// M-C2：世界书/卡内嵌通道被判死的外部插件协议条目（判据可回溯）
 				protocolDrops: materials.protocolDrops,
 				blocks: materials.presetAssembly,

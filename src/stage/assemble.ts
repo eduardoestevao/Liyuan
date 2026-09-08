@@ -262,6 +262,12 @@ export interface StageSystemOptions {
 	 */
 	userRules?: UserRules;
 	/**
+	 * 卡档案（刀3，src/card-agents.ts）：`cards/<卡>/AGENTS.md` 全文。
+	 * 非空 ⇒ 文件为准，下方卡 sections（兜底段/蓝灯/卡作者附加指令）整组让位——
+	 * 卡常驻内容只此一份，不双份。空 ⇒ 走今天的投影（遗留预设的 marker 归位照旧）。
+	 */
+	cardAgents?: string;
+	/**
 	 * 预设装配产物（历史前段）：原文、原序，marker 槽位已由预设作者的位置填入梨园材料。
 	 * 它是 system prompt 的**主体**，排在最前——harness 骨架殿后（PLAN-PRESET-PIPELINES §四之四）。
 	 */
@@ -286,6 +292,7 @@ export function buildStageSystemPrompt({
 	config,
 	constantLore,
 	userRules,
+	cardAgents,
 	presetBefore,
 	filledMarkers,
 	tools,
@@ -295,6 +302,9 @@ export function buildStageSystemPrompt({
 	const m = (s: string) => applyMacros(s, macro);
 	const sections: string[] = [];
 	const filled = filledMarkers ?? new Set<string>();
+	// 卡档案（刀3，src/card-agents.ts）：文件在场 ⇒ 卡常驻内容以文件为准，下方卡 sections
+	// 整组让位（一份不双份）；不在场 ⇒ 今天的投影原样走（遗留预设的 marker 归位照旧）。
+	const agentsText = cardAgents && cardAgents.trim() ? cardAgents.trim() : "";
 
 	// 预设装配段：原文原序，零 harness 引导语。卡/世界书/人设已在预设作者指定的槽位里。
 	if (presetBefore && presetBefore.length > 0) sections.push(presetBefore.join("\n\n"));
@@ -305,15 +315,20 @@ export function buildStageSystemPrompt({
 		if (text && text.trim()) sections.push(text.trim());
 	}
 
-	// 2) 兜底：材料没进预设槽位的，梨园按自己的版式补——补的是位置，不是措辞之外的话。
-	const charParts: string[] = [];
-	if (!filled.has("charDescription") && card.description) charParts.push(m(card.description));
-	if (!filled.has("charPersonality") && card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
-	if (!filled.has("scenario") && card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
-	if (!filled.has("dialogueExamples") && card.mesExample) {
-		charParts.push(`## 对白示例（仅供文风与语气参考，不是已发生的剧情）\n${m(card.mesExample)}`);
+	if (agentsText) {
+		// 卡内容同源同规矩：{{char}}/{{user}} 宏与旧投影路径一样求值（生成物里带宏是常态）
+		sections.push(m(agentsText));
+	} else {
+		// 2) 兜底：材料没进预设槽位的，梨园按自己的版式补——补的是位置，不是措辞之外的话。
+		const charParts: string[] = [];
+		if (!filled.has("charDescription") && card.description) charParts.push(m(card.description));
+		if (!filled.has("charPersonality") && card.personality) charParts.push(`## 性格\n${m(card.personality)}`);
+		if (!filled.has("scenario") && card.scenario) charParts.push(`## 当前场景\n${m(card.scenario)}`);
+		if (!filled.has("dialogueExamples") && card.mesExample) {
+			charParts.push(`## 对白示例（仅供文风与语气参考，不是已发生的剧情）\n${m(card.mesExample)}`);
+		}
+		if (charParts.length > 0) sections.push([`# 你扮演的角色：${card.name}`, ...charParts].join("\n\n"));
 	}
-	if (charParts.length > 0) sections.push([`# 你扮演的角色：${card.name}`, ...charParts].join("\n\n"));
 
 	/**
 	 * 用户是谁：**无条件出**（2026-09-02 用户定案「user 是谁、他的设定，必须无条件全量注入」）。
@@ -332,7 +347,7 @@ export function buildStageSystemPrompt({
 	}
 	sections.push(personaLines.join("\n"));
 
-	if (!filled.has("worldInfoBefore") && !filled.has("worldInfoAfter") && constantLore.length > 0) {
+	if (!agentsText && !filled.has("worldInfoBefore") && !filled.has("worldInfoAfter") && constantLore.length > 0) {
 		const loreText = constantLore.map((e) => `- ${e.comment ? `【${e.comment}】` : ""}${m(e.content)}`).join("\n");
 		sections.push(`# 世界设定（常驻事实）\n${loreText}`);
 	}
@@ -367,7 +382,7 @@ ${index}`,
 - 标注【剧情记忆】的消息是历史正文检索片段，按需取用，勿整段照抄。`,
 	);
 
-	if (card.systemPrompt) {
+	if (!agentsText && card.systemPrompt) {
 		sections.push(`# 卡作者附加指令（优先级最高）\n${m(card.systemPrompt)}`);
 	}
 
@@ -427,6 +442,8 @@ export interface StageInjectionOptions {
 	passiveLore?: boolean;
 	/** 上一拍台上叙事语言与配置不符（harness 检测） */
 	languageMismatch?: boolean;
+	/** 卡档案在场（刀3）：postHistoryInstructions 已在卡 AGENTS.md 里，注入块让位（B8） */
+	cardAgentsActive?: boolean;
 	/** 活跃面板全文快照（formatPanelSnapshot 产出）或一行速览 */
 	panelIndex?: string;
 	/** 预设字数规则（extractDraftRules 提取）——纯事实一行，无落笔指令（P2） */
@@ -452,6 +469,7 @@ export function buildStageInjection({
 	card,
 	config,
 	languageMismatch,
+	cardAgentsActive,
 	panelIndex,
 	wordRange,
 	loreIndex,
@@ -504,8 +522,9 @@ export function buildStageInjection({
 		blocks.push(`【剧情记忆】\n${memoryRecall}`);
 	}
 
-	// 卡末端指令：独立块（旧【导演备注】容器解散后的存留者——卡数据，原文直通）
-	if (card.postHistoryInstructions) {
+	// 卡末端指令：独立块（旧【导演备注】容器解散后的存留者——卡数据，原文直通）。
+	// 卡档案在场 ⇒ 它已在 AGENTS.md 里（B8），这里不双份。
+	if (card.postHistoryInstructions && !cardAgentsActive) {
 		blocks.push(`【卡作者末端指令】\n${applyMacros(card.postHistoryInstructions, macro)}`);
 	}
 

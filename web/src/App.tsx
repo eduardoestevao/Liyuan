@@ -1628,7 +1628,7 @@ export default function App() {
 			case "connect":
 				return <ConnectPanel toast={pushToast} />;
 			case "preset":
-				return <PresetPanel toast={pushToast} />;
+				return <PresetPanel toast={pushToast} onAssistantPrompt={(text) => ws.send({ type: "assistant_prompt", text })} />;
 			case "powers":
 				return <PowersPanel toast={pushToast} />;
 			case "settings":

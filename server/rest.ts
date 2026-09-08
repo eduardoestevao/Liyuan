@@ -88,6 +88,7 @@ import type { WorldlineView } from "../src/worldline.ts";
 import {
 	appendLorebookFileEntry,
 	applyDisabledLore,
+	constantEntries,
 	deleteLorebookFileEntry,
 	exportStLorebook,
 	keysFromTitle,
@@ -132,6 +133,8 @@ import {
 	translatePresetToRules,
 	translateReport,
 } from "../src/user-rules.ts";
+import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
+import { constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import {
 	allocateServerId,
 	discoverMcpCatalog,
@@ -2744,8 +2747,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				return true;
 			}
 			// ---- 用户规矩（刀2，docs/PLAN-AGENT-SLOTS.md §七）：全局 + 卡级两份 ----
-			case "GET /api/rules": {
-				const config = loadConfig(host.cwd);
+			case "GET /api/rules": {				const config = loadConfig(host.cwd);
 				const cardDir = dirname(resolvePath(host.cwd, config.card));
 				const rules = readUserRules(cardDir);
 				sendJson(res, 200, {
@@ -2773,6 +2775,66 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				writeFileSync(abs, body.content, "utf8");
 				await host.softRefreshConfig();
 				sendJson(res, 200, { ok: true, path: abs, chars: body.content.length });
+				return true;
+			}
+			// ---- 卡档案 AGENTS.md（刀3，docs/PLAN-AGENT-SLOTS.md §七）：文件为准 / 投影兜底 ----
+			case "GET /api/card-agents": {
+				const config = loadConfig(host.cwd);
+				const cardDir = dirname(resolvePath(host.cwd, config.card));
+				const abs = cardAgentsPath(cardDir);
+				const content = existsSync(abs) ? readFileSync(abs, "utf8") : "";
+				const materials = loadStageMaterials(host.cwd);
+				// 生效投影（diff 基准）：跑的就是装配那条路——协议判死/归属剥离都已在内
+				const projection = projectCardToAgents(materials.card, constantLoreOf(materials), config);
+				// 生成素材：**未过协议/归属过滤**的全量常驻 + 判死名单。生成是模型判断
+				// 「哪段是版式（保留）、哪段是插件协议（剔除）」的唯一时机——输入不能预先
+				// 被正则筛过，否则格式规范永远到不了档案里（PLAN-AGENT-SLOTS §六解法2）。
+				const unfiltered = constantEntries(
+					applyDisabledLore(
+						mergeEntries(...mountedLorebookPaths(config).map((rel) => {
+							const p = resolvePath(host.cwd, rel);
+							return existsSync(p) ? loadLorebookFile(p) : [];
+						}), existsSync(overlayPathFor(host.cwd, materials.card.name, config.card))
+							? loadLorebookFile(overlayPathFor(host.cwd, materials.card.name, config.card))
+							: []),
+						config.disabledLore,
+					),
+				);
+				const unfilteredProjection = projectCardToAgents(materials.card, unfiltered, config);
+				sendJson(res, 200, {
+					exists: existsSync(abs),
+					active: content.trim() ? "file" : "projection",
+					content,
+					projection,
+					unfilteredProjection,
+					/** 被运行时判死/归属剥离的条目（生成时交模型重新判断） */
+					droppedTitles: materials.protocolDrops.map((d) => `${d.title}（${d.label}）`),
+					path: abs,
+					cardName: config.displayName ?? basename(config.card).replace(/\.(png|json)$/i, ""),
+				});
+				return true;
+			}
+			case "PUT /api/card-agents": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { content?: string };
+				if (typeof body.content !== "string") throw new Error("缺少 content");
+				const config = loadConfig(host.cwd);
+				const cardDir = dirname(resolvePath(host.cwd, config.card));
+				mkdirSync(cardDir, { recursive: true });
+				const abs = cardAgentsPath(cardDir);
+				writeFileSync(abs, body.content, "utf8");
+				await host.softRefreshConfig();
+				sendJson(res, 200, { ok: true, path: abs, chars: body.content.length });
+				return true;
+			}
+			/** 删除卡档案 ⇒ 回到自动投影（可随时重新生成） */
+			case "DELETE /api/card-agents": {
+				if (refuseWhileStreaming()) return true;
+				const config = loadConfig(host.cwd);
+				const abs = cardAgentsPath(dirname(resolvePath(host.cwd, config.card)));
+				if (existsSync(abs)) unlinkSync(abs);
+				await host.softRefreshConfig();
+				sendJson(res, 200, { ok: true });
 				return true;
 			}
 			/**

@@ -218,6 +218,33 @@ AGENTS.md（开发者指令：铁律、src 索引、测试命令）顺着 cwd �
 
 **遗留观察**：Git Bash 的 curl 发中文是 GBK——「中文 JSON 别走 curl」是既有教训，本次用 UTF-8 文件 + `--data-binary` 规避；端点本身无恙。
 
+## 七C、刀3 执行记录（2026-09-08）
+
+**两态一判据**（`src/card-agents.ts`）：`cards/<卡>/AGENTS.md` 存在 ⇒ 文件为准——
+装配把文件整段顶替卡 sections（兜底段/蓝灯/卡作者附加指令整组让位），marker 材料里的
+卡字段/蓝灯同步让位（遗留预设的位置留着但不双份喂），注入侧【卡作者末端指令】让位（B8）；
+不存在 ⇒ **今天的投影一字不动**（遗留预设的 marker 归位照旧），编辑器横幅告知「当前是自动投影」。
+判据只有文件存在与否，不看内容形状——部分手写的档案同样是权威（单一来源）。
+
+**投影全文 `projectCardToAgents`**：AGENTS.md 形状的完整渲染（字段+蓝灯+作者指令+末端指令，
+宏求值）。它不是装配的投影路径（那条不动），服务两处：前端「对照投影」diff 基准、生成素材。
+
+**生成主路径＝/init 动作**：「让助手生成」按钮把**全量投影（未过滤）**作为用户消息发给助手
+（WS `assistant_prompt`），助手用自己的文件工具写档案。两处关键设计：
+- **输入不过协议滤**：生成素材单独装载（`applyDisabledLore` 尊重用户停用，但跳过
+  stripProtocolEntries/stripMvuRuleEntries），被停用条目连同判定原因列进指令——
+  「哪段是版式（保留）、哪段是插件协议（剔除）」由模型判断，判断落成看得见的文件。
+  这是 §六解法 2（刀4）在生成路径的提前兑现。
+- **用户消息通道，不是新注入点**：指令在前端拼、走助手面板同一条 `assistant_prompt`，
+  过程对用户全程可见。
+
+**REST**：`GET /api/card-agents`（含 projection/unfilteredProjection/droppedTitles 两份投影）、
+`PUT`（保存即建立）、`DELETE`（删除回投影）。装配报告（.liyuan/preset-assembly.json）
+新增 `cardAgents.source: file|projection`。
+
+**前端**：「我的规矩」面板第三页签「这张卡」——未建立时横幅＋「让助手生成」；
+建立后编辑器（复用 RulesEditor）＋「对照投影」行级 diff＋「删除（回到投影）」。
+
 ## 八、五个岔口的裁定（2026-09-08，用户授权我定）
 **1. project trust —— 问题不存在，无需选。**
 

@@ -590,6 +590,27 @@ export interface PresetTranslateResponse {
 	report?: string;
 }
 
+/** 卡档案 AGENTS.md（刀3）：文件为准 / 投影兜底两态 */
+export interface CardAgentsResponse {
+	exists: boolean;
+	active: "file" | "projection";
+	content: string;
+	/** 生效投影（diff 基准）：装配真正送的那份（协议判死已滤） */
+	projection: string;
+	/** 未过滤全量投影（生成素材）：含被运行时判死/归属剥离的条目，交模型重新判断 */
+	unfilteredProjection: string;
+	/** 被判死条目名单（标题 + 判定原因） */
+	droppedTitles: string[];
+	path: string;
+	cardName: string;
+}
+
+export interface CardAgentsSaveResponse {
+	ok: boolean;
+	path: string;
+	chars: number;
+}
+
 export interface LorebookFileInfo {
 	path: string;
 	name: string;
