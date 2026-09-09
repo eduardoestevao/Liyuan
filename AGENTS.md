@@ -11,11 +11,11 @@
    timestamp 核对北京时间。
 3. **流程与提示词的最终形态**定义在 `docs/PLAN-ROUND-FLOW.md`——任何提示词/
    引擎改动都要回答「离这个流程近了多少」。
-4. **当前阶段见 `docs/PLAN-RP-AGENT-NEXT.md`（2026-09-09 用户定案）**：回到 agent 架构、
-   写卡资源编辑第一切片与主会话写卡模式已落地，接下来**根据实际体验与用户反馈调整**。
-   从具体问题复现、定位归属、针对性修改并复验；剩余能力按真实需求排序，不自动扩建。
-   两模式共用底层记录，写卡开放操作内容，回到扮演后封闭维护过程；预设低优先级后置，小说模式继续延期。
-   `docs/PLAN-RP-AGENT-EXEC.md` 与 `docs/PRESET-SPLIT-TAXONOMY.md` 保留为历史计划与研究资料。
+4. **当前阶段见 `docs/PLAN-RP-AGENT-NEXT.md`（2026-09-09 收窗）**：写卡板块（主会话模式＋资源工程＋
+   角色卡工坊）已提交 `3d6b837` 并**封存不动**；下一阶段**大改前端**，在新前端里把工坊接回
+   （接回方式见 `docs/PLAN-CARD-STUDIO.md` 第五节），再继续功能更新。工坊功能通道
+   （`/api/card/authoring`）不动即可无缝迁移。`docs/PLAN-RP-AGENT-EXEC.md` 与
+   `docs/PRESET-SPLIT-TAXONOMY.md` 保留为历史计划与研究资料。
 
 ## 快速索引
 
