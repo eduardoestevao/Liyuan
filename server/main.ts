@@ -45,6 +45,8 @@ import { findInitVar, findSchemaDefaults, seedMvuIfNeeded } from "../src/mvu.ts"
 import { authorScriptManifest, extractAuthorScripts } from "../src/authorScripts.ts";
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
+import { displayConversationBranch, storyBranch, messageMode, isConversationMode } from "../src/conversation-mode.ts";
+import { cardProjectOperation } from "../src/card-authoring.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
 import {
 	activePanels,
@@ -103,6 +105,7 @@ import {
 } from "../src/memory/index.ts";
 import {
 	createLorebookWithEntry,
+	createCardFile,
 	currentCardPath,
 	deleteLoreEntryAnywhere,
 	handleApiRequest,
@@ -626,7 +629,7 @@ let rerollFallbackLeaf: string | null = null;
 
 /** 当前分支上最后一条剧情用户消息 entry id（戏外轮不计） */
 const lastStoryUserId = (): string | null => {
-	const branch = session.sessionManager.getBranch() as Array<Record<string, unknown>>;
+	const branch = storyBranch(session.sessionManager.getBranch()) as unknown as Array<Record<string, unknown>>;
 	const lite = branch.map((e) => {
 		const type = String(e.type);
 		if (type === "message" && e.message && typeof e.message === "object") {
@@ -653,7 +656,7 @@ const lastStoryUserId = (): string | null => {
 const branchNodeIds = (): Set<string> => {
 	try {
 		const out = new Set<string>();
-		for (const e of session.sessionManager.getBranch() as Array<{ id?: unknown }>) {
+		for (const e of storyBranch(session.sessionManager.getBranch()) as Array<{ id?: unknown }>) {
 			if (typeof e?.id === "string" && e.id) out.add(e.id);
 		}
 		return out;
@@ -710,30 +713,20 @@ const currentDisplaySkin = () => {
  * 显示层一律以 SessionManager 分支为准（含 rp-greeting/rp-draft-op 等 custom_message）。
  */
 const branchMessages = (): unknown[] => {
-	try {
-		const out: unknown[] = [];
-		for (const e of applyDraftRevisions(session.sessionManager.getBranch()) as Array<Record<string, unknown>>) {
-			if (e.type === "message" && e.message) out.push(e.message);
-			else if (e.type === "custom_message") {
-				// details 必须透传：开场白序号（rpGreeting）等元数据只存在于树条目上，
-				// 丢了就让 resyncAll 后的角标退回 /api/card 轮询（切换开场白时角标卡住不动）
-				out.push({
-					role: "custom",
-					customType: e.customType,
-					content: e.content,
-					display: e.display,
-					details: e.details,
-				});
-			}
-			else if (e.type === "custom" && e.customType === "rp-draft-revision") {
-				const revision = e.data as { requestId?: string; version?: number } | undefined;
-				if (revision?.requestId) out.push({ role: "custom", customType: "rp-draft-revision", content: `上一拍已修订 · v${revision.version}`, display: true });
-			}
+	let branch = session.sessionManager.getBranch();
+	try { branch = applyDraftRevisions(branch); } catch { /* A broken draft receipt must not discard mode provenance. */ }
+	const out: unknown[] = [];
+	for (const e of displayConversationBranch(branch) as unknown as Array<Record<string, unknown>>) {
+		if (e.type === "message" && e.message) out.push(e.message);
+		else if (e.type === "custom_message") {
+			// details 必须透传：开场白序号等元数据只存在于树条目上。
+			out.push({ role: "custom", customType: e.customType, content: e.content, display: e.display, details: e.details });
+		} else if (e.type === "custom" && e.customType === "rp-draft-revision") {
+			const revision = e.data as { requestId?: string; version?: number } | undefined;
+			if (revision?.requestId) out.push({ role: "custom", customType: "rp-draft-revision", content: `上一拍已修订 · v${revision.version}`, display: true });
 		}
-		return out;
-	} catch {
-		return session.messages;
 	}
+	return out;
 };
 
 const helloFrame = (): ServerFrame => {
@@ -771,6 +764,8 @@ const helloFrame = (): ServerFrame => {
 		panels: currentPanels(),
 		workspace: workspace ? workspaceView(workspace) : undefined,
 		streaming: stage?.isStreaming ?? false,
+		conversationMode: stage?.mode ?? "roleplay",
+		turnMode: stage?.turnMode,
 		// 一档皮肤与消息同帧:首屏不得依赖二次 REST(缓存/竞态会让 StatusBlock 回落统一面板)
 		cardfront: { ...cardfrontLite, scriptManifest: authorScriptManifest(scripts) },
 	};
@@ -2642,8 +2637,18 @@ stage = new StageEngine({
 		updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch);
 		void restHost.softRefreshConfig();
 	},
-	sideStreamFn: ((model, context, options) => session.modelRuntime.streamSimple(model as never, context as never, options as never)) as StageStreamFn,
+	authoring: {
+		project: async (args) => cardProjectOperation(cwd, currentCardPath(cwd, loadConfig(cwd)), args),
+		updateCard: (patch) => updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch),
+		createCard: (input) => {
+			const created = createCardFile(cwd, input);
+			return created ? { name: created.name, path: created.abs } : null;
+		},
+	},
+	afterAuthoringTurn: () => restHost.softRefreshConfig(),
+	sideStreamFn: (model, context, options) => session.modelRuntime.streamSimple(model as never, context as never, options as never) as unknown as ReturnType<StageStreamFn>,
 	events: {
+		onModeChanged: (mode) => { broadcast({ type: "conversation_mode", mode, turnMode: stage.turnMode }); resyncAll(); },
 		onTurnStart: () => broadcast({ type: "agent", state: "start" }),
 		onDelta: (kind, delta, draft, reset) =>
 			broadcast({ type: "delta", kind, delta, ...(draft ? { draft: true } : {}), ...(reset ? { reset: true } : {}) }),
@@ -2672,7 +2677,7 @@ stage = new StageEngine({
 			const stats = safeStats();
 			if (stats) broadcast({ type: "stats", stats });
 			// 向量记忆入库：只在真落了新正文时（中断/错误拍不入）
-			if (!info.entryId || info.error || info.aborted) return;
+			if (info.mode === "authoring" || !info.entryId || info.error || info.aborted) return;
 			// 树坐标在进异步块前同步取（同上：随后的重roll 会挪叶）。这条路径已有 info.entryId
 			// 就是本拍的落树节点，直接用它当 nodeId 最准。
 			const memNodeId = info.entryId;
@@ -2683,7 +2688,7 @@ stage = new StageEngine({
 					let lastText = "";
 					for (let i = msgs.length - 1; i >= 0; i--) {
 						const m = msgs[i];
-						if (m?.role !== "assistant") continue;
+						if (m?.role !== "assistant" || messageMode(m) === "authoring") continue;
 						const c = m.content;
 						if (typeof c === "string") lastText = c;
 						else if (Array.isArray(c)) {
@@ -2829,14 +2834,15 @@ const handlePrompt = async (text: string) => {
 		return;
 	}
 
-	// 2026-07-18 合流：主框一律进剧情侧；// 与整段括号不再硬改道。
-	// 台上管理拍级输入队列；叙事生成与斜杠命令都经 pi 会话执行。
-
-	const isCommand = trimmed.startsWith("/");
+	// 只有已注册的命令可走命令通道。路径、// 与未知斜杠文本仍是当前模式的用户输入，
+	// 必须经过台上的上下文投影，不能落入裸 pi 生成。
+	// 与 AgentSession 的命令解析相同：命令名止于第一个 ASCII 空格。
+	const commandName = trimmed.startsWith("/") ? trimmed.slice(1).split(" ", 1)[0] : undefined;
+	const isCommand = !!commandName && !!session.extensionRunner.getCommand(commandName);
 	if (!isCommand) {
 		broadcast({
 			type: "message",
-			message: { channel: "user", name: names.userName, text: trimmed },
+			message: { channel: "user", name: names.userName, text: trimmed, ...(stage.mode === "authoring" ? { mode: "authoring" } : {}) },
 		});
 		// 流式中送达的输入由引擎排队到本拍结束（RP 语境：不打断正在进行的叙事）
 		await stage.performTurn(trimmed);
@@ -3168,6 +3174,12 @@ wss.on("connection", (ws, req) => {
 							broadcast({ type: "draft_workspace", workspace: workspaceView(restored), streaming: stage.isStreaming });
 							break;
 						}
+					case "conversation_mode": {
+						if (!isConversationMode(frame.mode)) throw new Error("未知会话模式。");
+						if (storyStreaming()) throw new Error("请等当前回复完成（或先停止），再切换模式。");
+						stage.setMode(frame.mode);
+						break;
+					}
 					case "prompt": {
 						const text = String(frame.text ?? "").trim();
 						if (text) await handlePrompt(text);

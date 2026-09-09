@@ -37,7 +37,7 @@ export type ToolDomain =
  * 那是**待接的设计意图**（测试里以「三面共用」钉着），不是已经接上的事实——
  * 别照着 surfaces 就以为扩展侧拿得到它们。
  */
-export type ToolSurface = "stage" | "assistant" | "extension";
+export type ToolSurface = "stage" | "authoring" | "assistant" | "extension";
 
 /** 装配上下文：描述/schema 按面与语言裁剪 */
 export interface ToolContext {

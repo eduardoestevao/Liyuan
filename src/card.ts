@@ -8,8 +8,9 @@
  */
 
 import { readFileSync, writeFileSync } from "node:fs";
-import type { CharacterCard, LorebookEntry, MacroContext } from "./types.ts";
+import type { CharacterCard, LorebookEntry } from "./types.ts";
 import { normalizeEntries } from "./lorebook.ts";
+export { applyMacros } from "./card-macros.ts";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
 
@@ -108,13 +109,6 @@ export function loadCardFile(path: string): CharacterCard {
 		return normalizeCard(readCardJsonFromPng(buf));
 	}
 	return normalizeCard(JSON.parse(buf.toString("utf8")));
-}
-
-/** {{char}} / {{user}} 宏替换（大小写不敏感） */
-export function applyMacros(text: string, ctx: MacroContext): string {
-	return text.replace(/\{\{\s*(char|user)\s*\}\}/gi, (_m, name: string) =>
-		name.toLowerCase() === "char" ? ctx.charName : ctx.userName,
-	);
 }
 
 // ---------- 卡字段写回（PLAN-PANELS-V2 §2.2：JSON 与 PNG tEXt 均可） ----------
@@ -239,7 +233,11 @@ export function writeCardJsonToPng(buf: Buffer, json: unknown): Buffer {
 
 /** 读卡原始 JSON 对象（编辑用，保留 data 结构） */
 export function readCardRawJson(path: string): { isPng: boolean; raw: Record<string, unknown> } {
-	const buf = readFileSync(path);
+	return readCardRawBuffer(readFileSync(path));
+}
+
+/** 与磁盘读取共用，保证快照按同一份字节解析。 */
+export function readCardRawBuffer(buf: Buffer): { isPng: boolean; raw: Record<string, unknown> } {
 	const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIGNATURE);
 	if (isPng) {
 		const j = readCardJsonFromPng(buf);
@@ -334,25 +332,96 @@ export function remapGreetingIndexAfterMove(gi: number, from: number, to: number
 
 export type CardExportLoreMode = "none" | "embedded" | "active";
 
+/** 只在导出路径携带原始条目，不进入演出上下文。 */
+export interface CardExportEntry extends LorebookEntry {
+	raw?: Record<string, unknown>;
+	worldbookSource?: boolean;
+}
+
+export function loreEntriesForExport(entries: unknown, worldbookSource = false): CardExportEntry[] {
+	const list = (Array.isArray(entries) ? entries : entries && typeof entries === "object" ? Object.values(entries) : [])
+		.filter((e): e is Record<string, unknown> => !!e && typeof e === "object" && !Array.isArray(e));
+	return normalizeEntries(list).map((e, i) => ({ ...e, raw: list[i], worldbookSource }));
+}
+
+const EXPORT_ENTRY_FIELDS: Array<[keyof LorebookEntry, string, string?]> = [
+	["uid", "id", "uid"], ["keys", "keys", "key"], ["secondaryKeys", "secondary_keys", "keysecondary"],
+	["comment", "comment", "name"], ["content", "content"], ["constant", "constant"],
+	["selective", "selective"], ["enabled", "enabled"], ["order", "insertion_order", "order"],
+];
+
+/** 活跃书沿用内容去重优先级；匹配原条目时保留其身份，其余重复原条目不丢。 */
+export function mergeExportLore(embedded: CardExportEntry[], active: CardExportEntry[]): CardExportEntry[] {
+	const combined = [...embedded];
+	for (const entry of active) {
+		const matches = (e: CardExportEntry) => e.content.trim() === entry.content.trim();
+		let index = embedded.findIndex(e => matches(e) && e.uid === entry.uid);
+		if (index < 0) index = embedded.findIndex(matches);
+		if (index < 0) { combined.push(entry); continue; }
+		const original = embedded[index];
+		const base = original.raw ?? (entriesToCharacterBook([original]).entries as Record<string, unknown>[])[0];
+		const current = (entriesToCharacterBook([entry]).entries as Record<string, unknown>[])[0];
+		const raw: Record<string, unknown> = {
+			...base, ...current,
+			extensions: { ...(base.extensions as object ?? {}), ...(current.extensions as object ?? {}) },
+		};
+		for (const key of ["id", "uid"]) {
+			if (Object.hasOwn(base, key)) raw[key] = base[key];
+			else delete raw[key];
+		}
+		if (!Object.hasOwn(entry.raw ?? {}, "position") && Object.hasOwn(base, "position")) raw.position = base.position;
+		for (const [field, , alias] of EXPORT_ENTRY_FIELDS) {
+			if (field !== "uid" && alias && Object.hasOwn(raw, alias)) raw[alias] = entry[field];
+		}
+		if (Object.hasOwn(raw, "disable")) raw.disable = !entry.enabled;
+		combined[index] = { ...entry, uid: original.uid, raw, worldbookSource: false };
+	}
+	return combined;
+}
+
 /**
- * 把归一化条目写成卡内嵌 character_book（V2/V3 数组形态，ST 可认）。
+ * 导出时在原条目上回写变化，保留书级、条目级和插件扩展。
+ * 只有没有原始来源的新条目才创建标准外壳。
  */
-export function entriesToCharacterBook(entries: LorebookEntry[]): Record<string, unknown> {
-	return {
-		entries: entries.map((e, i) => ({
-			id: e.uid || i,
-			keys: e.keys,
-			secondary_keys: e.secondaryKeys,
-			comment: e.comment,
-			content: e.content,
-			constant: e.constant,
-			selective: e.selective,
-			enabled: e.enabled,
-			insertion_order: e.order,
-			position: "before_char",
-			extensions: {},
-		})),
-	};
+export function entriesToCharacterBook(entries: CardExportEntry[], original?: unknown): Record<string, unknown> {
+	const book = original && typeof original === "object" ? original as Record<string, unknown> : {};
+	const candidates = loreEntriesForExport(book.entries);
+	const used = new Set<number>();
+	const result = entries.map(e => {
+		const index = candidates.findIndex((c, i) => !used.has(i) && c.uid === e.uid && c.content === e.content);
+		if (index >= 0) used.add(index);
+		const source = e.raw ?? candidates[index]?.raw;
+		const out: Record<string, unknown> = source ? JSON.parse(JSON.stringify(source)) : { position: "before_char", extensions: {} };
+		const before = source ? normalizeEntries([source])[0] : undefined;
+		for (const [field, canonical, alias] of EXPORT_ENTRY_FIELDS) {
+			if (field === "uid" && source && !e.worldbookSource && !Object.hasOwn(source, "id") && !Object.hasOwn(source, "uid")) continue;
+			if (!before || e.worldbookSource || JSON.stringify(e[field]) !== JSON.stringify(before[field])) {
+				const key = !e.worldbookSource && alias && Object.hasOwn(out, alias) && !Object.hasOwn(out, canonical) ? alias : canonical;
+				// uid=0 也是有效身份，不能用 || 序号替代。
+				out[key] = e[field];
+				if (alias && alias !== key && Object.hasOwn(out, alias)) out[alias] = e[field];
+			}
+		}
+		if (source && before?.enabled !== e.enabled && Object.hasOwn(source, "disable")) out.disable = !e.enabled;
+		if (e.worldbookSource) {
+			const ext = source?.extensions && typeof source.extensions === "object" ? { ...source.extensions as object } : {};
+			if (typeof source?.position === "number") {
+				Object.assign(ext, { position: source.position });
+				out.position = source.position === 1 ? "after_char" : "before_char";
+			} else if (out.position === undefined) out.position = "before_char";
+			for (const key of ["depth", "role", "probability", "useProbability", "selectiveLogic", "excludeRecursion", "preventRecursion", "delayUntilRecursion", "sticky", "cooldown", "delay"]) {
+				if (source && Object.hasOwn(source, key)) Object.assign(ext, { [key]: source[key] });
+			}
+			out.extensions = ext;
+		}
+		return out;
+	});
+	// 无变更时连对象式 entries 的键和非条目数据也原样保留。
+	if (Object.hasOwn(book, "entries") && result.length === candidates.length &&
+		result.every((e, i) => JSON.stringify(e) === JSON.stringify(candidates[i].raw))) {
+		return JSON.parse(JSON.stringify(book));
+	}
+	return { ...JSON.parse(JSON.stringify(book)), entries: result };
 }
 
 /**
@@ -361,7 +430,7 @@ export function entriesToCharacterBook(entries: LorebookEntry[]): Record<string,
  */
 export function buildExportCardJson(
 	path: string,
-	bookEntries?: LorebookEntry[] | null,
+	bookEntries?: CardExportEntry[] | null,
 ): Record<string, unknown> {
 	const { raw } = readCardRawJson(path);
 	// 深拷贝，避免改内存里的磁盘对象引用
@@ -376,14 +445,14 @@ export function buildExportCardJson(
 		};
 		if (bookEntries !== undefined) {
 			if (bookEntries === null) delete (wrapped.data as Record<string, unknown>).character_book;
-			else (wrapped.data as Record<string, unknown>).character_book = entriesToCharacterBook(bookEntries);
+			else if (bookEntries.length || data.character_book !== undefined) (wrapped.data as Record<string, unknown>).character_book = entriesToCharacterBook(bookEntries, data.character_book);
 		}
 		return wrapped;
 	}
 	const data = cardDataTarget(out);
 	if (bookEntries !== undefined) {
 		if (bookEntries === null) delete data.character_book;
-		else data.character_book = entriesToCharacterBook(bookEntries);
+		else if (bookEntries.length || data.character_book !== undefined) data.character_book = entriesToCharacterBook(bookEntries, data.character_book);
 	}
 	return out;
 }
@@ -422,23 +491,24 @@ export function exportCardFile(
 	opts: {
 		format: "json" | "png";
 		loreMode: CardExportLoreMode;
-		/** loreMode=active 时必填；embedded/none 可省略 */
-		bookEntries?: LorebookEntry[];
+		/** active 可传活跃世界书；省略则保留卡内原书。 */
+		bookEntries?: CardExportEntry[];
 	},
 ): CardExportResult {
 	const card = loadCardFile(path);
 	const safeName = card.name.replace(/[\\/:*?"<>|]+/g, "_").slice(0, 80) || "character";
 
-	let bookEntries: LorebookEntry[] | null | undefined;
+	let bookEntries: CardExportEntry[] | null | undefined;
 	let loreCount = 0;
 	if (opts.loreMode === "none") {
 		bookEntries = null;
 	} else if (opts.loreMode === "embedded") {
-		bookEntries = card.book;
+		// 保留原书，包括重复内容、同名条目、禁用条目与未知字段。
+		bookEntries = undefined;
 		loreCount = card.book.length;
 	} else {
-		bookEntries = opts.bookEntries ?? card.book;
-		loreCount = bookEntries.length;
+		bookEntries = opts.bookEntries;
+		loreCount = bookEntries?.length ?? card.book.length;
 	}
 
 	const json = buildExportCardJson(path, bookEntries);

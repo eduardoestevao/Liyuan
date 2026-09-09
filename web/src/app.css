@@ -7800,3 +7800,11 @@ label.drawer-btn {
 .draft-plan { list-style: none; padding: 0; }
 .draft-plan li { margin: .35rem 0; }
 .draft-plan [data-status="cancelled"] { text-decoration: line-through; opacity: .6; }
+
+.conversation-mode-bar { display: flex; align-items: center; flex-wrap: wrap; gap: .65rem; padding-block: .35rem; color: var(--muted); font-size: .78rem; }
+.conversation-mode-switch { display: inline-flex; gap: 2px; padding: 2px; border: 1px solid var(--hairline); border-radius: 9px; background: var(--surface); }
+.conversation-mode-switch button { min-width: 4rem; min-height: 32px; border: 0; border-radius: 6px; background: transparent; color: var(--text); font: inherit; cursor: pointer; }
+.conversation-mode-switch button[aria-pressed="true"] { color: var(--accent); background: color-mix(in srgb, var(--accent) 10%, var(--surface)); font-weight: 600; }
+.conversation-mode-switch button:disabled { cursor: default; opacity: .6; }
+.conversation-mode-switch button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.msg-authoring { border-left: 2px solid var(--hairline); padding-left: 1rem; }

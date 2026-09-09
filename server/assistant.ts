@@ -34,6 +34,7 @@ import { memoryDeleteChunk, memoryListChunks, memoryManualAdd, memorySearchRepor
 import { cardDirOfChatDir } from "../src/cardspace.ts";
 import { changeCardMemory, listCardMemory, readCardMemory, searchCardMemory } from "../src/card-memory-tools.ts";
 import { cardTools, type CardDeps } from "../src/tools/card.ts";
+import { cardProjectOperation } from "../src/card-authoring.ts";
 import { personaTools, type PersonaDeps } from "../src/tools/persona.ts";
 import { stageSkillTools, type StageSkillDeps } from "../src/tools/skill.ts";
 import { presetTools, type PresetDeps } from "../src/tools/preset.ts";
@@ -727,6 +728,11 @@ tools.push(
 	...assistantToolDefs<CardDeps>(
 		cardTools,
 		{
+			project: async (args) => {
+				const result = cardProjectOperation(cwd, currentCardPath(cwd, loadConfig(cwd)), args);
+				if (args.action === "apply" || args.action === "undo") await bridge.softRefreshConfig();
+				return result;
+			},
 			readCard: () => {
 					const path = currentCardPath(cwd, loadConfig(cwd));
 				if (!path) return null;

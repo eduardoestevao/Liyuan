@@ -14,6 +14,9 @@ import { DraftStore, draftDirectory, listDrafts } from "./draft-store.ts";
 import { applyDraftRevisions, DRAFT_REVISION_TYPE } from "./draft-projection.ts";
 import { PreviousDraftEditor } from "./previous-draft.ts";
 import { projectToolContext } from "./context.ts";
+import { authoringHistory, authoringRequestIds, contextText, conversationMode, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE, isConversationMode, type ConversationMode, type ContextMessage } from "../conversation-mode.ts";
+import { authoringTools, authoringSystemPrompt, runAuthoringTool, AUTHORING_NATIVE_TOOLS, CONVERSATION_MODE_TOOL } from "./authoring.ts";
+import type { CardDeps } from "../tools/card.ts";
 import type { GateInput } from "../tools/gate.ts";
 import { extractDraftRules } from "../draft.ts";
 import {
@@ -82,7 +85,7 @@ import {
 	runMediaStageTool,
 	type MediaStageResult,
 } from "./media-stage.ts";
-import { assistantStageTool, runAssistantStageTool } from "./assistant-stage.ts";
+import { runAssistantStageTool } from "./assistant-stage.ts";
 import type { MemoryChunkLike, MemoryDocument, MemorySearchResult } from "../tools/memory.ts";
 import type { WorldlineViewLite } from "../tools/worldline.ts";
 import { defaultSaveName } from "../worldline.ts";
@@ -155,6 +158,8 @@ export interface StageStreamEvent {
 }
 
 export interface StageTurnEndInfo {
+	/** Controls derived story writes; an authoring turn stays authoring even after switching back. */
+	mode?: ConversationMode;
 	aborted: boolean;
 	/** 非空 = 本拍以错误收场（已通知，无正文落树） */
 	error?: string;
@@ -165,6 +170,7 @@ export interface StageTurnEndInfo {
 }
 
 export interface StageEvents {
+	onModeChanged?: (mode: ConversationMode) => void;
 	onTurnStart?: () => void;
 	/** 流式增量（转 WS delta 帧；kind 对应正文/思考通道） */
 	/**
@@ -231,12 +237,19 @@ export interface StageAgentSession {
 	prompt(text: string, options: { expandPromptTemplates: false; reuseUserMessage: boolean }): Promise<void>;
 	abort(): Promise<void>;
 	appendMessage(message: unknown): string;
+	getAllTools(): Array<{ name: string }>;
+	setActiveToolsByName(names: string[]): void;
+	setTurnSystemPrompt(prompt: string): void;
 }
 
 export interface StageEngineDeps {
 	cwd: string;
 	getSession: () => StageAgentSession;
 	getModel: () => StageModelLike | undefined;
+	/** Shared card services, bound to the host's currently loaded card. */
+	authoring?: Partial<CardDeps>;
+	/** Runs after the native session is idle, before queued story input resumes. */
+	afterAuthoringTurn?: () => Promise<void>;
 	getAuth: (model: StageModelLike) => Promise<{ apiKey?: string; headers?: Record<string, string | null> }>;
 	/**
 	 * 旁路条目（场记记账 / 长局压缩用哪个模型、哪一档）：给出则旁路调用走它，
@@ -539,19 +552,34 @@ export const mergeFinalText = (draft: string, text: string): string => {
 export class StageEngine {
 	#deps: StageEngineDeps;
 	#busy = false;
-	#queue: string[] = [];
+	#queue: Array<{ text: string; mode: ConversationMode }> = [];
 	#abort: AbortController | null = null;
 	#warnedMacros = "";
 	#warnedAuditDrop = 0;
 	#warnedProtocolDrop = "";
 	#lastAssemblyJson = "";
 	#workspace?: { ws: TurnWorkspace; deps: WorkspaceDeps };
+	#turnMode?: ConversationMode;
+
+	get mode(): ConversationMode { return conversationMode(this.#deps.getSession().sessionManager.getBranch() as BranchEntryLike[]); }
+	get turnMode(): ConversationMode | undefined { return this.#turnMode; }
+
+	setMode(mode: ConversationMode): void {
+		if (!isConversationMode(mode)) throw new Error("未知会话模式。");
+		if (this.#busy) throw new Error("请等当前回复完成（或先停止），再切换模式。");
+		if (this.mode === mode) return;
+		const sm = this.#deps.getSession().sessionManager;
+		sm.appendCustomEntry(CONVERSATION_MODE_TYPE, { mode, source: "user" });
+		sm.flush();
+		this.#deps.events?.onModeChanged?.(mode);
+	}
 
 	getWorkspaces(): TurnWorkspace[] {
 		const sm = this.#deps.getSession().sessionManager;
+		const authoringIds = authoringRequestIds(sm.getBranch() as BranchEntryLike[]);
 		const ids = new Set((sm.getBranch() as Array<{ id: string }>).map((e) => e.id));
 		const directory = draftDirectory(this.#deps.cwd, sm.getSessionDir?.(), sm.getSessionId());
-		const list = listDrafts(directory).filter((w) => w.sessionId === sm.getSessionId() &&
+		const list = listDrafts(directory).filter((w) => w.sessionId === sm.getSessionId() && !authoringIds.has(w.userId ?? "") &&
 			(!w.revision || ids.has(w.revision.requestId)) &&
 			(w.entryId ? ids.has(w.entryId) : w.userId ? ids.has(w.userId) : w.parentId === null || ids.has(w.parentId)));
 		const recovered = list.map((w) => {
@@ -587,6 +615,7 @@ export class StageEngine {
 	}
 
 	getWorkspace(): TurnWorkspace | undefined {
+		if (this.mode === "authoring" || this.#turnMode === "authoring") return undefined;
 		const active = this.#workspace?.ws;
 		if (this.#busy && active?.sessionId === this.#deps.getSession().sessionManager.getSessionId()) return structuredClone(active);
 		const latest = this.getWorkspaces()[0];
@@ -635,7 +664,7 @@ export class StageEngine {
 	/** 用户新输入开一拍：先落 user 消息再开演；忙时排队（流式中送达的输入不打断叙事） */
 	async performTurn(userText: string): Promise<void> {
 		if (this.#busy) {
-			this.#queue.push(userText);
+			this.#queue.push({ text: userText, mode: this.mode });
 			return;
 		}
 		await this.#run(userText);
@@ -658,13 +687,15 @@ export class StageEngine {
 	async #drain(): Promise<void> {
 		while (this.#queue.length > 0 && !this.#busy) {
 			const next = this.#queue.shift();
-			if (next !== undefined) await this.#run(next);
+			if (next !== undefined) await this.#run(next.text, next.mode);
 		}
 	}
 
-	async #run(userText: string | null): Promise<void> {
+	async #run(userText: string | null, requestedMode = this.mode): Promise<void> {
 		const ev = this.#deps.events ?? {};
+		if (requestedMode !== this.mode) this.setMode(requestedMode);
 		this.#busy = true;
+		this.#turnMode = this.mode;
 		this.#abort = new AbortController();
 		this.#pendingSave = null; // 上一拍若中途 return，登记的存档请求不许漏到这一拍
 		this.#pendingPanelData = {};
@@ -679,6 +710,8 @@ export class StageEngine {
 		} finally {
 			this.#busy = false;
 			this.#abort = null;
+			if (this.#turnMode === "authoring") endInfo.mode = "authoring";
+			this.#turnMode = undefined;
 			ev.onTurnEnd?.(endInfo);
 		}
 	}
@@ -687,6 +720,9 @@ export class StageEngine {
 		const { cwd, events: rawEv = {} } = this.#deps;
 		const session = this.#deps.getSession();
 		const sm = session.sessionManager;
+		let mode = this.mode;
+		let authoringTurn = mode === "authoring";
+		let modeExit = false;
 		const connection = getStageConnection(sm.getSessionId());
 		if (!connection) throw new Error("RP 扩展尚未绑定当前 pi 会话。");
 
@@ -733,8 +769,9 @@ export class StageEngine {
 			...(userText !== null ? [{ type: "message", message: nowMsg(userText) }] : []),
 		] as BranchEntryLike[];
 		const state = stateFromBranch(branch);
-		const { history, lastUserText, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
-		if (!history.some((m) => m.role === "user")) {
+		const { history, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
+		const lastUserText = userText ?? contextText([...branch].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.message?.content);
+		if (!lastUserText.trim()) {
 			ev.onNotify?.("error", "没有可开演的用户输入。");
 			return { aborted: false, error: "no-user-input" };
 		}
@@ -793,18 +830,24 @@ export class StageEngine {
 		// 媒体交付（8/06 重接）：tts 另需服务端环境，未就绪不上清单
 		const mediaOpts = { tts: this.#deps.ttsAvailable?.() === true };
 		const mediaTools = this.#deps.media ? mediaStageTools(config.language, mediaOpts) : [];
-		// 助手委托（8/06 重接）：runner 未注册时不上清单
-		const assistantTool = assistantStageTool();
 		// P7：ask 工具依赖宿主注入 askUser（选择卡通道）；未注入则从清单剔除
 		const askEnabled = !!this.#deps.askUser;
-		const tools: StageTool[] = [
+		const rpTools: StageTool[] = [
+			CONVERSATION_MODE_TOOL,
 			...stageTools(config.language, readDeps),
 			...(skillList.length > 0 ? [skillReadTool(config.language, skillList)] : []),
 			...writeTools(config.language).filter((t) => t.name !== "ask" || askEnabled),
 			...mediaTools,
-			...(assistantTool ? [assistantTool] : []),
 			...mcpTools,
 		];
+		const cardDeps: CardDeps = { ...readDeps, ...this.#deps.authoring };
+		const workTools: StageTool[] = [CONVERSATION_MODE_TOOL, ...authoringTools(config.language, cardDeps),
+			...(skillList.length ? [skillReadTool(config.language, skillList)] : []), ...mcpTools];
+		const nativeNames = config.backendControl === false ? [] : session.getAllTools().map((t) => t.name).filter((n) => AUTHORING_NATIVE_TOOLS.includes(n));
+		const rpNames = rpTools.map((t) => t.name);
+		const workNames = [...new Set([...workTools.map((t) => t.name), ...nativeNames])];
+		const tools = [...new Map([...rpTools, ...workTools].map((t) => [t.name, t])).values()];
+		const workPrompt = authoringSystemPrompt(cwd, config.card);
 		const ws = createWorkspace({ sessionId: sm.getSessionId(), parentId: sm.getLeafId(),
 			...(userText === null ? { userId: [...branch].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.id } : {}) });
 		const draftStore = new DraftStore(draftDirectory(cwd, sm.getSessionDir?.(), sm.getSessionId()), ws.id);
@@ -817,13 +860,12 @@ export class StageEngine {
 			persist: (next) => draftStore.write(next),
 			reload: () => draftStore.read(),
 		};
-		this.#workspace = { ws, deps: wsDeps };
-		draftStore.write(ws);
-		ev.onWorkspace?.(ws);
+		this.#workspace = authoringTurn ? undefined : { ws, deps: wsDeps };
+		if (!authoringTurn) { draftStore.write(ws); ev.onWorkspace?.(ws); }
 
 		// 【剧情记忆】被动召回：向量库注入侧。旁路调用必须带超时——provider 抽风时单次能卡
 		// 几百秒，扮演不能陪着干等；拿不到就当没有，这一拍不出该块。
-		const memoryRecall = await this.#recallForBeat(sm.getSessionId(), lastUserText);
+		const memoryRecall = authoringTurn ? undefined : await this.#recallForBeat(sm.getSessionId(), lastUserText);
 
 		const systemPrompt = buildStageSystemPrompt({
 			card,
@@ -859,7 +901,7 @@ export class StageEngine {
 		// 第二步·跨会话记忆（读侧）：卡的常驻摘要与这局的前情共用【前情提要】槽位——
 		// 两者语义同为「更早剧情的既定事实」，本局摘要在前、往局记忆在后。摘要是数据块，
 		// 走既有通道与既有语义句（铁律一/二：零新增文案、零新增注入点）；预算在 card-memory。
-		const residentSummary = this.#residentSummary(sm, summary, state, rosterIndex);
+		const residentSummary = authoringTurn ? undefined : this.#residentSummary(sm, summary, state, rosterIndex);
 
 		// 末端消息 = 梨园数据块 + 本拍用户原话 + 预设 after 段（各按自己的 role）。
 		// 顺序要紧：用户当拍的话必须落在**梨园数据块之后**。数据块压在提问之后时，模型会把提问
@@ -937,7 +979,7 @@ export class StageEngine {
 
 		const { apiKey, headers } = await this.#deps.getAuth(model);
 		if (this.#abort?.signal.aborted) {
-			if (userText !== null) session.appendMessage(nowMsg(userText));
+			if (userText !== null) session.appendMessage({ ...nowMsg(userText), ...(authoringTurn ? { details: { liyuanMode: "authoring" } } : {}) });
 			sm.flush();
 			return { aborted: true };
 		}
@@ -961,12 +1003,37 @@ export class StageEngine {
 		const publish = () => ev.onWorkspace?.(structuredClone(ws));
 		let lastCheckpoint = 0;
 		const checkpoint = (force = false) => {
+			if (authoringTurn) return;
 			if (force || Date.now() - lastCheckpoint > 250) {
 				commitWorkspace(ws, wsDeps, structuredClone(ws)); lastCheckpoint = Date.now(); publish();
 			}
 		};
+		const exchanges: ContextMessage[] = [];
+		const requestId = () => ws.userId ??= [...sm.getBranch() as BranchEntryLike[]].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.id;
+		const finishAuthoring = (): StageTurnEndInfo => {
+			const aborted = this.#abort?.signal.aborted === true || (!modeExit && final?.stopReason === "aborted");
+			const timeline: TurnWorkspace["timeline"] = [];
+			for (const m of exchanges) {
+				if (m.role === "assistant" && Array.isArray(m.content)) for (const c of m.content) {
+					if (c.type === "text" && c.text) timeline.push({ kind: "text", text: c.text });
+					else if (c.type === "thinking" && c.thinking) timeline.push({ kind: "thinking", text: c.thinking });
+					else if (c.type === "toolCall") timeline.push({ kind: "tool", activities: [{ kind: "tool_start", name: c.name, detail: JSON.stringify(c.arguments).slice(0, 1200) }] });
+				}
+				else if (m.role === "toolResult") timeline.push({ kind: "tool", activities: [{ kind: "tool_end", name: String(m.toolName), detail: contextText(m.content).slice(0, 1200), isError: m.isError === true }] });
+			}
+			const body = exchanges.filter((m) => m.role === "assistant").map((m) => contextText(m.content)).filter(Boolean).join("\n\n");
+			const entryId = final && (body || timeline.length) ? session.appendMessage({ ...final,
+				content: [{ type: "text", text: body }],
+				details: { liyuanMode: "authoring", liyuanAuthoringReply: true, rpTimeline: timeline },
+				...(modeExit ? { stopReason: "stop" } : {}),
+			}) : undefined;
+			sm.flush();
+			if (errored && !aborted) ev.onNotify?.("error", `写卡失败：${errored}`);
+			return { mode: "authoring", aborted, entryId, ...(errored ? { error: errored } : {}) };
+		};
 
 		const finish = async (): Promise<StageTurnEndInfo> => {
+			if (authoringTurn) return finishAuthoring();
 			const aborted = userStopped || this.#abort?.signal.aborted === true || final?.stopReason === "aborted";
 			if (ws.revision) {
 				this.#publishDraftRestore(ws, draftStore);
@@ -1029,10 +1096,9 @@ export class StageEngine {
 			}
 			checkpoint(true);
 
-			// 留档条目必须落在正文**之后**：append 会把叶移到自己身上（_appendEntry），
-			// 落在正文之前就把正文垫成它的子节点、不再是 user 的直接子节点，而 swipe 变体
-			// （listReplyVariants 只认 user 的直接子节点）随之一个都认不出来——v1.4.1 起
-			// reroll 恒显 1/1、旧变体在树上却不可达。空拍（无 final/finalText）照样留档。
+			// 聚合诊断放在正文之后，保持展示顺序；原始过程已逐条持久化在正文之前。
+			// swipe 会穿过这些元数据节点寻找定稿，仍以 user 的直接子树区分变体。
+			// 空拍（无 final/finalText）照样保留诊断。
 			sm.appendCustomEntry("rp-text-debug", { beatLog, draft: ws.draft, loopTail, finalText });
 			sm.flush();
 
@@ -1167,12 +1233,14 @@ export class StageEngine {
 		};
 
 		const hooks: StageHooks = {
-			systemPrompt,
-			toolNames: tools.map((tool) => tool.name),
+			get mode() { return mode; },
+			get systemPrompt() { return authoringTurn ? workPrompt : systemPrompt; },
+			get toolNames() { return modeExit ? [] : mode === "authoring" ? workNames : rpNames; },
 			context: (piMessages) => {
 				// 历史/状态/预设/记忆只有这一份出口；本拍新增的工具过程仍由 pi 持有。
 				contextStart ??= piMessages.length;
 				ws.userId ??= [...sm.getBranch() as Array<{ id: string; type: string; message?: { role?: string } }>].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.id;
+				if (authoringTurn) return authoringHistory(applyDraftRevisions(sm.getBranch() as BranchEntryLike[]));
 				const projected = projectToolContext([...messages, ...piMessages.slice(contextStart)]);
 				ws.context = projected.stats; checkpoint(true);
 				return projected.messages;
@@ -1187,6 +1255,10 @@ export class StageEngine {
 				});
 			},
 			update: (event) => {
+				if (authoringTurn) {
+					if ((event.type === "text_delta" || event.type === "thinking_delta") && event.delta) ev.onDelta?.(event.type === "text_delta" ? "text" : "thinking", event.delta);
+					return;
+				}
 				if (ws.revision) return; // A completed edit cannot grow another narrative or mutate its saved timeline.
 				if (event.type === "text_delta" && event.delta) {
 						text += event.delta;
@@ -1209,9 +1281,18 @@ export class StageEngine {
 				}
 			},
 			messageEnd: (message) => {
+				if (message.role === "user" && authoringTurn) message.details = { ...(message.details as object ?? {}), liyuanMode: "authoring" };
 				if (message.role !== "assistant" && message.role !== "toolResult") return undefined;
+				const raw = structuredClone(message) as ContextMessage;
+				exchanges.push(raw);
+				const userId = requestId();
+				if (userId) { sm.appendCustomEntry(CONVERSATION_PROCESS_TYPE, { requestId: userId, mode, message: raw }); sm.flush(); }
 				if (message.role === "assistant") {
 					final = message as AssistantMsgLike;
+					if (authoringTurn) {
+						if (final.stopReason === "error") errored = final.errorMessage || "provider error";
+						return { persist: false };
+					}
 					if (ws.revision) {
 						if (round >= MAX_ROUNDS && final.content.some((block) => block.type === "toolCall")) void session.abort();
 						return { persist: false };
@@ -1244,18 +1325,24 @@ export class StageEngine {
 						}
 					}
 				}
-				// 临时过程仍供本拍推理；由 AgentSession 在 agent_end 前从内存移除。
+				// Raw exchanges are durable in the shared tree. pi's temporary copy is
+				// discarded; each mode rebuilds its own view of that same tree.
 				return { persist: false };
 			},
 			toolCall: (name, input) => {
 				blog("tool_call", `${name}: ${JSON.stringify(input)}`);
-				const blockReason = workspaceToolBlock(ws, name, tools.find((t) => t.name === name)?.mode);
+				const blockReason = !hooks.toolNames.includes(name) ? "此工具在当前会话模式不可用。" :
+					name === CONVERSATION_MODE_TOOL.name || authoringTurn ? undefined : workspaceToolBlock(ws, name, tools.find((t) => t.name === name)?.mode);
 				return { toolName: name, lastUserText, creationMode: loadStageConfig(cwd).creationMode, ...(blockReason ? { blockReason } : {}) };
 			},
 			toolResult: (name, content) => {
 				blog("tool_result", `${name}: ${content.filter((part) => part.type === "text").map((part) => part.text ?? "").join("")}`);
 			},
 			turnEnd: (withdrawTools) => {
+				if (authoringTurn) {
+					if (modeExit) { withdrawTools(); void session.abort(); }
+					return;
+				}
 				const calls = final?.content.filter((block) => block.type === "toolCall") ?? [];
 				if (calls.length && final?.stopReason !== "aborted" && !userStopped && !this.#abort?.signal.aborted) {
 					delete ws.preview;
@@ -1288,6 +1375,34 @@ export class StageEngine {
 				}
 			},
 			execute: async (name, id, input, signal) => {
+				if (name === CONVERSATION_MODE_TOOL.name) {
+					if (!isConversationMode(input.mode)) return { content: [{ type: "text", text: "mode 必须为 roleplay 或 authoring。" }], isError: true };
+					if (input.mode === mode) return { content: [{ type: "text", text: `当前已是 ${mode} 模式。` }] };
+					mode = input.mode;
+					authoringTurn = true;
+					this.#turnMode = "authoring";
+					this.#workspace = undefined;
+					modeExit = mode === "roleplay";
+					sm.appendCustomEntry(CONVERSATION_MODE_TYPE, { mode, source: "agent", requestId: requestId() });
+					sm.flush();
+					session.setActiveToolsByName(hooks.toolNames);
+					if (!modeExit) session.setTurnSystemPrompt(workPrompt);
+					ev.onStreamClear?.();
+					ev.onModeChanged?.(mode);
+					return { content: [{ type: "text", text: modeExit ? "已切回扮演，维护操作结束；下一条用户输入继续剧情。" : "已进入写卡模式；下一次模型调用可见本会话完整操作记录与写卡工具。" }], ...(modeExit ? { terminate: true } : {}) };
+				}
+				if (authoringTurn) {
+					if (mcpNames.has(name)) {
+						const result = await runMcpStageTool(this.#deps.mcp!, name, input, signal);
+						return { content: [{ type: "text", text: result?.text ?? "MCP 工具不可用。" }], isError: result?.isError ?? !result };
+					}
+					if (name === "skill_read") {
+						const result = await runStageTool(readDeps, name, input, config.language);
+						return { content: [{ type: "text", text: result.text }], isError: result.isError };
+					}
+					const result = await runAuthoringTool(name, input, config.language, cardDeps);
+					return result ? { content: [{ type: "text", text: result.text }], details: result.details, isError: result.isError } : { content: [{ type: "text", text: "当前写卡模式没有此工具。" }], isError: true };
+				}
 				if (name === "ask" && roundText.trim() && ws.mode === "write") {
 					runWriteTool(ws, wsDeps, ws.draft ? "draft_append" : "draft_write", { content: roundText, version: ws.version }, "capture");
 					tailStart = loopText.length; roundText = "";
@@ -1316,6 +1431,7 @@ export class StageEngine {
 			return endInfo;
 		} finally {
 			release();
+			if (authoringTurn) await this.#deps.afterAuthoringTurn?.();
 		}
 	}
 

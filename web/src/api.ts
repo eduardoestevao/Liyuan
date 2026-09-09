@@ -179,6 +179,7 @@ const TOOL_WRITE_PREFIXES: Record<string, string[]> = {
 	memory_delete: ["/api/memory"],
 	card_create: ["/api/card", "/api/cards", "/api/cardfront"],
 	card_update: ["/api/card", "/api/cards", "/api/cardfront"],
+	card_project: ["/api/card", "/api/cards", "/api/cardfront"],
 	card_switch: ["/api/card", "/api/cards", "/api/cardfront", "/api/config"],
 	card_greetings: ["/api/card", "/api/cards"],
 	persona_write: ["/api/personas", "/api/config"],

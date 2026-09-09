@@ -36,10 +36,12 @@ import { BrandLogo } from "./components/BrandLogo.tsx";
 import { CardPanel } from "./components/CardPanel.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { FloatWindow } from "./components/FloatWindow.tsx";
+import { CardStudio } from "./components/CardStudio.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
 import { UpdateModal, UpdateToast } from "./components/UpdateFlow.tsx";
 import { PanelRefreshContext } from "./components/kit.tsx";
 import { registerLiyuanToast, registerTavernChatBridge } from "./tavernShim.ts";
+import { syncCardRuntimeVariables } from "./cardRuntimeFrames.ts";
 import { setAtHome, shouldShowHomeOnBoot, touchVisit } from "./visit.ts";
 import {
 	IconApi,
@@ -51,6 +53,7 @@ import {
 	IconChevronDown,
 	IconClose,
 	IconDock,
+	IconEdit,
 	IconLorebook,
 	IconPersona,
 	IconPreset,
@@ -257,6 +260,10 @@ export default function App() {
 	const [liveSegs, setLiveSegs] = useState<TurnSegment[]>([]);
 	const [thinkingLive, setThinkingLive] = useState(false);
 	const [busy, setBusy] = useState(false);
+	const [conversationMode, setConversationMode] = useState<"roleplay" | "authoring">("roleplay");
+	const modeRef = useRef<"roleplay" | "authoring">("roleplay");
+	const [streamMode, setStreamMode] = useState<"roleplay" | "authoring">("roleplay");
+	const streamModeRef = useRef<"roleplay" | "authoring">("roleplay");
 	const [toolNote, setToolNote] = useState<string | null>(null);
 	/** 本轮过程步骤（实时清单渲染用；与 turnActsRef 同内容） */
 	const [liveActs, setLiveActs] = useState<WireActivity[]>([]);
@@ -310,6 +317,7 @@ export default function App() {
 	const [rightPanel, setRightPanel] = useState<PanelId | null>(initialPanels.right);
 	/** 悬浮窗当前显示的面板（与左右栏并列的第三种形态，同时只开一个） */
 	const [floatPanel, setFloatPanel] = useState<PanelId | AgentPanelId | null>(null);
+	const [studioOpen, setStudioOpen] = useState(false);
 	/** 悬浮窗「刷新」用：+1 强制重挂载窗内面板（与侧栏 manualTick 同机制） */
 	const [floatTick, setFloatTick] = useState(0);
 	// 手机（≤999px，与 CSS 抽屉断点一致）：左右栏是全屏抽屉，同时只能开一个。
@@ -473,30 +481,12 @@ export default function App() {
 	 *   {liyuanVariablesReady} 主动要一次，这里应答。与高度上报（子→父 postMessage）同款。
 	 *
 	 * 卡脚本读 getAllVariables().stat_data，而账本的 mvu 就是那棵 stat_data 树，故包一层 {stat_data}。
-	 * 广播到全部 iframe、靠 payload 有无 liyuanVariables 键自过滤——非 MVU 帧收到也无副作用（只是存了个没人读的全局）。
+	 * 只投递给正式消息帧和脚本宿主，创作预览使用独立测试数据。
 	 */
 	useEffect(() => {
 		const mvu = worldState?.mvu;
 		if (!mvu || typeof mvu !== "object") return;
-		const payload = { liyuanVariables: { stat_data: mvu } };
-		const post = (win: Window | null) => {
-			try {
-				win?.postMessage(payload, "*");
-			} catch {
-				/* 跨域/已卸载帧忽略 */
-			}
-		};
-		const broadcast = () => {
-			for (const f of Array.from(document.querySelectorAll("iframe"))) post((f as HTMLIFrameElement).contentWindow);
-		};
-		broadcast();
-		// 拉：iframe boot 后要一次当前值
-		const onReady = (e: MessageEvent) => {
-			const d = e.data as { liyuanVariablesReady?: unknown } | null;
-			if (d && typeof d === "object" && "liyuanVariablesReady" in d) post((e.source as Window) ?? null);
-		};
-		window.addEventListener("message", onReady);
-		return () => window.removeEventListener("message", onReady);
+		return syncCardRuntimeVariables(mvu);
 	}, [worldState?.mvu]);
 
 	useEffect(() => {
@@ -607,7 +597,7 @@ export default function App() {
 
 		let lastStoryUser = -1;
 		for (let i = ms.length - 1; i >= 0; i--) {
-			if (ms[i].channel === "user" && !ms[i].backstage) {
+			if (ms[i].channel === "user" && ms[i].mode !== "authoring" && !ms[i].backstage) {
 				lastStoryUser = i;
 				break;
 			}
@@ -681,7 +671,7 @@ export default function App() {
 	 * generation 同一算法（authorScriptSig，共用一份）。
 	 */
 	const syncAuthorScripts = useCallback(
-		async (manifest: Array<{ id: string; source: "preset" | "card"; len: number }> | undefined, enabled: boolean) => {
+		async (manifest: Array<{ id: string; source: "preset" | "card"; len: number; hash?: string }> | undefined, enabled: boolean) => {
 			if (!enabled) {
 				authorSigRef.current = "";
 				setAuthorScripts([]);
@@ -701,10 +691,10 @@ export default function App() {
 				const r = await apiGet<{ enabled: boolean; scripts?: AuthorScript[] }>("/api/cardfront?scripts=1", {
 					bypassCache: true,
 				});
-				setAuthorScripts(r.enabled ? (r.scripts ?? []) : []);
+				if (authorSigRef.current === sig) setAuthorScripts(r.enabled ? (r.scripts ?? []) : []);
 			} catch {
 				// 拉不到就当没有：球不出现，不影响正文与其它面板
-				authorSigRef.current = "";
+				if (authorSigRef.current === sig) authorSigRef.current = "";
 			}
 		},
 		[],
@@ -746,6 +736,10 @@ export default function App() {
 		(frame: ServerFrame) => {
 			switch (frame.type) {
 				case "hello": {
+					modeRef.current = frame.conversationMode ?? "roleplay";
+					setConversationMode(modeRef.current);
+					streamModeRef.current = frame.turnMode ?? modeRef.current;
+					setStreamMode(streamModeRef.current);
 					setCharName(frame.charName);
 					setUserName(frame.userName);
 					// wire timeline → 本地 segments：持久化的时间线在刷新后仍按时序渲染
@@ -817,6 +811,13 @@ export default function App() {
 						refreshAvatars();
 					break;
 				}
+				case "conversation_mode":
+					modeRef.current = frame.mode;
+					setConversationMode(frame.mode);
+					streamModeRef.current = frame.turnMode ?? frame.mode;
+					setStreamMode(streamModeRef.current);
+					if (frame.turnMode === "authoring" || frame.mode === "authoring") setDraftWorkspace(undefined);
+					break;
 				case "message":
 					if (frame.message.channel === "narrative" || frame.message.channel === "backstage") {
 						clearStream();
@@ -841,7 +842,7 @@ export default function App() {
 					} else if (frame.message.channel === "greeting") {
 						// 未开聊时切换开场白：替换已有开场白气泡，禁止往下叠楼
 						setMessages((ms) => {
-							const hasUser = ms.some((m) => m.channel === "user" && !m.backstage);
+							const hasUser = ms.some((m) => m.channel === "user" && m.mode !== "authoring" && !m.backstage);
 							if (hasUser) return [...ms, frame.message];
 							const rest = ms.filter((m) => m.channel !== "greeting");
 							return [...rest, frame.message];
@@ -895,6 +896,8 @@ export default function App() {
 						// 新一轮生成：解除停止冻结
 						abortingRef.current = false;
 						setBusy(true);
+						streamModeRef.current = modeRef.current;
+						setStreamMode(streamModeRef.current);
 						resetActs();
 						resetSegs();
 					} else {
@@ -926,7 +929,8 @@ export default function App() {
 							clearStream();
 							if (text.trim() || thinking) {
 								const leftover: ChatMsg = {
-									channel: "narrative",
+									channel: streamModeRef.current === "authoring" ? "authoring" : "narrative",
+									...(streamModeRef.current === "authoring" ? { mode: "authoring" as const } : {}),
 									// 仅有思维链时也留痕；unfinished 与 resync 的 aborted 稿对齐
 									text: text.trim() ? text : "（正文未流出，见思维链）",
 									...(thinking ? { thinking } : {}),
@@ -1166,7 +1170,7 @@ export default function App() {
 		let floor = 0;
 		return messages.map((msg) => {
 			const counts =
-				!msg.backstage && (msg.channel === "user" || msg.channel === "narrative" || msg.channel === "greeting");
+				msg.mode !== "authoring" && !msg.backstage && (msg.channel === "user" || msg.channel === "narrative" || msg.channel === "greeting");
 			return { msg, floor: counts ? ++floor : undefined };
 		});
 	}, [messages]);
@@ -1198,14 +1202,14 @@ export default function App() {
 		return -1;
 	}, [messages]);
 	const lastUserIdx = useMemo(() => {
-		for (let i = messages.length - 1; i >= 0; i--) if (messages[i].channel === "user") return i;
+		for (let i = messages.length - 1; i >= 0; i--) if (messages[i].channel === "user" && messages[i].mode !== "authoring" && !messages[i].backstage) return i;
 		return -1;
 	}, [messages]);
 	/** 本轮用户输入之后是否已有定稿角色回复（有则隐藏空的「生成中」壳，避免双泡） */
 	const turnHasCommittedReply = useMemo(() => {
 		let lastStoryUser = -1;
 		for (let i = messages.length - 1; i >= 0; i--) {
-			if (messages[i].channel === "user" && !messages[i].backstage) {
+			if (messages[i].channel === "user" && messages[i].mode !== "authoring" && !messages[i].backstage) {
 				lastStoryUser = i;
 				break;
 			}
@@ -1217,13 +1221,13 @@ export default function App() {
 	}, [messages]);
 	/** 剧情用户轮（不含戏外），用于回退 N 计算 */
 	const storyUserIdxs = useMemo(
-		() => messages.map((m, i) => (m.channel === "user" && !m.backstage ? i : -1)).filter((i) => i >= 0),
+		() => messages.map((m, i) => (m.channel === "user" && m.mode !== "authoring" && !m.backstage ? i : -1)).filter((i) => i >= 0),
 		[messages],
 	);
 	/** 仅有开场白、尚未开聊 → 可切换备选开场 */
 	const greetingOnly = useMemo(() => {
 		const hasGreet = messages.some((m) => m.channel === "greeting");
-		const hasUser = messages.some((m) => m.channel === "user" && !m.backstage);
+		const hasUser = messages.some((m) => m.channel === "user" && m.mode !== "authoring" && !m.backstage);
 		return hasGreet && !hasUser;
 	}, [messages]);
 	const [greetingMeta, setGreetingMeta] = useState<{ index: number; total: number } | null>(null);
@@ -1279,19 +1283,6 @@ export default function App() {
 		el.scrollTo({ top: el.scrollHeight, behavior: "smooth" });
 	};
 
-	/**
-	 * 场外标记粗判（仅 UX 用：发出后顺手展开助手面板）。
-	 * 路由权威在 server（src/stance.ts isBackstageText）——此处判错顶多少开一次面板。
-	 */
-	const looksBackstage = (t: string): boolean => {
-		const s = t.trim();
-		if (!s) return false;
-		if (s.startsWith("//") || s.startsWith("((") || s.startsWith("（（")) return true;
-		const a = s[0];
-		const b = s[s.length - 1];
-		return (a === "(" || a === "（") && (b === ")" || b === "）");
-	};
-
 	const send = useCallback(() => {
 		const typed = input.trim();
 		// 附件随消息：路径清单作为尾行附在正文后（这一行即持久记录，重放同路径解析）
@@ -1317,18 +1308,13 @@ export default function App() {
 			openLeft("worldline");
 		} else {
 			ws.send({ type: "prompt", text });
-			// 场外标记 → server 会改道助手会话：这边顺手展开右栏，让回复有地方落
-			if (looksBackstage(typed)) {
-				setAsstUnread(false);
-				openRight("assistant");
-			}
 		}
 		setInput("");
 		setPending([]);
 		atBottomRef.current = true;
 		setAtBottom(true);
 		if (inputRef.current) inputRef.current.style.height = "auto";
-	}, [input, pending, conn, ws, openStoreModal, openRight]);
+	}, [input, pending, conn, ws, openStoreModal, openLeft]);
 
 	// 卡 HTML（如 某卡 开场表单）调用 triggerSlash(`/send …|/trigger`)
 	// 须接到输入框 / WS，否则界面显示「档案已发送」但聊天栏空白
@@ -1855,6 +1841,15 @@ export default function App() {
 				<div className="tb-slot tb-slot-center">
 					<button
 						type="button"
+						className={`tb-btn ${studioOpen ? "active" : ""}`}
+						onClick={() => setStudioOpen(true)}
+						aria-label="角色卡工坊"
+						data-tip="角色卡工坊"
+					>
+						<IconEdit size={18} />
+					</button>
+					<button
+						type="button"
 						className={`tb-btn ${centerMenu === "settings" ? "active" : ""}`}
 						onClick={() => toggleCenter("settings")}
 						aria-label="设置"
@@ -2223,11 +2218,11 @@ export default function App() {
 								<div className="msg msg-char msg-live">
 									<div className="msg-head">
 										<MsgAvatar src={charAvatarUrl} name={charName} kind="char" />
-										<span className="msg-name msg-name-char">{charName}</span>
+										<span className="msg-name msg-name-char">{streamMode === "authoring" ? "写卡" : charName}</span>
 										<span className="msg-live-tag">生成中</span>
 									</div>
 									{liveSegs.length > 0 ? (
-										<TurnTimeline segments={liveSegs} skin={liveSkin} live />
+										<TurnTimeline segments={liveSegs} skin={streamMode === "authoring" ? null : liveSkin} plain={streamMode === "authoring"} live />
 									) : (
 										<div className="info-line pulse" style={{ margin: "0.4rem 0 0" }}>
 											{thinkingLive ? `${charName} 正在思考…` : `${charName} 工作中…`}
@@ -2275,7 +2270,15 @@ export default function App() {
 					>
 						{/* 生效世界状态：输入框上方，与输入同宽一排 */}
 						<div className="composer-shell status-above">
-							<StatusStrip state={worldState} toast={pushToast} />
+							{conversationMode === "roleplay" && <StatusStrip state={worldState} toast={pushToast} />}
+						</div>
+						<div className="composer-shell conversation-mode-bar">
+							<div className="conversation-mode-switch" role="group" aria-label="会话模式">
+								{(["roleplay", "authoring"] as const).map((mode) => <button key={mode} type="button"
+									aria-pressed={conversationMode === mode} disabled={busy || conn !== "open"}
+									onClick={() => ws.send({ type: "conversation_mode", mode })}>{mode === "roleplay" ? "扮演" : "写卡"}</button>)}
+							</div>
+							{conversationMode === "authoring" && <span>在当前对话中制作、修改卡片</span>}
 						</div>
 						{(pending.length > 0 || uploading) && (
 							<div className="composer-shell attach-row">
@@ -2397,7 +2400,7 @@ export default function App() {
 							<textarea
 								ref={inputRef}
 								value={input}
-								placeholder={conn === "open" ? (userName ? `以「${userName}」的身份发言…` : "输入消息…") : "等待连接…"}
+								placeholder={conn === "open" ? (conversationMode === "authoring" ? "描述要制作或修改的卡片、界面、脚本…" : userName ? `以「${userName}」的身份发言…` : "输入消息…") : "等待连接…"}
 								rows={1}
 								onFocus={() => {
 									setComposerTools(false);
@@ -2471,7 +2474,8 @@ export default function App() {
 										resetSegs();
 										clearStream();
 										const leftover: ChatMsg = {
-											channel: "narrative",
+											channel: streamModeRef.current === "authoring" ? "authoring" : "narrative",
+											...(streamModeRef.current === "authoring" ? { mode: "authoring" as const } : {}),
 											text: text.trim()
 												? text
 												: thinking
@@ -2608,6 +2612,12 @@ export default function App() {
 						setStoreOpen(false);
 						ws.send({ type: "prompt", text: `/store ${name}` });
 					}}
+				/>
+			)}
+			{studioOpen && (
+				<CardStudio
+					onClose={() => setStudioOpen(false)}
+					onApplied={() => { apiGetCacheClear("/api/card"); void refreshCardFront(); }}
 				/>
 			)}
 		</div>

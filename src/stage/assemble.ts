@@ -17,6 +17,7 @@ import { applyDraftOps, type DraftMsgLike } from "../draft.ts";
 import { cleanAssistantText } from "../postprocess.ts";
 import { formatState, defaultState } from "../state.ts";
 import { isBackstageText } from "../stance.ts";
+import { storyBranch } from "../conversation-mode.ts";
 import type { DisplayRule } from "../cardfront.ts";
 import { hasDepthLimits, rulesAtDepth } from "../cardfront.ts";
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig, WorldState } from "../types.ts";
@@ -139,7 +140,7 @@ export function activeSummary(branch: BranchEntryLike[]): { summary: string; cut
  * M4：有 rp-summary 时，被覆盖的早期条目整段不进历史，改由 summary 字段回读为【前情提要】。
  */
 export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRule[] = []): RebuiltHistory {
-	branch = applyDraftRevisions(branch, { omitEditRequests: true });
+	branch = applyDraftRevisions(storyBranch(branch), { omitEditRequests: true });
 	const active = activeSummary(branch);
 	const live = active ? branch.slice(active.cut) : branch;
 
@@ -241,6 +242,7 @@ export function rebuildHistory(branch: BranchEntryLike[], promptRules: DisplayRu
 
 /** 世界状态 = f(分支)：最近一条 rp-state 快照；无快照 = 初始状态（R4 读侧） */
 export function stateFromBranch(branch: BranchEntryLike[]): WorldState {
+	branch = storyBranch(branch);
 	for (let i = branch.length - 1; i >= 0; i--) {
 		const e = branch[i];
 		if (e.type === "custom" && e.customType === "rp-state" && e.data && typeof e.data === "object") {

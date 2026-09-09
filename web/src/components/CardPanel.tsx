@@ -16,6 +16,7 @@ import {
 } from "../api.ts";
 import { IconBack, IconClose, IconGrid, IconList, IconStar, IconUploads } from "./icons.tsx";
 import { bumpWatchPanels, ConfirmButton, Field, PanelStatus, SearchInput, useAction, usePanelData } from "./kit.tsx";
+import { CardAuthoring } from "./CardAuthoring.tsx";
 
 type CardSort = "recent" | "name" | "fav";
 type CardView = "grid" | "list";
@@ -432,6 +433,7 @@ function CardDetail({
 						<EditableSection title="作者注" text={data.creatorNotes} editable={fieldEditable} onSave={(v) => saveField({ creatorNotes: v })} />
 					</section>
 
+					<CardAuthoring key={data.path} card={data.path} onApplied={() => { reload(); onFrontChange?.(); }} />
 					<section className="sp-section">
 						<div className="greeting-sec-head">
 							<h4>开场白（{data.greetings.length}）</h4>

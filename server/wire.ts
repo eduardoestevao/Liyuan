@@ -17,6 +17,7 @@ import {
 import { hasDepthLimits } from "../src/cardfront.ts";
 import type { AuthorScript } from "../src/authorScripts.ts";
 import { isBackstageText } from "../src/stance.ts";
+import { messageMode } from "../src/conversation-mode.ts";
 import { applyDraftOps, type DraftMsgLike } from "../src/draft.ts";
 import type { RpPanel } from "../src/panels.ts";
 import type { WorldState } from "../src/types.ts";
@@ -30,6 +31,7 @@ export { isBackstageText };
 
 export type WireChannel =
 	| "user"
+	| "authoring"
 	| "narrative"
 	| "greeting"
 	| "import"
@@ -61,6 +63,7 @@ export type WireSegment =
 
 export interface WireMsg {
 	channel: WireChannel;
+	mode?: "roleplay" | "authoring";
 	/** 发言者显示名（narrative/greeting 为角色名，user 为用户名） */
 	name?: string;
 	text: string;
@@ -238,6 +241,8 @@ export interface UpdateWire {
 export type ServerFrame =
 	| {
 			type: "hello";
+			conversationMode?: "roleplay" | "authoring";
+			turnMode?: "roleplay" | "authoring";
 			sessionId: string;
 			charName: string;
 			userName: string;
@@ -264,10 +269,11 @@ export type ServerFrame =
 				 * 只在指纹变了（换卡/换预设）时才去 `GET /api/cardfront?scripts=1` 取正文。
 				 * 规则必须同帧、脚本不必——脚本是页面级的，晚一个往返无影响。
 				 */
-				scriptManifest?: Array<{ id: string; source: "preset" | "card"; len: number }>;
+				scriptManifest?: Array<{ id: string; source: "preset" | "card"; len: number; hash?: string }>;
 			};
 	  }
 	| { type: "message"; message: WireMsg }
+	| { type: "conversation_mode"; mode: "roleplay" | "authoring"; turnMode?: "roleplay" | "authoring" }
 	/** draft=true：该 text 增量是 draft_write 参数的转发（替换语义——重交原地更新，不叠加）；reset=true：本次调用的首个分片 */
 	| { type: "delta"; kind: "text" | "thinking"; delta: string; draft?: boolean; reset?: boolean }
 	/** 稿件分段重同步（修复/重交后）：前端把屏上全部稿段原位替换为 segments（按空行切段） */
@@ -328,6 +334,7 @@ export interface AssistantSessionInfo {
 /** Client → Server 帧 */
 export type ClientFrame =
 	| { type: "draft_history"; id: string }
+	| { type: "conversation_mode"; mode: "roleplay" | "authoring" }
 	| { type: "draft_restore"; id: string; version: number; expectedVersion: number }
 	| { type: "prompt"; text: string }
 	| { type: "abort" }
@@ -499,6 +506,14 @@ export function toWireMsg(m: unknown, names: WireNames, opts?: ToWireOpts): Wire
 	const msg = m as MsgLike;
 	const text = textOf(msg.content).trim();
 	const skin = opts?.skin ?? null;
+	if (messageMode(msg) === "authoring") {
+		if (msg.role === "user") return text ? { channel: "user", name: names.userName, text, mode: "authoring" } : null;
+		if (msg.role !== "assistant") return null;
+		const timeline = (msg.details as { rpTimeline?: WireSegment[] } | undefined)?.rpTimeline;
+		const thinking = thinkingOf(msg.content);
+		return text || thinking || timeline?.length ? { channel: "authoring", name: "写卡", text, mode: "authoring", ...(thinking ? { thinking } : {}),
+			...(timeline?.length ? { timeline } : {}), ...(msg.stopReason === "aborted" ? { unfinished: true } : {}) } : null;
+	}
 
 	if (msg.role === "user") {
 		if (!text) return null;
@@ -632,7 +647,7 @@ export function foldSlots(msgs: WireMsg[]): number[] {
 	const slots: number[] = [];
 	/** 当前剧情轮（上一条非 backstage user 之后）的角色气泡格位 */
 	let turnRoleSlot = -1;
-	let turnChannel: "narrative" | "backstage" | null = null;
+	let turnChannel: "narrative" | "backstage" | "authoring" | null = null;
 	let next = 0;
 
 	for (const m of msgs) {
@@ -642,7 +657,7 @@ export function foldSlots(msgs: WireMsg[]): number[] {
 			slots.push(next++);
 			continue;
 		}
-		if (m.channel === "narrative" || m.channel === "backstage") {
+		if (m.channel === "narrative" || m.channel === "backstage" || m.channel === "authoring") {
 			if (turnRoleSlot >= 0 && turnChannel === m.channel) {
 				slots.push(turnRoleSlot);
 				continue;
@@ -736,7 +751,7 @@ function depthPlan(patched: unknown[], names: WireNames): number[] {
 
 	const counted = new Array<boolean>(slotCount).fill(false);
 	for (let i = 0; i < shown.length; i++) {
-		if (DEPTH_CHANNELS.has(shown[i].channel)) counted[slots[i]] = true;
+		if (shown[i].mode !== "authoring" && DEPTH_CHANNELS.has(shown[i].channel)) counted[slots[i]] = true;
 	}
 	// 深度 = 排在它后面的「占深度气泡」条数
 	const depthOfSlot = new Array<number>(slotCount).fill(0);

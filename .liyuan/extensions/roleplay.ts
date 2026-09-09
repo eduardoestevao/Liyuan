@@ -20,6 +20,7 @@ import { loadCardFile } from "../../src/card.ts";
 import { buildImportBlock, cleanChat, DEFAULT_STRIP_TAGS, parseStChat, serializeForImportSummary } from "../../src/chatlog.ts";
 import { findCommand } from "../../src/commands.ts";
 import { buildGreeting } from "../../src/greeting.ts";
+import { storyBranch } from "../../src/conversation-mode.ts";
 import { memoryArchiveCompacted, memoryRecallForTurn, memorySearch } from "../../src/memory/index.ts";
 import { checkWriteGate } from "../../src/tools/gate.ts";
 import {
@@ -1311,6 +1312,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	};
 	pi.on("before_agent_start", (event) => {
 		if (!activeStage) return undefined;
+		if (activeStage.mode === "authoring") return { systemPrompt: activeStage.systemPrompt };
 		let base = event.systemPrompt;
 		if (!event.systemPromptOptions?.customPrompt) {
 			const skeleton = stageSystemSkeleton();
@@ -1415,7 +1417,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				);
 				return;
 			}
-			const branch = ctx.sessionManager.getBranch() as Array<{
+			const branch = storyBranch(ctx.sessionManager.getBranch()) as Array<{
 				id: string;
 				type: string;
 				message?: { role?: string; content?: unknown };
@@ -1448,7 +1450,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		description: cmdDesc("rewind"),
 		handler: async (args, ctx) => {
 			const n = Math.max(1, Number.parseInt((args ?? "").trim(), 10) || 1);
-			const branch = ctx.sessionManager.getBranch() as Array<{
+			const branch = storyBranch(ctx.sessionManager.getBranch()) as Array<{
 				id: string;
 				type: string;
 				message?: { role?: string };
@@ -1478,7 +1480,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 	pi.registerCommand("drop", {
 		description: cmdDesc("drop"),
 		handler: async (_args, ctx) => {
-			const branch = ctx.sessionManager.getBranch() as Array<{
+			const branch = storyBranch(ctx.sessionManager.getBranch()) as Array<{
 				id: string;
 				type: string;
 				message?: { role?: string; customType?: string };
@@ -1525,7 +1527,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				notify(ctx, "用法：/editreply <改写后的正文>", "error");
 				return;
 			}
-			const branch = ctx.sessionManager.getBranch() as Array<{
+			const branch = storyBranch(ctx.sessionManager.getBranch()) as Array<{
 				id: string;
 				parentId?: string | null;
 				type: string;
@@ -1609,7 +1611,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			}
 			config = { ...config, greetingIndex: idx };
 
-			const branch = ctx.sessionManager.getBranch() as BranchEntry[];
+			const branch = storyBranch(ctx.sessionManager.getBranch()) as BranchEntry[];
 			const hasUser = branch.some(
 				(e) => e.type === "message" && e.message?.role === "user" && !isBackstageText(extractText(e.message)),
 			);

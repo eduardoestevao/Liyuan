@@ -41,6 +41,8 @@ import {
 	deleteCardGreeting,
 	exportCardFile,
 	loadCardFile,
+	loreEntriesForExport,
+	mergeExportLore,
 	moveCardGreeting,
 	readCardRawJson,
 	remapGreetingIndexAfterMove,
@@ -48,6 +50,7 @@ import {
 	updateCardFields,
 	updateCardGreeting,
 	type CardExportLoreMode,
+	type CardExportEntry,
 	type CardFieldPatch,
 } from "../src/card.ts";
 import {
@@ -135,6 +138,7 @@ import {
 	translateReport,
 } from "../src/user-rules.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
+import { cardProjectOperation, inspectCardProject, previewCardProject } from "../src/card-authoring.ts";
 import { readDeclaration, removeDeclaration, writeDeclarationFromDetection } from "../src/lorebook-declare.ts";
 import { constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import {
@@ -581,10 +585,18 @@ export function loadMergedLore(cwd: string, config: RpConfig): LorebookEntry[] {
  * 导出用活跃世界书：挂载书 + 补充设定 + 卡原内嵌（指纹去重）+ 用户停用清单。
  * 即「改过角色卡/世界书之后」的创作态，便于分享回 ST / 再导入梨园。
  */
-function collectActiveLoreForExport(cwd: string, config: RpConfig): LorebookEntry[] {
+export function collectActiveLoreForExport(cwd: string, config: RpConfig): CardExportEntry[] {
 	const card = loadCardFile(resolvePath(cwd, config.card));
-	const { entries: active } = loadMergedLoreWithSource(cwd, config);
-	return applyDisabledLore(mergeEntries(active, card.book), config.disabledLore);
+	const { raw } = readCardRawJson(resolvePath(cwd, config.card));
+	const data = (raw.data && typeof raw.data === "object" ? raw.data : raw) as Record<string, unknown>;
+	const book = data.character_book as { entries?: unknown } | undefined;
+	const embedded = loreEntriesForExport(book?.entries);
+	const paths = [...mountedLorebookPaths(config).map(p => resolvePath(cwd, p)), overlayPathFor(cwd, card.name, config.card)];
+	const active = mergeEntries(...paths.filter(p => existsSync(p)).map(p => {
+		const source = readJsonFile(p) as { entries?: unknown };
+		return loreEntriesForExport(source.entries, true);
+	})) as CardExportEntry[];
+	return applyDisabledLore(mergeExportLore(embedded, active), config.disabledLore) as CardExportEntry[];
 }
 
 const previewText = (s: string, n: number) => (s.length > n ? `${s.slice(0, n)}…` : s);
@@ -3057,6 +3069,30 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				return true;
 			}
 
+			case "GET /api/card/authoring": {
+				const path = currentCardPath(host.cwd, loadConfig(host.cwd));
+				const requested = query.get("card");
+				if (requested && resolvePath(host.cwd, requested) !== path) throw new Error("当前角色卡已切换");
+				sendJson(res, 200, inspectCardProject(host.cwd, path));
+				return true;
+			}
+			case "POST /api/card/authoring":
+			case "POST /api/card/authoring/preview": {
+				const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
+				const config = loadConfig(host.cwd);
+				const path = currentCardPath(host.cwd, config);
+				if (typeof body.card !== "string" || resolvePath(host.cwd, body.card) !== path) throw new Error("当前角色卡已切换，请重新打开创作稿");
+				if (route === "POST /api/card/authoring/preview") {
+					sendJson(res, 200, previewCardProject(host.cwd, path, config.userName));
+				} else {
+					const applying = body.action === "apply" || body.action === "undo";
+					if (applying && refuseWhileStreaming()) return true;
+					const result = cardProjectOperation(host.cwd, path, body);
+					if (applying) await host.softRefreshConfig();
+					sendJson(res, 200, result);
+				}
+				return true;
+			}
 			// ---- 角色卡字段编辑（JSON + PNG tEXt 回写） ----
 			case "PUT /api/card": {
 				if (refuseWhileStreaming()) return true;

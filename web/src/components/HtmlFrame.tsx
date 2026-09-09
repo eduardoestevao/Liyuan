@@ -156,6 +156,7 @@ export function HtmlFrame({
 	useEffect(() => {
 		if (!scripts || !seamless || programApp) return;
 		const onMsg = (e: MessageEvent) => {
+			if (e.source !== ref.current?.contentWindow) return;
 			const d = e.data as { liyuanFrameHeight?: unknown; frameId?: unknown };
 			if (!d || d.frameId !== frameId || typeof d.liyuanFrameHeight !== "number" || !(d.liyuanFrameHeight > 0)) {
 				return;
@@ -206,6 +207,7 @@ export function HtmlFrame({
 					ref={ref}
 					name={frameId}
 					className="msg-html-frame"
+					data-liyuan-card-runtime="message"
 					title={title || (seamless ? "界面" : "HTML")}
 					sandbox={sandbox}
 					srcDoc={srcDoc}

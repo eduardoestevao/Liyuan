@@ -116,14 +116,28 @@ export function buildAuthorScripts(cardRaw: Record<string, unknown> | null | und
  * 两处各算一遍，迟早出现「服务端说变了、前端算出没变」的对不上。
  */
 export function authorScriptSig(
-	scripts: Array<{ id: string; source: string; content?: string; len?: number }>,
+	scripts: Array<{ id: string; source: string; content?: string; len?: number; hash?: string }>,
 ): string {
-	return scripts.map((s) => `${s.source}:${s.id}:${s.len ?? s.content?.length ?? 0}`).join("|");
+	return scripts.map((s) => JSON.stringify([
+		s.source, s.id, s.hash ?? (s.content !== undefined ? authorScriptHash(s.content) : `len:${s.len ?? 0}`),
+	])).join("|");
+}
+
+/** 浏览器与服务端共用的内容摘要（仅作刷新标识，不作安全校验）。 */
+export function authorScriptHash(content: string): string {
+	let a = 0x811c9dc5;
+	let b = 0x9e3779b9;
+	for (let i = 0; i < content.length; i++) {
+		const c = content.charCodeAt(i);
+		a = Math.imul(a ^ c, 0x01000193);
+		b = Math.imul(b ^ c, 0x85ebca6b);
+	}
+	return `${(a >>> 0).toString(16).padStart(8, "0")}${(b >>> 0).toString(16).padStart(8, "0")}`;
 }
 
 /** hello 帧用的轻清单（无正文，只够算指纹） */
 export function authorScriptManifest(
 	scripts: AuthorScript[],
-): Array<{ id: string; source: AuthorScript["source"]; len: number }> {
-	return scripts.map((s) => ({ id: s.id, source: s.source, len: s.content.length }));
+): Array<{ id: string; source: AuthorScript["source"]; len: number; hash: string }> {
+	return scripts.map((s) => ({ id: s.id, source: s.source, len: s.content.length, hash: authorScriptHash(s.content) }));
 }

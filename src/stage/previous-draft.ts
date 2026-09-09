@@ -1,5 +1,6 @@
 /** A fixed previous-reply editor. It never accepts a historical entry selector. */
 import { isBackstageText } from "../stance.ts";
+import { storyBranch } from "../conversation-mode.ts";
 import { applyDraftRevisions, type DraftBranchEntry } from "./draft-projection.ts";
 import { DraftStore } from "./draft-store.ts";
 import { commitWorkspace, finalTimeline, runWriteTool, type TurnWorkspace, type WorkspaceDeps, type WriteToolResult } from "./workspace.ts";
@@ -21,7 +22,7 @@ export interface PreviousReply {
 export function previousReply(branch: DraftBranchEntry[]): PreviousReply | undefined {
 	let latest: PreviousReply | undefined;
 	let backstage = false;
-	for (const e of applyDraftRevisions(branch, { omitEditRequests: true })) {
+	for (const e of applyDraftRevisions(storyBranch(branch), { omitEditRequests: true })) {
 		const m = e.type === "message" ? e.message as { role?: string; content?: unknown; stopReason?: string; details?: Record<string, unknown> } : undefined;
 		if (m?.role === "user") backstage = isBackstageText(textOf(m.content));
 		const edited = e.type === "custom_message" && e.customType === "rp-edited-reply";

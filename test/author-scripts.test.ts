@@ -7,7 +7,7 @@
 
 import assert from "node:assert/strict";
 import test from "node:test";
-import { authorScriptManifest, authorScriptSig, buildAuthorScripts, extractAuthorScripts } from "../src/authorScripts.ts";
+import { authorScriptHash, authorScriptManifest, authorScriptSig, buildAuthorScripts, extractAuthorScripts } from "../src/authorScripts.ts";
 import { buildCardFrontSnapshot } from "../src/cardfront.ts";
 import { findLocalCard, findLocalPreset, localCards, localPresets } from "./fixtures.ts";
 
@@ -128,10 +128,10 @@ test("无脚本的卡：scripts 为空数组，其余字段行为不变（没见
 
 // ---- 清单与指纹：正文不进 hello，靠指纹判断变没变 ----
 
-test("清单只带 id/source/len，不带正文（hello 帧要轻）", () => {
+test("清单带内容摘要，不带正文（hello 帧要轻）", () => {
 	const list = buildAuthorScripts(cardRaw([script({ content: "x".repeat(5000) })]));
 	const man = authorScriptManifest(list);
-	assert.deepEqual(man, [{ id: "s1", source: "card", len: 5000 }]);
+	assert.deepEqual(man, [{ id: "s1", source: "card", len: 5000, hash: authorScriptHash("x".repeat(5000)) }]);
 	assert.ok(!JSON.stringify(man).includes("xxxx"), "清单里不许出现正文");
 });
 
@@ -144,6 +144,13 @@ test("指纹随内容长度变化（作者改了脚本 → 宿主该重启）", 
 	const a = buildAuthorScripts(cardRaw([script({ content: "aa" })]));
 	const b = buildAuthorScripts(cardRaw([script({ content: "aaa" })]));
 	assert.notEqual(authorScriptSig(a), authorScriptSig(b));
+});
+
+test("等长修改也会刷新，清单与正文得到相同指纹", () => {
+	const before = buildAuthorScripts(cardRaw([script({ content: "const value=1;" })]));
+	const after = buildAuthorScripts(cardRaw([script({ content: "const value=2;" })]));
+	assert.notEqual(authorScriptSig(before), authorScriptSig(after));
+	assert.equal(authorScriptSig(after), authorScriptSig(authorScriptManifest(after)));
 });
 
 test("指纹随顺序变化（预设/卡对调 = 不同的执行序）", () => {

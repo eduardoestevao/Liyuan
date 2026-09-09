@@ -41,6 +41,7 @@ import {
 } from "./paths.ts";
 import { rebuildHistory, stateFromBranch, type BranchEntryLike } from "./stage/assemble.ts";
 import { applyDraftRevisions } from "./stage/draft-projection.ts";
+import { storyBranch } from "./conversation-mode.ts";
 import { formatState } from "./state.ts";
 
 // ---------------- 预算（第零步基线给的数，见 _baseline0/BASELINE-无预设.md） ----------------
@@ -221,7 +222,7 @@ export function collectChatEvidence(
 		const userBeats = history.filter((m) => m.role === "user").length;
 		if (userBeats === 0 && !summary) continue;
 		// 包含已压缩的早期剧情拍；完成的纯改稿请求不另算剧情拍。
-		beats += applyDraftRevisions(branch, { omitEditRequests: true }).filter((e) => e.type === "message" && e.message?.role === "user").length;
+		beats += applyDraftRevisions(storyBranch(branch), { omitEditRequests: true }).filter((e) => e.type === "message" && e.message?.role === "user").length;
 		lastBranch = branch;
 		const lines: string[] = [];
 		if (summary) lines.push(`【前情提要】\n${summary}`);

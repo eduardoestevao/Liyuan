@@ -1007,6 +1007,12 @@ export class AgentSession {
 		this.agent.state.systemPrompt = this._systemPromptOverride ?? this._baseSystemPrompt;
 	}
 
+	/** Change the current run's prompt at the next native model boundary. No new loop or message. */
+	setTurnSystemPrompt(systemPrompt: string): void {
+		this._systemPromptOverride = systemPrompt;
+		this.agent.state.systemPrompt = systemPrompt;
+	}
+
 	/** Whether compaction or branch summarization is currently running */
 	get isCompacting(): boolean {
 		return (

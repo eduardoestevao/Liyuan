@@ -103,6 +103,8 @@ export const CARD_CONFIG_FILE = "卡.json";
 export const CARD_OVERLAY_FILE = "补充设定集.json";
 /** 卡文件夹内：本卡的技能 */
 export const CARD_SKILLS_DIR = "技能";
+/** 卡文件夹内：代码与内容的创作稿、原包快照。 */
+export const CARD_AUTHORING_DIR = "创作";
 /** 卡文件夹内：跨对话记忆（第二步，见 src/card-memory.ts） */
 export const CARD_MEMORY_DIR = "记忆";
 /** 记忆/ 内：常驻摘要（每拍进上下文的那一层，有字数上限） */

@@ -81,6 +81,7 @@ export function ScriptHost({ scripts }: { scripts: AuthorScript[] }) {
 		// 诊断：脚本跑完却什么都没往父页挂，多半是 same-origin 没生效、
 		// 作者的降级分支把 UI 挂进了这个 0×0 的隐藏帧里（用户会看到「什么都没发生」）。
 		const onBooted = (e: MessageEvent) => {
+			if (e.source !== frameRef.current?.contentWindow) return;
 			const d = e.data as { liyuanScriptHostBooted?: { ok: number; failed: number; total: number } } | null;
 			const rep = d && typeof d === "object" ? d.liyuanScriptHostBooted : null;
 			if (!rep) return;
@@ -124,6 +125,7 @@ export function ScriptHost({ scripts }: { scripts: AuthorScript[] }) {
 			key={generation}
 			ref={frameRef}
 			name="liyuan-script-host"
+			data-liyuan-card-runtime="script"
 			title="作者脚本宿主"
 			aria-hidden="true"
 			tabIndex={-1}

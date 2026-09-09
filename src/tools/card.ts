@@ -32,6 +32,8 @@ export interface CardLibItemLike {
 }
 
 export interface CardDeps {
+	/** 卡工程操作：主会话写卡模式与助手共用资源服务。 */
+	project?: (args: Record<string, unknown>) => Promise<unknown>;
 	// ---- 读者 ----
 	/** 读取当前装载的卡（字段级）；返回 null = 未装载卡 */
 	readCard: () => { name: string; description?: string; personality?: string; scenario?: string;
@@ -69,7 +71,7 @@ export const cardRead: ToolSpec<CardDeps> = {
 	name: "card_read",
 	domain: "card",
 	mode: "read",
-	surfaces: ["stage", "assistant"],
+	surfaces: ["stage", "authoring", "assistant"],
 	label: "读取角色卡",
 	description: () =>
 		"读取当前装载的角色卡字段（description/personality/scenario/first_mes/mes_example/system_prompt/creator_notes/tags/alternate_greetings）。" +
@@ -118,7 +120,7 @@ export const cardCreate: ToolSpec<CardDeps> = {
 	name: "card_create",
 	domain: "card",
 	mode: "write",
-	surfaces: ["assistant"],
+	surfaces: ["authoring", "assistant"],
 	label: "创建角色卡",
 	description: () =>
 		"创建一张新角色卡（CharaCard V3 JSON）。同名卡已存在时拒写。用于用户要求做新卡时。" +
@@ -191,7 +193,7 @@ export const cardUpdate: ToolSpec<CardDeps> = {
 	name: "card_update",
 	domain: "card",
 	mode: "write",
-	surfaces: ["stage", "assistant"],
+	surfaces: ["authoring", "assistant"],
 	label: "修改角色卡",
 	description: (ctx) =>
 		"改当前角色卡的字段（只传要改的，没传的原样保留）。直接改卡文件、跨会话生效、不可撤销——" +
@@ -260,7 +262,7 @@ export const cardList: ToolSpec<CardDeps> = {
 	name: "card_list",
 	domain: "card",
 	mode: "read",
-	surfaces: ["assistant"],
+	surfaces: ["authoring", "assistant"],
 	label: "列出卡库",
 	description: () =>
 		"列出卡库里的全部角色卡（卡名/标签/路径）并标出当前装载的是哪张。用于换卡前取路径、或答「我有哪些卡」。",
@@ -354,7 +356,7 @@ export const cardGreetings: ToolSpec<CardDeps> = {
 	name: "card_greetings",
 	domain: "card",
 	mode: "write",
-	surfaces: ["assistant"],
+	surfaces: ["authoring", "assistant"],
 	label: "开场白增删改",
 	description: () =>
 		"管理角色卡的开场白（序号 0 = first_mes，1 起是备选）。action: list 列出 / add 追加 / edit 改一条 / delete 删一条。" +
@@ -409,5 +411,44 @@ export const cardGreetings: ToolSpec<CardDeps> = {
 	},
 };
 
-/** 角色库族全部工具（M-D4 读+创建；M-D7 改卡 / 卡库 / 换卡 / 开场白） */
-export const cardTools: ToolSpec<CardDeps>[] = [cardRead, cardCreate, cardUpdate, cardList, cardSwitch, cardGreetings];
+/** 创作工程由现有助手调用，共享服务负责资源映射、版本校验与回写。 */
+export const cardProject: ToolSpec<CardDeps> = {
+	name: "card_project",
+	domain: "card",
+	mode: "write",
+	surfaces: ["authoring", "assistant"],
+	label: "卡创作工程",
+	description: () =>
+		"读取、修改当前卡的完整代码与内容资源。outline 按板块列目录（默认只给概览，传 section 读一个板块，full 读全部）；inspect 列资源清单；" +
+		"prepare 展开到创作目录；read 按资源 ID 读原文（raw 读原包 JSON）；write 保存创作稿；check 校验并组装；apply 按 buildHash 应用且重载；undo 撤回最后一次应用；" +
+		"assign 把目录项归入板块（结构分不开的分组由此声明，section 留空恢复默认）。" +
+		"资源也可用原生文件工具编辑；预览在角色卡面板的代码与资源中。此工程不修改卡档案 AGENTS.md。",
+	parameters: () => ({
+		type: "object",
+		properties: {
+			action: { type: "string", enum: ["outline", "inspect", "prepare", "read", "write", "check", "apply", "undo", "assign"] },
+			resource: { type: "string", description: "清单中的资源 ID；read 可用 raw" },
+			section: { type: "string", description: "板块 ID：settings / greetings / lore-knowledge / lore-constant / rules / mvu / ui / prompt-regex / scripts / ejs / deps / other" },
+			full: { type: "boolean", description: "outline 时返回全部板块的全部项" },
+			key: { type: "string", description: "assign 必填：目录项的 key" },
+			text: { type: "string", description: "write 的完整新内容，原样保存" },
+			version: { type: "string", description: "write 必填：最近读取资源返回的 hash" },
+			buildHash: { type: "string", description: "apply 必填：最近 check 返回的 hash" },
+			offset: { type: "number", description: "read 可选起始行，1 起" },
+			limit: { type: "number", description: "read 可选行数，返回 nextOffset 时可续读" },
+		},
+		required: ["action"],
+	}),
+	async run(args, deps) {
+		if (!deps.project) return { text: "本环境不支持卡创作工程", isError: true };
+		try {
+			const result = await deps.project(args);
+			return { text: JSON.stringify(result, null, 2), details: result, activity: "卡创作工程" };
+		} catch (error) {
+			return { text: errText(error), isError: true };
+		}
+	},
+};
+
+/** 角色库族全部工具。 */
+export const cardTools: ToolSpec<CardDeps>[] = [cardRead, cardCreate, cardUpdate, cardList, cardSwitch, cardGreetings, cardProject];

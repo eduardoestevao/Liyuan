@@ -1,0 +1,762 @@
+/* ==========================================================================
+   梨园工坊 (Card Studio) - 融合梨园国风金石水墨与专业卡台的设计系统
+   设计理念：宣纸底色、瓷白卡片、墨色层级、朱砂印章色点睛、宋体题头
+   ========================================================================== */
+
+/* 全屏工坊容器：继承梨园全局主题（光暗自适应） */
+.cs-root {
+	position: fixed;
+	inset: 0;
+	z-index: 500;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--font);
+	font-size: 13.5px;
+	line-height: 1.55;
+	overflow: hidden;
+	user-select: none;
+	animation: cs-fade-in 0.16s ease-out;
+}
+
+@keyframes cs-fade-in {
+	from { opacity: 0; transform: scale(0.995); }
+	to { opacity: 1; transform: scale(1); }
+}
+
+/* 顶部导航栏 (Top Bar) */
+.cs-header {
+	height: 52px;
+	flex: none;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 0 16px;
+	background: color-mix(in srgb, var(--surface) 94%, transparent);
+	backdrop-filter: blur(14px);
+	-webkit-backdrop-filter: blur(14px);
+	border-bottom: 1px solid var(--hairline-strong);
+	box-shadow: var(--shadow-1);
+}
+
+.cs-header-left {
+	display: flex;
+	align-items: center;
+	gap: 12px;
+}
+
+.cs-back-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 5px 10px;
+	font-size: 12.5px;
+	color: var(--text-soft);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.cs-back-btn:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.cs-brand-box {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+.cs-brand-title {
+	font-family: var(--font-serif);
+	font-size: 15px;
+	font-weight: 700;
+	color: var(--text-strong);
+	letter-spacing: 0.5px;
+}
+
+.cs-brand-sub {
+	font-size: 9px;
+	font-family: var(--font);
+	color: var(--text-faint);
+	letter-spacing: 1.2px;
+	padding: 1px 4px;
+	border: 1px solid var(--hairline);
+	border-radius: 3px;
+}
+
+.cs-header-divider {
+	color: var(--hairline-strong);
+	font-size: 14px;
+}
+
+.cs-header-card-badge {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 13px;
+	color: var(--text-soft);
+}
+
+.cs-header-card-name {
+	color: var(--text-strong);
+	font-weight: 600;
+}
+
+.cs-dot-saved {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: #c98b2c;
+	box-shadow: 0 0 6px color-mix(in srgb, #c98b2c 50%, transparent);
+}
+
+.cs-dot-unsaved {
+	width: 7px;
+	height: 7px;
+	border-radius: 50%;
+	background: var(--accent);
+	box-shadow: 0 0 6px var(--accent-wash-strong);
+}
+
+.cs-header-right {
+	display: flex;
+	align-items: center;
+	gap: 8px;
+}
+
+/* 梨园风格按钮 */
+.cs-btn-ghost {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 6px 13px;
+	font-size: 12.5px;
+	color: var(--text-soft);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	transition: all 0.15s ease;
+	box-shadow: 0 1px 2px rgb(0 0 0 / 2%);
+}
+
+.cs-btn-ghost:hover:not(:disabled) {
+	color: var(--accent);
+	border-color: var(--accent);
+	background: var(--surface-dim);
+}
+
+.cs-btn-ghost:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+.cs-btn-primary {
+	display: inline-flex;
+	align-items: center;
+	gap: 5px;
+	padding: 6px 16px;
+	font-size: 12.5px;
+	font-weight: 500;
+	color: #fff;
+	background: var(--accent);
+	border: 1px solid var(--accent);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 30%, transparent);
+	transition: all 0.15s ease;
+}
+
+.cs-btn-primary:hover:not(:disabled) {
+	background: var(--accent-strong);
+	border-color: var(--accent-strong);
+}
+
+.cs-btn-primary:disabled {
+	opacity: 0.45;
+	cursor: not-allowed;
+}
+
+/* 双栏主容器（已移除 AI 侧栏，主编辑区独占剩余宽度） */
+.cs-container {
+	flex: 1;
+	display: flex;
+	min-height: 0;
+}
+
+/* ==========================================================================
+   左侧栏：创作目录 (Left Sidebar)
+   ========================================================================== */
+.cs-sidebar-left {
+	width: 240px;
+	flex: none;
+	display: flex;
+	flex-direction: column;
+	background: var(--surface);
+	border-right: 1px solid var(--hairline-strong);
+	overflow: hidden;
+}
+
+.cs-nav-header {
+	padding: 14px 14px 10px;
+	border-bottom: 1px solid var(--hairline);
+}
+
+.cs-nav-title {
+	font-family: var(--font-serif);
+	font-size: 13.5px;
+	font-weight: 700;
+	color: var(--text-strong);
+	display: flex;
+	align-items: center;
+	gap: 5px;
+}
+
+.cs-arrow-gold {
+	color: var(--accent);
+	font-weight: bold;
+}
+
+.cs-nav-sub {
+	margin-top: 3px;
+	font-size: 11px;
+	color: var(--text-faint);
+}
+
+.cs-nav-list {
+	flex: 1;
+	overflow-y: auto;
+	padding: 8px 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.cs-nav-item {
+	width: 100%;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	padding: 7px 10px;
+	font-size: 12.5px;
+	color: var(--text-soft);
+	background: transparent;
+	border: 1px solid transparent;
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	text-align: left;
+	transition: all 0.12s ease;
+}
+
+.cs-nav-item:hover:not(.is-active) {
+	background: var(--surface-dim);
+	color: var(--text-strong);
+}
+
+.cs-nav-item.is-active {
+	background: var(--surface-dim);
+	color: var(--text-strong);
+	border-color: var(--hairline-strong);
+	border-left: 3px solid var(--accent);
+	font-weight: 600;
+	box-shadow: 0 1px 2px rgb(0 0 0 / 2%);
+}
+
+.cs-nav-item-name {
+	font-family: var(--font);
+	letter-spacing: 0.2px;
+}
+
+/* 徽标胶囊 (Badges) */
+.cs-badge {
+	font-size: 10.5px;
+	padding: 1.5px 7px;
+	border-radius: 999px;
+	font-weight: 500;
+	white-space: nowrap;
+	letter-spacing: 0.2px;
+}
+
+/* 暖金/竹简色（替代刺眼冷绿，契合墨韵金石） */
+.cs-badge-green {
+	color: #c98b2c;
+	background: color-mix(in srgb, #c98b2c 12%, transparent);
+	border: 1px solid color-mix(in srgb, #c98b2c 28%, transparent);
+}
+
+.cs-badge-gray {
+	color: var(--text-soft);
+	background: var(--surface-dim);
+	border: 1px solid var(--hairline);
+	opacity: 0.85;
+}
+
+.cs-badge-gold {
+	color: var(--accent);
+	background: var(--accent-wash);
+	border: 1px solid color-mix(in srgb, var(--accent) 35%, transparent);
+}
+
+.cs-badge-blue {
+	color: var(--text-soft);
+	background: var(--surface-dim);
+	border: 1px solid var(--hairline-strong);
+}
+
+.cs-sidebar-footer {
+	padding: 12px 14px;
+	border-top: 1px solid var(--hairline-strong);
+	background: var(--surface-dim);
+}
+
+.cs-footer-hint {
+	font-size: 11px;
+	color: var(--text-faint);
+	margin-bottom: 8px;
+}
+
+.cs-btn-export-full {
+	width: 100%;
+	padding: 7px 12px;
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--accent-strong);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	box-shadow: var(--shadow-1);
+	transition: all 0.15s ease;
+}
+
+.cs-btn-export-full:hover {
+	background: var(--accent-wash);
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+/* ==========================================================================
+   中间栏：主工作区 (Main Workspace)
+   ========================================================================== */
+.cs-main {
+	flex: 1;
+	min-width: 0;
+	display: flex;
+	flex-direction: column;
+	background: var(--bg);
+	overflow-y: auto;
+}
+
+.cs-content-wrap {
+	max-width: 1080px;
+	width: 100%;
+	margin: 0 auto;
+	padding: 28px 40px 60px;
+	box-sizing: border-box;
+}
+
+.cs-sec-breadcrumb {
+	font-size: 12px;
+	font-weight: 500;
+	color: var(--text-soft);
+	margin-bottom: 6px;
+	display: flex;
+	align-items: center;
+	gap: 4px;
+}
+
+.cs-sec-header {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	margin-bottom: 4px;
+}
+
+.cs-big-num {
+	font-family: var(--font-serif);
+	font-size: 34px;
+	font-weight: 600;
+	color: var(--accent);
+	line-height: 1;
+	letter-spacing: -0.5px;
+	opacity: 0.92;
+}
+
+.cs-sec-title {
+	font-family: var(--font-serif);
+	font-size: 21px;
+	font-weight: 700;
+	color: var(--text-strong);
+	margin: 0;
+}
+
+.cs-sec-desc {
+	font-size: 13px;
+	color: var(--text-soft);
+	margin: 5px 0 18px;
+	line-height: 1.5;
+}
+
+.cs-divider {
+	height: 1px;
+	background: var(--hairline-strong);
+	margin: 0 0 20px;
+}
+
+/* 双栏网格卡片布局 */
+.cs-grid-2col {
+	display: grid;
+	grid-template-columns: 280px 1fr;
+	gap: 20px;
+	align-items: start;
+}
+
+/* 梨园卡片 */
+.cs-card {
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-1);
+	padding: 20px;
+}
+
+.cs-card-title {
+	font-family: var(--font-serif);
+	font-size: 14px;
+	font-weight: 700;
+	color: var(--text-strong);
+	margin-bottom: 12px;
+	display: flex;
+	align-items: center;
+	gap: 5px;
+}
+
+/* 封面区 (Cover Box) */
+.cs-cover-placeholder {
+	width: 100%;
+	aspect-ratio: 3 / 4;
+	background: var(--surface-dim);
+	border: 1px dashed var(--hairline-strong);
+	border-radius: var(--radius-s);
+	display: flex;
+	flex-direction: column;
+	align-items: center;
+	justify-content: center;
+	gap: 8px;
+	color: var(--text-faint);
+	font-size: 12px;
+	margin-bottom: 12px;
+	overflow: hidden;
+	position: relative;
+}
+
+.cs-cover-img {
+	width: 100%;
+	height: 100%;
+	object-fit: cover;
+}
+
+.cs-cover-desc {
+	font-size: 11.5px;
+	color: var(--text-faint);
+	line-height: 1.5;
+	margin: 8px 0 12px;
+}
+
+/* 表单控件 (Form Controls) */
+.cs-field {
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+	margin-bottom: 16px;
+}
+
+.cs-field:last-child {
+	margin-bottom: 0;
+}
+
+.cs-label {
+	font-size: 12px;
+	font-weight: 600;
+	color: var(--text-soft);
+}
+
+.cs-input {
+	width: 100%;
+	padding: 8px 11px;
+	font-size: 13px;
+	color: var(--text-strong);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	outline: none;
+	box-sizing: border-box;
+	transition: border-color 0.15s ease;
+}
+
+.cs-input:focus {
+	border-color: var(--accent);
+}
+
+.cs-textarea {
+	width: 100%;
+	min-height: 110px;
+	padding: 9px 12px;
+	font-size: 13px;
+	line-height: 1.6;
+	color: var(--text-strong);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	outline: none;
+	resize: vertical;
+	box-sizing: border-box;
+	font-family: inherit;
+	transition: border-color 0.15s ease;
+}
+
+.cs-textarea:focus {
+	border-color: var(--accent);
+}
+
+.cs-textarea-code {
+	font-family: Consolas, "JetBrains Mono", monospace;
+	font-size: 12.5px;
+	tab-size: 2;
+}
+
+/* 提示通知盒 (Info Box) */
+.cs-infobox {
+	margin-top: 16px;
+	padding: 12px 15px;
+	background: var(--accent-wash);
+	border: 1px solid color-mix(in srgb, var(--accent) 25%, transparent);
+	border-left: 3px solid var(--accent);
+	border-radius: var(--radius-s);
+}
+
+.cs-infobox-title {
+	font-family: var(--font-serif);
+	font-size: 12.5px;
+	font-weight: 700;
+	color: var(--accent-strong);
+	margin-bottom: 3px;
+}
+
+.cs-infobox-text {
+	font-size: 11.5px;
+	color: var(--text-soft);
+	line-height: 1.55;
+	margin: 0;
+}
+
+/* 标签栏 / 选项卡 (Tabs) */
+.cs-tabs {
+	display: flex;
+	gap: 4px;
+	border-bottom: 1px solid var(--hairline);
+	margin-bottom: 14px;
+}
+
+.cs-tab {
+	padding: 7px 14px;
+	font-size: 12.5px;
+	color: var(--text-soft);
+	background: transparent;
+	border: none;
+	border-bottom: 2px solid transparent;
+	cursor: pointer;
+	transition: all 0.15s ease;
+}
+
+.cs-tab:hover {
+	color: var(--text-strong);
+}
+
+.cs-tab.is-active {
+	color: var(--accent-strong);
+	font-weight: 600;
+	border-bottom-color: var(--accent);
+}
+
+/* 列表 + 详情双栏（世界书 / 正则列表） */
+.cs-split-pane {
+	display: grid;
+	grid-template-columns: 310px 1fr;
+	gap: 16px;
+	background: var(--surface);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius-s);
+	box-shadow: var(--shadow-1);
+	min-height: 560px;
+}
+
+.cs-split-list {
+	border-right: 1px solid var(--hairline);
+	background: var(--surface-dim);
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+}
+
+.cs-split-list-header {
+	padding: 10px 12px;
+	border-bottom: 1px solid var(--hairline);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.cs-filter-row {
+	display: flex;
+	align-items: center;
+	gap: 4px;
+	overflow-x: auto;
+}
+
+.cs-pill-btn {
+	padding: 2px 7px;
+	font-size: 11px;
+	color: var(--text-soft);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: 999px;
+	cursor: pointer;
+	white-space: nowrap;
+	transition: all 0.12s ease;
+}
+
+.cs-pill-btn:hover {
+	color: var(--accent);
+	border-color: var(--accent);
+}
+
+.cs-pill-btn.is-active {
+	background: var(--accent);
+	color: #fff;
+	border-color: var(--accent);
+}
+
+.cs-search-input {
+	width: 100%;
+	padding: 6px 9px;
+	font-size: 12px;
+	color: var(--text-strong);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	outline: none;
+	box-sizing: border-box;
+}
+
+.cs-search-input:focus {
+	border-color: var(--accent);
+}
+
+.cs-split-list-items {
+	flex: 1;
+	overflow-y: auto;
+	padding: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 3px;
+}
+
+.cs-split-item {
+	padding: 7px 10px;
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	border: 1px solid transparent;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	transition: all 0.12s ease;
+}
+
+.cs-split-item:hover {
+	background: var(--surface);
+}
+
+.cs-split-item.is-active {
+	background: var(--surface);
+	border-color: var(--hairline-strong);
+	border-left: 3px solid var(--accent);
+	box-shadow: var(--shadow-1);
+}
+
+.cs-split-item-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+}
+
+.cs-split-item-title {
+	font-size: 12.5px;
+	color: var(--text-strong);
+	font-weight: 500;
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+}
+
+.cs-split-item.is-active .cs-split-item-title {
+	font-weight: 600;
+	color: var(--text-strong);
+}
+
+.cs-split-item-meta {
+	font-size: 11px;
+	color: var(--text-faint);
+	display: flex;
+	gap: 5px;
+}
+
+.cs-split-detail {
+	padding: 20px 24px;
+	overflow-y: auto;
+	display: flex;
+	flex-direction: column;
+	gap: 16px;
+}
+
+/* 按钮与交互控件 */
+.cs-toggle-btn {
+	display: inline-flex;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 8px;
+	font-size: 11px;
+	border-radius: var(--radius-s);
+	border: 1px solid var(--hairline-strong);
+	background: var(--surface);
+	color: var(--text-soft);
+	cursor: pointer;
+	transition: all 0.12s ease;
+}
+
+.cs-toggle-btn:hover {
+	border-color: var(--accent);
+	color: var(--accent);
+}
+
+.cs-toggle-btn.is-on {
+	background: var(--accent-wash);
+	border-color: var(--accent);
+	color: var(--accent-strong);
+	font-weight: 600;
+}
+
+/* 响应式适配 */
+@media (max-width: 900px) {
+	.cs-grid-2col {
+		grid-template-columns: 1fr;
+	}
+	.cs-split-pane {
+		grid-template-columns: 1fr;
+	}
+}

@@ -13,6 +13,8 @@
  * - parent.TheaterAPI / handleTheaterAction
  */
 
+import { isCardRuntimeSource } from "./cardRuntimeFrames.ts";
+
 export type TavernGenerateParams = {
 	user_input?: string;
 	should_stream?: boolean;
@@ -210,7 +212,7 @@ export function installParentTavernShim(): void {
 	if (typeof window.addEventListener === "function") {
 		window.addEventListener("message", (ev: MessageEvent) => {
 			const d = ev.data as { liyuanTriggerSlash?: unknown } | null;
-			if (!d || typeof d.liyuanTriggerSlash !== "string") return;
+			if (!d || typeof d.liyuanTriggerSlash !== "string" || !isCardRuntimeSource(ev.source)) return;
 			void triggerSlash(d.liyuanTriggerSlash);
 		});
 	}

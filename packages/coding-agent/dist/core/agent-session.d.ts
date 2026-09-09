@@ -326,6 +326,8 @@ export declare class AgentSession {
      * Changes take effect on the next agent turn.
      */
     setActiveToolsByName(toolNames: string[]): void;
+    /** Change the current run's prompt at the next native model boundary. No new loop or message. */
+    setTurnSystemPrompt(systemPrompt: string): void;
     /** Whether compaction or branch summarization is currently running */
     get isCompacting(): boolean;
     /** All messages including custom types like BashExecutionMessage */

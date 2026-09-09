@@ -92,6 +92,8 @@ export const TOOL_LABELS: Record<string, string> = {
 	grep: "检索文件",
 	find: "查找文件",
 	ls: "列目录",
+	conversation_mode: "切换模式",
+	card_project: "卡片资源",
 };
 
 export const toolLabel = (name: string) => {
@@ -302,10 +304,13 @@ export function TurnTimeline({
 	segments,
 	skin,
 	live,
+	plain,
 }: {
 	segments: TurnSegment[];
 	skin?: SkinProp | null;
 	live?: boolean;
+	/** Authoring code remains text; it never mounts a live card runtime iframe. */
+	plain?: boolean;
 }) {
 	const countOf = (segs: TurnSegment[]) => {
 		const thinks = segs.filter((s) => s.kind === "thinking").length;
@@ -323,7 +328,7 @@ export function TurnTimeline({
 		return (
 			<>
 				{texts.map((seg, i) => (
-					<RichContent key={i} text={(seg as Extract<TurnSegment, { kind: "text" }>).text} skin={skin} />
+					plain ? <Paragraphs key={i} text={(seg as Extract<TurnSegment, { kind: "text" }>).text} /> : <RichContent key={i} text={(seg as Extract<TurnSegment, { kind: "text" }>).text} skin={skin} />
 				))}
 				{process.length > 0 && (
 					<details className="turn-process">
@@ -359,13 +364,13 @@ export function TurnTimeline({
 	return (
 		<>
 			{groups.map((g, gi) => {
-				if (g.kind === "text") return <RichContent key={gi} text={g.seg.text} skin={skin} />;
+				if (g.kind === "text") return plain ? <Paragraphs key={gi} text={g.seg.text} /> : <RichContent key={gi} text={g.seg.text} skin={skin} />;
 				const active = gi === groups.length - 1; // 最新过程组=正在动的，展开跟读
 				const { thinks, calls } = countOf(g.segs);
 				return (
 					<details key={gi} className="turn-process turn-process-live" open={active ? true : undefined}>
 						<summary className={active ? "pulse" : undefined}>
-							{active ? "扮演中" : "过程"}
+							{active ? plain ? "写卡中" : "扮演中" : "过程"}
 							{thinks > 0 && ` · 思考 ${thinks} 段`}
 							{calls > 0 && ` · ${calls} 步`}
 						</summary>
@@ -708,6 +713,12 @@ export function Bubble({
 		if (!msg.html?.trim()) return null;
 		return <HtmlFrame html={msg.html} title={msg.text} scripts={msg.scripts === true} />;
 	}
+	if (msg.channel === "authoring") {
+		return <div className="msg msg-authoring">
+			<div className="msg-head"><span className="msg-name">写卡</span>{msg.unfinished && <span className="chip chip-unfinished">已停止</span>}</div>
+			{msg.segments?.length || msg.timeline?.length ? <TurnTimeline segments={msg.segments ?? msg.timeline!} plain /> : <>{msg.thinking && <ThinkingBlock text={msg.thinking} />}<Paragraphs text={msg.text} /></>}
+		</div>;
+	}
 	if (msg.channel === "backstage") {
 		// 戏外回复（助手答疑/办事）：排版明确区隔于叙事（PLAN-PHASE3 §6.1 显示通道）
 		const name = msg.name || fallbackName;
@@ -758,6 +769,7 @@ export function Bubble({
 				<div className="msg-head">
 					<MsgAvatar src={avatarUrl} name={name} kind={isUser ? "user" : "char"} />
 					<span className={`msg-name ${isUser ? "" : "msg-name-char"}`}>{name}</span>
+					{msg.mode === "authoring" && <span className="chip">写卡</span>}
 					{msg.channel === "greeting" && <span className="chip">开场白</span>}
 					{!isUser && msg.unfinished && (
 						<span className="chip chip-unfinished" title="生成被中断；发送「继续」可接着写">

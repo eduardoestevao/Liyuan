@@ -102,7 +102,14 @@ export function listReplyVariants(
 	userEntryId: string,
 	currentLeaf: string | null,
 ): SwipeVariant[] {
-	const roots = childrenOf(entries, userEntryId).filter(isReplyVariantRoot);
+	// Raw exchanges and metadata (mode, panels, state, model changes) may precede
+	// the finalized reply. Stop at another message so later user turns never count.
+	const hasReply = (entry: SwipeEntry): boolean => {
+		if (isReplyVariantRoot(entry)) return true;
+		if (entry.type === "message" || entry.type === "custom_message") return false;
+		return childrenOf(entries, entry.id).some(hasReply);
+	};
+	const roots = childrenOf(entries, userEntryId).filter(hasReply);
 	return roots.map((r) => ({
 		rootId: r.id,
 		leafId: leafOfVariant(entries, r.id, currentLeaf),

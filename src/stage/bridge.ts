@@ -6,6 +6,7 @@
 import type { StageModelLike, StageStreamEvent } from "./engine.ts";
 import type { StageTool } from "./tools.ts";
 import type { GateInput } from "../tools/gate.ts";
+import type { ConversationMode } from "../conversation-mode.ts";
 
 export interface StageToolResult {
 	content: Array<{ type: "text"; text: string }>;
@@ -15,6 +16,7 @@ export interface StageToolResult {
 }
 
 export interface StageHooks {
+	mode?: ConversationMode;
 	systemPrompt: string;
 	toolNames: string[];
 	context(messages: unknown[]): unknown[];
