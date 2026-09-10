@@ -2083,6 +2083,7 @@ export default function App() {
 
 				<div className="layout">
 					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""}`}>
+					<div className={`stage-wrap ${!welcome && rightPanel ? "split-active" : ""}`}>
 					<div className="list" ref={listRef} onScroll={onScroll} onPointerDown={() => composerTools && setComposerTools(false)}>
 						<div className="flow">
 							{/* 欢迎区嵌在聊天流（学 ST）：顶栏/侧栏/输入框仍可用 */}
@@ -2289,6 +2290,42 @@ export default function App() {
 							<IconChevronDown size={17} />
 						</button>
 					)}
+					{!welcome && rightPanel && (
+						<aside className="stage-side" aria-label={PANEL_LABEL[rightPanel as PanelId] || "状态栏"}>
+							<div className="stage-side-inner">
+								<div className="stage-side-head">
+									<span className="stage-side-title">
+										{(() => {
+											const isAg = rightPanel.startsWith("agent:");
+											const ag = isAg ? agentPanels.find((p) => agentId(p.name) === rightPanel) : undefined;
+											const Icon = ag ? IconDock : PANEL_ICON[rightPanel as PanelId] || IconStatus;
+											return (
+												<>
+													<Icon size={15} />
+													<span>{ag ? ag.name : PANEL_LABEL[rightPanel as PanelId] || "状态栏"}</span>
+												</>
+											);
+										})()}
+									</span>
+									<div className="stage-side-actions">
+										<button
+											type="button"
+											className="icon-btn"
+											onClick={() => openRight(null)}
+											title="收起"
+											aria-label="收起状态栏"
+										>
+											<IconClose size={15} />
+										</button>
+									</div>
+								</div>
+								<div className="stage-side-body">
+									{renderPanel(rightPanel as PanelId)}
+								</div>
+							</div>
+						</aside>
+					)}
+					</div>
 
 					<footer
 						className="composer"
@@ -2553,7 +2590,7 @@ export default function App() {
 					</footer>
 				</main>
 
-				{sidePanel(rightPanel, "right")}
+				{welcome && sidePanel(rightPanel, "right")}
 			</div>
 			</div>
 			{floatPanel &&
