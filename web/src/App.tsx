@@ -350,6 +350,20 @@ export default function App() {
 		},
 		[openRight],
 	);
+	/** 打开写卡平台：折叠左栏，收起右视窗，4:6桌面分栏展开 */
+	const openStudio = useCallback(() => {
+		openLeft(null);
+		openRight(null);
+		setStudioOpen(true);
+	}, [openLeft, openRight]);
+	/** 切换写卡平台开合 */
+	const toggleStudio = useCallback(() => {
+		if (studioOpen) {
+			setStudioOpen(false);
+		} else {
+			openStudio();
+		}
+	}, [studioOpen, openStudio]);
 	/** 角色板块的当前页签：角色卡库 ⇄ 用户角色 */
 	const [rolesTab, setRolesTab] = useState<RolesTab>("card");
 	/** 抽屉上次停在哪一格（收起后仍记住，见落盘 effect 与 toggleDrawer） */
@@ -1645,7 +1659,7 @@ export default function App() {
 						tab={rolesTab}
 						onTab={setRolesTab}
 						toast={pushToast}
-						onOpenStudio={() => setStudioOpen(true)}
+						onOpenStudio={openStudio}
 						active={leftPanel === "roles"}
 						onEnterChat={dismissWelcome}
 						onGoHome={showWelcome}
@@ -2056,6 +2070,16 @@ export default function App() {
 				</div>
 				{/* 右两键：新建 / 会话树 */}
 				<div className="tb-side tb-side-right">
+						<button
+							type="button"
+							className={`tb-btn ${studioOpen ? "active" : ""}`}
+							onClick={toggleStudio}
+							aria-label="写卡平台"
+							data-tip="写卡平台"
+							title="写卡平台"
+						>
+							<IconEdit size={18} />
+						</button>
 					<button
 						type="button"
 						className="tb-btn"
@@ -2082,10 +2106,10 @@ export default function App() {
 			</header>
 
 				<div className="layout">
-					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""}`}>
+					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""} ${studioOpen ? "center-studio-split" : ""}`}>
 					<div className={`stage-wrap ${rightPanel ? "split-active" : ""}`}>
 					<div className="stage-col stage-col-left">
-						{rightPanel && (
+						{(rightPanel || studioOpen) && (
 							<div className="stage-col-head">
 								<span className="stage-col-title">
 									<IconCard size={14} />
@@ -2594,7 +2618,14 @@ export default function App() {
 						</div>
 					</footer>
 				</main>
-
+				{studioOpen && (
+					<aside className="studio-split-pane" aria-label="写卡平台">
+						<CardStudio
+							onClose={() => setStudioOpen(false)}
+							onApplied={() => { apiGetCacheClear("/api/card"); void refreshCardFront(); }}
+						/>
+					</aside>
+				)}
 			</div>
 			</div>
 			{floatPanel &&
@@ -2643,8 +2674,9 @@ export default function App() {
 			  * 梨园自己的悬浮球：常驻的面板启动器（世界线 / 登场名录 / agent 自建面板）。
 			  * 顶栏与底栏的老入口都留着——它是多一条路，不是替换掉肌肉记忆。
 			  */}
-			<PanelOrb
-				entries={[
+			{!studioOpen && (
+				<PanelOrb
+					entries={[
 					{
 						id: "status",
 						label: "状态栏",
@@ -2673,7 +2705,8 @@ export default function App() {
 				onPick={(id) => {
 					toggleRight(id as PanelId | AgentPanelId);
 				}}
-			/>
+				/>
+			)}
 			{storeOpen && (
 				<StoreModal
 					defaultName={storeDefaultName}
@@ -2682,12 +2715,6 @@ export default function App() {
 						setStoreOpen(false);
 						ws.send({ type: "prompt", text: `/store ${name}` });
 					}}
-				/>
-			)}
-			{studioOpen && (
-				<CardStudio
-					onClose={() => setStudioOpen(false)}
-					onApplied={() => { apiGetCacheClear("/api/card"); void refreshCardFront(); }}
 				/>
 			)}
 		</div>

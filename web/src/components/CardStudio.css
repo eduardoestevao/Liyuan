@@ -3,11 +3,12 @@
    设计理念：宣纸底色、瓷白卡片、墨色层级、朱砂印章色点睛、宋体题头
    ========================================================================== */
 
-/* 全屏工坊容器：继承梨园全局主题（光暗自适应） */
+/* 写卡工坊容器：支持桌面 4:6 分栏内嵌，手机端完全覆盖 */
 .cs-root {
-	position: fixed;
-	inset: 0;
-	z-index: 500;
+	position: relative;
+	width: 100%;
+	height: 100%;
+	min-width: 0;
 	display: flex;
 	flex-direction: column;
 	background: var(--bg);
@@ -17,7 +18,6 @@
 	line-height: 1.55;
 	overflow: hidden;
 	user-select: none;
-	animation: cs-fade-in 0.16s ease-out;
 }
 
 @keyframes cs-fade-in {
@@ -25,86 +25,67 @@
 	to { opacity: 1; transform: scale(1); }
 }
 
-/* 顶部导航栏 (Top Bar) */
+/* 顶部对齐标头行：严格 38px 高度，与左侧剧情推演标头底边像素级对齐 */
 .cs-header {
-	height: 52px;
+	height: 38px;
+	min-height: 38px;
+	box-sizing: border-box;
 	flex: none;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 0 16px;
-	background: color-mix(in srgb, var(--surface) 94%, transparent);
-	backdrop-filter: blur(14px);
-	-webkit-backdrop-filter: blur(14px);
-	border-bottom: 1px solid var(--hairline-strong);
-	box-shadow: var(--shadow-1);
+	padding: 0 14px;
+	background: var(--surface);
+	border-bottom: 1px solid var(--hairline);
+	box-shadow: none;
+	z-index: 10;
 }
 
 .cs-header-left {
 	display: flex;
 	align-items: center;
-	gap: 12px;
+	gap: 6px;
+	min-width: 0;
+	overflow: hidden;
 }
 
-.cs-back-btn {
+.cs-header-title {
 	display: inline-flex;
 	align-items: center;
-	gap: 4px;
-	padding: 5px 10px;
-	font-size: 12.5px;
-	color: var(--text-soft);
-	background: var(--surface);
-	border: 1px solid var(--hairline-strong);
-	border-radius: var(--radius-s);
-	cursor: pointer;
-	transition: all 0.15s ease;
-}
-
-.cs-back-btn:hover {
-	color: var(--accent);
-	border-color: var(--accent);
-}
-
-.cs-brand-box {
-	display: flex;
-	align-items: center;
-	gap: 8px;
-}
-
-.cs-brand-title {
-	font-family: var(--font-serif);
-	font-size: 15px;
-	font-weight: 700;
-	color: var(--text-strong);
-	letter-spacing: 0.5px;
-}
-
-.cs-brand-sub {
-	font-size: 9px;
-	font-family: var(--font);
-	color: var(--text-faint);
-	letter-spacing: 1.2px;
-	padding: 1px 4px;
-	border: 1px solid var(--hairline);
-	border-radius: 3px;
-}
-
-.cs-header-divider {
-	color: var(--hairline-strong);
-	font-size: 14px;
-}
-
-.cs-header-card-badge {
-	display: flex;
-	align-items: center;
 	gap: 6px;
-	font-size: 13px;
+	font-family: var(--font-serif);
+	font-size: 12px;
+	font-weight: 600;
 	color: var(--text-soft);
+	letter-spacing: 0.05em;
+	flex: none;
+}
+
+.cs-header-sep {
+	opacity: 0.35;
+	font-size: 11px;
+	margin: 0 1px;
+	flex: none;
 }
 
 .cs-header-card-name {
-	color: var(--text-strong);
+	font-size: 12px;
 	font-weight: 600;
+	color: var(--text-strong);
+	max-width: 14em;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.cs-header-badge-count {
+	font-size: 10.5px;
+	color: var(--accent);
+	background: var(--accent-wash);
+	padding: 1px 6px;
+	border-radius: 999px;
+	border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+	flex: none;
 }
 
 .cs-dot-saved {
@@ -112,7 +93,8 @@
 	height: 7px;
 	border-radius: 50%;
 	background: #c98b2c;
-	box-shadow: 0 0 6px color-mix(in srgb, #c98b2c 50%, transparent);
+	box-shadow: 0 0 5px color-mix(in srgb, #c98b2c 45%, transparent);
+	flex: none;
 }
 
 .cs-dot-unsaved {
@@ -120,69 +102,121 @@
 	height: 7px;
 	border-radius: 50%;
 	background: var(--accent);
-	box-shadow: 0 0 6px var(--accent-wash-strong);
+	box-shadow: 0 0 5px var(--accent-wash-strong);
+	flex: none;
 }
 
 .cs-header-right {
 	display: flex;
 	align-items: center;
-	gap: 8px;
+	gap: 5px;
+	flex: none;
 }
 
-/* 梨园风格按钮 */
-.cs-btn-ghost {
+/* 微胶囊操作按钮 */
+.cs-btn-micro {
 	display: inline-flex;
 	align-items: center;
-	gap: 5px;
-	padding: 6px 13px;
-	font-size: 12.5px;
+	padding: 2px 8px;
+	font-size: 11.5px;
 	color: var(--text-soft);
 	background: var(--surface);
 	border: 1px solid var(--hairline-strong);
-	border-radius: var(--radius-s);
+	border-radius: 6px;
 	cursor: pointer;
-	transition: all 0.15s ease;
-	box-shadow: 0 1px 2px rgb(0 0 0 / 2%);
+	line-height: 1.4;
+	transition: all 0.14s ease;
 }
 
-.cs-btn-ghost:hover:not(:disabled) {
+.cs-btn-micro:hover:not(:disabled) {
 	color: var(--accent);
 	border-color: var(--accent);
 	background: var(--surface-dim);
 }
 
-.cs-btn-ghost:disabled {
-	opacity: 0.45;
+.cs-btn-micro:disabled {
+	opacity: 0.4;
 	cursor: not-allowed;
 }
 
+.cs-btn-micro-primary {
+	color: #fff !important;
+	background: var(--accent) !important;
+	border-color: var(--accent) !important;
+	font-weight: 500;
+}
+
+.cs-btn-micro-primary:hover:not(:disabled) {
+	background: var(--accent-strong) !important;
+	border-color: var(--accent-strong) !important;
+}
+
+.cs-close-btn {
+	width: 26px;
+	height: 26px;
+	border-radius: 6px;
+	margin-left: 2px;
+	display: grid;
+	place-items: center;
+	color: var(--text-soft);
+}
+
+.cs-close-btn:hover {
+	color: var(--accent);
+	background: var(--surface-dim);
+}
+
+/* 标准梨园操作按钮 */
 .cs-btn-primary {
 	display: inline-flex;
 	align-items: center;
+	justify-content: center;
 	gap: 5px;
-	padding: 6px 16px;
-	font-size: 12.5px;
+	padding: 5px 14px;
+	font-size: 12px;
 	font-weight: 500;
 	color: #fff;
 	background: var(--accent);
 	border: 1px solid var(--accent);
 	border-radius: var(--radius-s);
 	cursor: pointer;
-	box-shadow: 0 1px 4px color-mix(in srgb, var(--accent) 30%, transparent);
-	transition: all 0.15s ease;
+	box-shadow: 0 1px 3px color-mix(in srgb, var(--accent) 25%, transparent);
+	transition: all 0.14s ease;
 }
-
 .cs-btn-primary:hover:not(:disabled) {
 	background: var(--accent-strong);
 	border-color: var(--accent-strong);
 }
-
 .cs-btn-primary:disabled {
-	opacity: 0.45;
+	opacity: 0.4;
 	cursor: not-allowed;
 }
 
-/* 双栏主容器（已移除 AI 侧栏，主编辑区独占剩余宽度） */
+.cs-btn-ghost {
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	gap: 4px;
+	padding: 4px 10px;
+	font-size: 11.5px;
+	color: var(--text-soft);
+	background: var(--surface);
+	border: 1px solid var(--hairline-strong);
+	border-radius: var(--radius-s);
+	cursor: pointer;
+	transition: all 0.14s ease;
+}
+.cs-btn-ghost:hover:not(:disabled) {
+	color: var(--accent);
+	border-color: var(--accent);
+	background: var(--surface-dim);
+}
+.cs-btn-ghost:disabled {
+	opacity: 0.4;
+	cursor: not-allowed;
+}
+
+/* 双栏主容器 */
 .cs-container {
 	flex: 1;
 	display: flex;
@@ -190,51 +224,50 @@
 }
 
 /* ==========================================================================
-   左侧栏：创作目录 (Left Sidebar)
+   左侧栏：创作大纲目录 (Left Sidebar) - 瘦身至 184px，雅致书卷风
    ========================================================================== */
 .cs-sidebar-left {
-	width: 240px;
+	width: 184px;
+	min-width: 170px;
 	flex: none;
 	display: flex;
 	flex-direction: column;
 	background: var(--surface);
-	border-right: 1px solid var(--hairline-strong);
+	border-right: 1px solid var(--hairline);
 	overflow: hidden;
+	user-select: none;
 }
 
 .cs-nav-header {
-	padding: 14px 14px 10px;
+	height: 38px;
+	padding: 0 12px;
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
 	border-bottom: 1px solid var(--hairline);
+	flex: none;
 }
 
 .cs-nav-title {
 	font-family: var(--font-serif);
-	font-size: 13.5px;
-	font-weight: 700;
-	color: var(--text-strong);
-	display: flex;
-	align-items: center;
-	gap: 5px;
+	font-size: 11.5px;
+	font-weight: 600;
+	color: var(--text-soft);
+	letter-spacing: 0.05em;
 }
 
-.cs-arrow-gold {
-	color: var(--accent);
-	font-weight: bold;
-}
-
-.cs-nav-sub {
-	margin-top: 3px;
-	font-size: 11px;
+.cs-nav-count {
+	font-size: 10px;
 	color: var(--text-faint);
 }
 
 .cs-nav-list {
 	flex: 1;
 	overflow-y: auto;
-	padding: 8px 6px;
+	padding: 6px 4px;
 	display: flex;
 	flex-direction: column;
-	gap: 3px;
+	gap: 2px;
 }
 
 .cs-nav-item {
@@ -242,12 +275,13 @@
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
-	padding: 7px 10px;
-	font-size: 12.5px;
+	padding: 6px 8px 6px 10px;
+	font-size: 12px;
 	color: var(--text-soft);
 	background: transparent;
-	border: 1px solid transparent;
-	border-radius: var(--radius-s);
+	border: none;
+	border-left: 3px solid transparent;
+	border-radius: 0 6px 6px 0;
 	cursor: pointer;
 	text-align: left;
 	transition: all 0.12s ease;
@@ -259,12 +293,10 @@
 }
 
 .cs-nav-item.is-active {
-	background: var(--surface-dim);
-	color: var(--text-strong);
-	border-color: var(--hairline-strong);
-	border-left: 3px solid var(--accent);
+	background: var(--accent-wash);
+	color: var(--accent-strong);
+	border-left-color: var(--accent);
 	font-weight: 600;
-	box-shadow: 0 1px 2px rgb(0 0 0 / 2%);
 }
 
 .cs-nav-item-name {
@@ -274,15 +306,14 @@
 
 /* 徽标胶囊 (Badges) */
 .cs-badge {
-	font-size: 10.5px;
-	padding: 1.5px 7px;
+	font-size: 10px;
+	padding: 1px 6px;
 	border-radius: 999px;
 	font-weight: 500;
 	white-space: nowrap;
 	letter-spacing: 0.2px;
 }
 
-/* 暖金/竹简色（替代刺眼冷绿，契合墨韵金石） */
 .cs-badge-green {
 	color: #c98b2c;
 	background: color-mix(in srgb, #c98b2c 12%, transparent);
@@ -308,38 +339,6 @@
 	border: 1px solid var(--hairline-strong);
 }
 
-.cs-sidebar-footer {
-	padding: 12px 14px;
-	border-top: 1px solid var(--hairline-strong);
-	background: var(--surface-dim);
-}
-
-.cs-footer-hint {
-	font-size: 11px;
-	color: var(--text-faint);
-	margin-bottom: 8px;
-}
-
-.cs-btn-export-full {
-	width: 100%;
-	padding: 7px 12px;
-	font-size: 12px;
-	font-weight: 500;
-	color: var(--accent-strong);
-	background: var(--surface);
-	border: 1px solid var(--hairline-strong);
-	border-radius: var(--radius-s);
-	cursor: pointer;
-	box-shadow: var(--shadow-1);
-	transition: all 0.15s ease;
-}
-
-.cs-btn-export-full:hover {
-	background: var(--accent-wash);
-	border-color: var(--accent);
-	color: var(--accent);
-}
-
 /* ==========================================================================
    中间栏：主工作区 (Main Workspace)
    ========================================================================== */
@@ -353,66 +352,57 @@
 }
 
 .cs-content-wrap {
-	max-width: 1080px;
+	max-width: 960px;
 	width: 100%;
 	margin: 0 auto;
-	padding: 28px 40px 60px;
+	padding: 16px 20px 48px;
 	box-sizing: border-box;
 }
 
-.cs-sec-breadcrumb {
-	font-size: 12px;
-	font-weight: 500;
-	color: var(--text-soft);
-	margin-bottom: 6px;
-	display: flex;
-	align-items: center;
-	gap: 4px;
+/* 扁平长卷题头：节约空间，宋体雅致 */
+.cs-sec-header-compact {
+	margin-bottom: 16px;
+	padding-bottom: 10px;
+	border-bottom: 1px solid var(--hairline);
 }
 
-.cs-sec-header {
+.cs-sec-title-row {
 	display: flex;
 	align-items: baseline;
-	gap: 12px;
-	margin-bottom: 4px;
+	gap: 8px;
+	flex-wrap: wrap;
 }
 
-.cs-big-num {
+.cs-sec-num-badge {
 	font-family: var(--font-serif);
-	font-size: 34px;
-	font-weight: 600;
+	font-size: 12px;
+	font-weight: 700;
 	color: var(--accent);
-	line-height: 1;
-	letter-spacing: -0.5px;
-	opacity: 0.92;
+	background: var(--accent-wash);
+	padding: 1px 6px;
+	border-radius: 4px;
+	letter-spacing: 0.5px;
 }
 
 .cs-sec-title {
 	font-family: var(--font-serif);
-	font-size: 21px;
+	font-size: 16px;
 	font-weight: 700;
 	color: var(--text-strong);
 	margin: 0;
 }
 
-.cs-sec-desc {
-	font-size: 13px;
+.cs-sec-desc-inline {
+	font-size: 12px;
 	color: var(--text-soft);
-	margin: 5px 0 18px;
-	line-height: 1.5;
-}
-
-.cs-divider {
-	height: 1px;
-	background: var(--hairline-strong);
-	margin: 0 0 20px;
+	margin-left: 4px;
 }
 
 /* 双栏网格卡片布局 */
 .cs-grid-2col {
 	display: grid;
-	grid-template-columns: 280px 1fr;
-	gap: 20px;
+	grid-template-columns: 200px 1fr;
+	gap: 16px;
 	align-items: start;
 }
 
@@ -420,17 +410,17 @@
 .cs-card {
 	background: var(--surface);
 	border: 1px solid var(--hairline);
-	border-radius: var(--radius-s);
+	border-radius: 8px;
 	box-shadow: var(--shadow-1);
-	padding: 20px;
+	padding: 16px 18px;
 }
 
 .cs-card-title {
 	font-family: var(--font-serif);
-	font-size: 14px;
+	font-size: 13.5px;
 	font-weight: 700;
 	color: var(--text-strong);
-	margin-bottom: 12px;
+	margin-bottom: 10px;
 	display: flex;
 	align-items: center;
 	gap: 5px;
@@ -758,5 +748,17 @@
 	}
 	.cs-split-pane {
 		grid-template-columns: 1fr;
+	}
+}
+
+/* 移动端：写卡工坊完全覆盖 */
+@media (max-width: 999px) {
+	.cs-root {
+		position: fixed;
+		inset: 0;
+		z-index: 500;
+		width: 100vw;
+		height: 100dvh;
+		animation: cs-fade-in 0.16s ease-out;
 	}
 }

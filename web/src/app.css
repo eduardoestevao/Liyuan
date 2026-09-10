@@ -281,13 +281,13 @@ svg {
 	z-index: 20;
 }
 
-/* 左右两侧等宽，标题才真居中；宽度＝两钮 + 间隙 */
+/* 左右两侧等宽，标题才真居中；右侧容纳三钮（工坊 / 新建 / 会话树） */
 .tb-side {
 	display: flex;
 	align-items: center;
 	gap: 4px;
 	flex: none;
-	width: 76px;
+	width: 104px;
 }
 .tb-side-right {
 	justify-content: flex-end;
@@ -8219,4 +8219,60 @@ label.drawer-btn {
 	border-color: var(--accent);
 	color: var(--accent);
 	background: var(--accent-wash);
+}
+
+/* ── 桌面端：写卡平台展开时 4:6 分栏（聊天占 40%，工坊占 60%） ── */
+@media (min-width: 1000px) {
+	.center.center-studio-split {
+		flex: 0 0 40% !important;
+		width: 40% !important;
+		max-width: 40% !important;
+		min-width: 0 !important;
+		border-right: 1px solid var(--hairline);
+	}
+	.center.center-studio-split .stage-wrap .stage-col-left .list {
+		padding: 16px 16px 24px;
+	}
+	.center.center-studio-split .composer {
+		padding: 8px 12px 12px;
+	}
+	.studio-split-pane {
+		flex: 0 0 60%;
+		width: 60%;
+		max-width: 60%;
+		min-width: 0;
+		height: 100%;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg);
+		animation: studio-slide-in 0.2s cubic-bezier(0.16, 1, 0.3, 1);
+		z-index: 15;
+	}
+}
+
+@keyframes studio-slide-in {
+	from {
+		opacity: 0;
+		transform: translateX(18px);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0);
+	}
+}
+
+/* ── 移动端：写卡平台完全覆盖 ── */
+@media (max-width: 999px) {
+	.studio-split-pane {
+		position: fixed;
+		inset: 0;
+		width: 100vw;
+		height: 100dvh;
+		z-index: 500;
+		display: flex;
+		flex-direction: column;
+		overflow: hidden;
+		background: var(--bg);
+	}
 }

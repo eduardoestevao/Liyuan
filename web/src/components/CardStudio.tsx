@@ -9,8 +9,7 @@ import type {
 } from "../../../src/card-authoring-types.ts";
 import { apiGet, apiGetCacheClear, apiPost, type CardResponse } from "../api.ts";
 import { buildCardAuthoringPreview, CARD_PREVIEW_SANDBOX, cardPreviewUrl } from "../cardAuthoringPreview.ts";
-import { BrandLogo } from "./BrandLogo.tsx";
-import { IconChevronLeft, IconClose } from "./icons.tsx";
+import { IconClose, IconEdit } from "./icons.tsx";
 import "./CardStudio.css";
 
 type SectionCode = "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09";
@@ -371,7 +370,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			<div className="cs-grid-2col">
 				<div className="cs-card">
 					<div className="cs-card-title">
-						<span className="cs-arrow-gold">&gt;</span> 封面
+						封面立绘
 					</div>
 					<div className="cs-cover-placeholder">
 						{coverUrl ? (
@@ -485,18 +484,12 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 						</div>
 					</div>
 
-					<div className="cs-infobox">
-						<div className="cs-infobox-title">保存在当前设备</div>
-						<p className="cs-infobox-text">
-							名称、封面和后续创作内容都会自动保存；所有数据保存在本地工作区。
-						</p>
 					</div>
 				</div>
-			</div>
-		);
-	};
+			);
+		};
 
-	// 01 角色设定 (Personality / Scenario / Mes Example)
+		// 01 角色设定 (Personality / Scenario / Mes Example)
 	const renderSection01 = () => {
 		const persRes = findResource("personality");
 		const scenRes = findResource("scenario");
@@ -1377,44 +1370,47 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 		<div className="cs-root" role="dialog" aria-label="角色卡工坊">
 			{/* 顶栏 */}
 			<header className="cs-header">
-				<div className="cs-header-left">
-					<button type="button" className="cs-back-btn" onClick={onClose}>
-						<IconChevronLeft size={14} />
-						返回作品
-					</button>
-					<div className="cs-brand-box">
-						<BrandLogo size={20} />
-						<span className="cs-brand-title">梨园工坊</span>
-						<span className="cs-brand-sub">ROLEPLAY STUDIO</span>
+					<div className="cs-header-left">
+						<span className="cs-header-title">
+							<IconEdit size={14} />
+							<span>角色卡工坊</span>
+						</span>
+						<span className="cs-header-sep" aria-hidden="true">·</span>
+						<span className="cs-header-card-name" title={cardInfo?.name}>{cardInfo?.name || "未命名卡片"}</span>
+						<span className={changedCount > 0 ? "cs-dot-unsaved" : "cs-dot-saved"} title={changedCount > 0 ? `${changedCount} 项未应用` : "已保存"} />
+						{changedCount > 0 && <span className="cs-header-badge-count">{changedCount} 项未应用</span>}
 					</div>
-					<span className="cs-header-divider">·</span>
-					<div className="cs-header-card-badge">
-						<span className="cs-header-card-name">{cardInfo?.name || "未命名卡片"}</span>
-						<span className={changedCount > 0 ? "cs-dot-unsaved" : "cs-dot-saved"} />
-						<span style={{ fontSize: 11 }}>{changedCount > 0 ? `${changedCount} 项未应用` : "已保存"}</span>
-					</div>
-				</div>
 
-				<div className="cs-header-right">
-					<button type="button" className="cs-btn-ghost" onClick={refreshAll} disabled={busy}>
-						刷新
-					</button>
-					<button type="button" className="cs-btn-ghost" onClick={handleCheck} disabled={busy}>
-						检查
-					</button>
-					<button type="button" className="cs-btn-ghost" onClick={handlePreview} disabled={busy}>
-						预览
-					</button>
-					<button
-						type="button"
-						className="cs-btn-primary"
-						onClick={handleApply}
-						disabled={busy || changedCount === 0}
-					>
-						应用到角色卡
-					</button>
-				</div>
-			</header>
+					<div className="cs-header-right">
+						<button type="button" className="cs-btn-micro" onClick={refreshAll} disabled={busy} title="刷新卡片数据">
+							刷新
+						</button>
+						<button type="button" className="cs-btn-micro" onClick={handleCheck} disabled={busy} title="检查语法与规范">
+							检查
+						</button>
+						<button type="button" className="cs-btn-micro" onClick={handlePreview} disabled={busy} title="沙箱预览">
+							预览
+						</button>
+						<button
+							type="button"
+							className={`cs-btn-micro ${changedCount > 0 ? "cs-btn-micro-primary" : ""}`}
+							onClick={handleApply}
+							disabled={busy || changedCount === 0}
+							title="应用到当前角色卡"
+						>
+							应用{changedCount > 0 ? ` (${changedCount})` : ""}
+						</button>
+						<button
+							type="button"
+							className="icon-btn cs-close-btn"
+							onClick={onClose}
+							title="收起工坊"
+							aria-label="收起工坊"
+						>
+							<IconClose size={15} />
+						</button>
+					</div>
+				</header>
 
 			{/* 全局通告栏 */}
 			{(error || notice) && (
@@ -1449,10 +1445,8 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 				{/* 左栏：创作目录 */}
 				<aside className="cs-sidebar-left">
 					<div className="cs-nav-header">
-						<div className="cs-nav-title">
-							<span className="cs-arrow-gold">&gt;</span> 创作目录
-						</div>
-						<div className="cs-nav-sub">只进入这次需要的部分</div>
+						<span className="cs-nav-title">创作大纲</span>
+						<span className="cs-nav-count">10 板块</span>
 					</div>
 
 					<div className="cs-nav-list">
@@ -1515,30 +1509,18 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 						})}
 					</div>
 
-					<div className="cs-sidebar-footer">
-						<div className="cs-footer-hint">完成内容后再检查</div>
-						<button
-							type="button"
-							className="cs-btn-export-full"
-							onClick={() => setActiveSec("09")}
-						>
-							检查并导出
-						</button>
-					</div>
-				</aside>
+					</aside>
 
 				{/* 中间栏：主工作区 */}
 				<main className="cs-main">
 					<div className="cs-content-wrap">
-						<div className="cs-sec-breadcrumb">
-							<span className="cs-arrow-gold">&gt;</span> {curSectionMeta.title}
+						<div className="cs-sec-header-compact">
+							<div className="cs-sec-title-row">
+								<span className="cs-sec-num-badge">{curSectionMeta.num}</span>
+								<h1 className="cs-sec-title">{curSectionMeta.title}</h1>
+								<span className="cs-sec-desc-inline">{curSectionMeta.desc}</span>
+							</div>
 						</div>
-						<div className="cs-sec-header">
-							<span className="cs-big-num">{curSectionMeta.num}</span>
-							<h1 className="cs-sec-title">{curSectionMeta.title}</h1>
-						</div>
-						<p className="cs-sec-desc">{curSectionMeta.desc}</p>
-						<div className="cs-divider" />
 
 						{activeSec === "00" && renderSection00()}
 						{activeSec === "01" && renderSection01()}
