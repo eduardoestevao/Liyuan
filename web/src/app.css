@@ -971,7 +971,7 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	color: var(--text-faint);
 }
 
-/* ── 扮演区上方舞台层：状态栏打开时 5:5 分栏 ── */
+/* ── 扮演区上方舞台层：状态栏打开时 5:5 对称分栏 ── */
 .stage-wrap {
 	flex: 1 1 auto;
 	min-height: 0;
@@ -982,26 +982,45 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	width: 100%;
 }
 
-/* ── 聊天流:内容道居中(≈桌面 6 成) ── */
-.list {
+/* 未开状态栏时：左列满宽，无栏目头 */
+.stage-col-left {
 	flex: 1 1 100%;
+	width: 100%;
+	min-width: 0;
+	height: 100%;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	position: relative;
+}
+
+.stage-col-left .list {
+	flex: 1 1 auto;
 	width: 100%;
 	min-width: 0;
 	height: 100%;
 	overflow-y: auto;
 	padding: 20px 24px 28px;
 	overscroll-behavior: contain;
-	transition: flex 0.2s ease, width 0.2s ease, max-width 0.2s ease;
 }
 
-/* 状态栏打开时：左侧扮演区占 50%，会话左移，右缘 1px 细线分隔 */
-.stage-wrap.split-active .list {
+/* 状态栏打开时：5:5 严格对称平立展开，统一纯白底色，中间 1px 细线整洁连接 */
+.stage-wrap.split-active {
+	background: var(--surface);
+}
+
+.stage-wrap.split-active .stage-col-left {
 	flex: 0 0 50%;
 	width: 50%;
 	max-width: 50%;
-	padding: 18px 24px 28px;
-	box-sizing: border-box;
 	border-right: 1px solid var(--hairline);
+	box-sizing: border-box;
+	background: var(--surface);
+}
+
+.stage-wrap.split-active .stage-col-left .list {
+	padding: 16px 24px 28px;
+	box-sizing: border-box;
 }
 
 .stage-wrap.split-active .flow {
@@ -1009,59 +1028,43 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	margin: 0 auto;
 }
 
-/* 状态栏打开时：右侧五五开一体化视窗，彻底消除悬浮气泡感与外层缝隙 */
-.stage-side {
+.stage-col-right {
 	flex: 0 0 50%;
 	width: 50%;
 	max-width: 50%;
 	min-width: 0;
 	height: 100%;
 	box-sizing: border-box;
-	padding: 0;
 	display: flex;
 	flex-direction: column;
-	background: transparent;
+	background: var(--surface);
 	animation: stage-side-in 0.2s ease-out;
 }
 
-.stage-side-inner {
-	flex: 1 1 auto;
-	display: flex;
-	flex-direction: column;
-	min-height: 0;
-	height: 100%;
-	background: transparent;
-	border: none;
-	border-radius: 0;
-	box-shadow: none;
-	overflow: hidden;
-}
-
-.stage-side-head {
+/* 左右两栏对齐的顶标行：高度严格相等 (38px)，底边细线对齐，统一白底零色差 */
+.stage-col-head {
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
 	padding: 0 24px;
-	height: 44px;
+	height: 38px;
 	box-sizing: border-box;
 	border-bottom: 1px solid var(--hairline);
-	background: color-mix(in srgb, var(--surface) 60%, transparent);
-	backdrop-filter: blur(8px);
-	-webkit-backdrop-filter: blur(8px);
+	background: var(--surface);
 	flex: none;
 }
 
-.stage-side-title {
+.stage-col-title {
 	display: inline-flex;
 	align-items: center;
-	gap: 8px;
-	font-size: 13px;
+	gap: 7px;
+	font-size: 12px;
 	font-weight: 600;
 	color: var(--text-soft);
-	letter-spacing: 0.04em;
+	letter-spacing: 0.05em;
 }
 
-.stage-side-body {
+.stage-col-body {
 	flex: 1 1 auto;
 	min-height: 0;
 	overflow-y: auto;
@@ -1074,7 +1077,7 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 @keyframes stage-side-in {
 	from {
 		opacity: 0;
-		transform: translateX(16px);
+		transform: translateX(12px);
 	}
 	to {
 		opacity: 1;
@@ -2514,46 +2517,94 @@ html[data-theme="dark"] .msg-md-code {
 	padding-top: 6px;
 	border-top: 1px dashed var(--hairline);
 }
-/* 面板形态：独占一栏，不再是状态卡里的附属区块——去掉分隔线与滚动窗，
-   三表随内容自然铺开，由面板自身滚动（剧情长了名录会很长，正是搬迁的动因）。 */
+/* 登场名录：流式章节排版，消灭细碎浮空小气泡 */
 .roster-panel {
 	margin-top: 0;
 	padding-top: 0;
 	border-top: none;
+	background: transparent;
 }
-.roster-panel .roster-table {
-	margin-top: 12px;
-	background: var(--surface);
-	border: 1px solid var(--hairline);
-	border-radius: var(--radius);
-	padding: 10px 14px;
-	box-shadow: var(--shadow-1);
+.roster-section {
+	margin-bottom: 20px;
+	padding-bottom: 16px;
+	border-bottom: 1px solid color-mix(in srgb, var(--hairline) 60%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
 }
-.roster-panel .roster-table-label {
-	font-size: 12px;
-	color: var(--text-soft);
-	font-weight: 600;
-	letter-spacing: 0.04em;
-	margin-bottom: 6px;
+.roster-section:last-of-type {
+	border-bottom: none;
+	margin-bottom: 0;
+	padding-bottom: 0;
 }
-.roster-panel .roster-rows {
-	max-height: none;
-	overflow-y: visible;
-}
-.roster-panel .roster-row {
-	font-size: 13px;
+.roster-section-head {
+	display: flex;
+	align-items: baseline;
+	justify-content: space-between;
 	padding: 2px 0;
 }
-.roster-panel .roster-name {
-	max-width: 12em;
+.roster-section-title {
+	font-family: var(--font-serif);
+	font-size: 13px;
+	font-weight: 600;
+	color: var(--text-soft);
+	letter-spacing: 0.05em;
 }
-.roster-table {
-	margin-top: 4px;
-}
-.roster-table-label {
-	font-size: 11.5px;
+.roster-section-badge {
+	font-size: 11px;
 	color: var(--text-faint);
-	margin-bottom: 2px;
+	background: var(--surface-dim);
+	padding: 1px 7px;
+	border-radius: 999px;
+}
+.roster-rows {
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+}
+.roster-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 12px;
+	padding: 6px 0;
+	border-bottom: 1px dashed color-mix(in srgb, var(--hairline) 45%, transparent);
+	font-size: 13px;
+}
+.roster-row:last-child {
+	border-bottom: none;
+}
+.roster-name {
+	font-weight: 600;
+	color: var(--text-strong);
+	flex: 0 1 auto;
+	max-width: calc(100% - 130px);
+	line-height: 1.45;
+	word-break: break-word;
+}
+.roster-blurb {
+	flex: 1 1 auto;
+	color: var(--text-soft);
+	font-size: 12.5px;
+	min-width: 0;
+}
+.roster-mark {
+	font-size: 11px;
+	padding: 1.5px 7px;
+	border-radius: 4px;
+	flex: none;
+	background: var(--surface-dim);
+	color: var(--text-faint);
+}
+.roster-mark.on {
+	background: color-mix(in srgb, var(--accent) 10%, var(--surface));
+	color: var(--accent);
+	border: 1px solid color-mix(in srgb, var(--accent) 22%, var(--hairline));
+}
+.roster-empty {
+	font-size: 12.5px;
+	color: var(--text-faint);
+	padding: 10px 0;
 }
 .roster-rows {
 	max-height: 180px;
@@ -5095,55 +5146,129 @@ input.panel-search.num {
 .sp-section {
 	display: flex;
 	flex-direction: column;
-	gap: 7px;
+	gap: 8px;
+	padding-bottom: 18px;
+	margin-bottom: 18px;
+	border-bottom: 1px solid color-mix(in srgb, var(--hairline) 60%, transparent);
 }
-.sp-section-title-row {
+.sp-section:last-of-type {
+	border-bottom: none;
+	margin-bottom: 0;
+	padding-bottom: 0;
+}
+.sp-section-head {
 	display: flex;
 	align-items: baseline;
 	justify-content: space-between;
+	padding: 2px 0;
 }
 .sp-section-title {
-	font-size: 12px;
+	font-family: var(--font-serif);
+	font-size: 13px;
 	font-weight: 600;
 	color: var(--text-soft);
-	letter-spacing: 0.04em;
+	letter-spacing: 0.05em;
 }
-.sp-section-count {
+.sp-section-badge {
+	font-size: 11px;
+	color: var(--text-faint);
+	background: var(--surface-dim);
+	padding: 1px 7px;
+	border-radius: 999px;
+}
+.sp-section-body {
+	display: flex;
+	flex-direction: column;
+	gap: 6px;
+}
+.sp-kv-row {
+	display: flex;
+	align-items: baseline;
+	gap: 12px;
+	padding: 5px 0;
+	font-size: 13px;
+}
+.sp-kv-key {
+	color: var(--text-faint);
+	flex: none;
+	width: 5em;
+	font-size: 12px;
+}
+.sp-kv-val {
+	color: var(--text);
+	flex: 1 1 auto;
+	min-width: 0;
+}
+.sp-char-stream {
+	display: flex;
+	flex-direction: column;
+	gap: 10px;
+}
+.sp-char-entry {
+	padding: 8px 0;
+	border-bottom: 1px dashed color-mix(in srgb, var(--hairline) 50%, transparent);
+	display: flex;
+	flex-direction: column;
+	gap: 5px;
+}
+.sp-char-entry:last-child {
+	border-bottom: none;
+	padding-bottom: 0;
+}
+.sp-char-meta-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+}
+.sp-char-name {
+	font-size: 13.5px;
+	font-weight: 600;
+	color: var(--accent);
+}
+.sp-char-affinity-group {
+	display: inline-flex;
+	align-items: baseline;
+	gap: 4px;
+	font-size: 12px;
+	color: var(--text-soft);
+}
+.sp-char-affinity-label {
 	font-size: 11px;
 	color: var(--text-faint);
 }
-.sp-card {
-	background: var(--surface);
-	border: 1px solid var(--hairline);
-	border-radius: var(--radius);
-	padding: 10px 14px;
-	box-shadow: var(--shadow-1);
-}
-.sp-char-list {
+.sp-char-desc-row {
 	display: flex;
-	flex-direction: column;
-	gap: 8px;
+	align-items: baseline;
+	gap: 6px;
+	font-size: 12.5px;
+	line-height: 1.5;
 }
-.sp-meta-label {
-	font-size: 11.5px;
+.sp-desc-tag {
+	font-size: 11px;
 	color: var(--text-faint);
-	margin-right: 4px;
 	flex: none;
+	width: 2.5em;
+}
+.sp-desc-text {
+	color: var(--text-soft);
+	flex: 1 1 auto;
+}
+.sp-notes-text {
+	color: var(--text-faint);
+	font-style: italic;
 }
 .sp-empty-hint {
 	font-size: 12.5px;
 	color: var(--text-faint);
-	padding: 18px 12px;
-	text-align: center;
-	background: var(--surface);
-	border: 1px dashed var(--hairline-strong);
-	border-radius: var(--radius);
+	padding: 14px 0;
 }
 .sp-footer-hint {
 	font-size: 11.5px;
 	color: var(--text-faint);
 	line-height: 1.55;
-	padding: 6px 4px 0;
+	padding: 8px 0 0;
+	border-top: 1px dashed var(--hairline);
 }
 
 /* ── 会话用量：输入框下方，右缘与输入框齐平 ── */
