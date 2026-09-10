@@ -2083,7 +2083,7 @@ export default function App() {
 
 				<div className="layout">
 					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""}`}>
-					<div className={`stage-wrap ${!welcome && rightPanel ? "split-active" : ""}`}>
+					<div className={`stage-wrap ${rightPanel ? "split-active" : ""}`}>
 					<div className="list" ref={listRef} onScroll={onScroll} onPointerDown={() => composerTools && setComposerTools(false)}>
 						<div className="flow">
 							{/* 欢迎区嵌在聊天流（学 ST）：顶栏/侧栏/输入框仍可用 */}
@@ -2290,7 +2290,7 @@ export default function App() {
 							<IconChevronDown size={17} />
 						</button>
 					)}
-					{!welcome && rightPanel && (
+					{rightPanel && (
 						<aside className="stage-side" aria-label={PANEL_LABEL[rightPanel as PanelId] || "状态栏"}>
 							<div className="stage-side-inner">
 								<div className="stage-side-head">
@@ -2590,7 +2590,6 @@ export default function App() {
 					</footer>
 				</main>
 
-				{welcome && sidePanel(rightPanel, "right")}
 			</div>
 			</div>
 			{floatPanel &&
