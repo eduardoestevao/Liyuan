@@ -33,15 +33,23 @@ const SIZE = 44;
 /** 至少留在视口内的像素：拖出屏幕就再也点不到了 */
 const KEEP = 8;
 
-/** 默认贴左边、竖直居中偏下——作者球默认贴右边，这样两者不叠 */
+/** 默认贴右下角（避开左侧栏与主聊天流，与 CodeBuddy 右下角悬浮工具对齐） */
 function defaultPos(): Pos {
-	return { x: 16, y: Math.max(80, Math.round(window.innerHeight * 0.62)) };
+	const winW = typeof window !== "undefined" ? window.innerWidth : 1200;
+	const winH = typeof window !== "undefined" ? window.innerHeight : 800;
+	return {
+		x: Math.max(KEEP, winW - SIZE - 24),
+		y: Math.max(80, Math.round(winH * 0.76)),
+	};
 }
 
 function clamp(p: Pos): Pos {
+	const winW = typeof window !== "undefined" ? window.innerWidth : 1200;
+	const winH = typeof window !== "undefined" ? window.innerHeight : 800;
 	return {
-		x: Math.min(Math.max(p.x, KEEP), Math.max(KEEP, window.innerWidth - SIZE - KEEP)),
-		y: Math.min(Math.max(p.y, KEEP), Math.max(KEEP, window.innerHeight - SIZE - KEEP)),
+		x: Math.min(Math.max(p.x, KEEP), Math.max(KEEP, winW - SIZE - KEEP)),
+		// 严禁贴顶栏（y < 56 会遮挡顶栏按钮与标题）
+		y: Math.min(Math.max(p.y, 56), Math.max(56, winH - SIZE - KEEP)),
 	};
 }
 

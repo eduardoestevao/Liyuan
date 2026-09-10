@@ -33,7 +33,6 @@ import { workspaceSegments } from "./draft-view.ts";
 import type { DraftView } from "./wire.ts";
 import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
-import { CardPanel } from "./components/CardPanel.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { FloatWindow } from "./components/FloatWindow.tsx";
 import { CardStudio } from "./components/CardStudio.tsx";
@@ -55,7 +54,8 @@ import {
 	IconDock,
 	IconEdit,
 	IconLorebook,
-	IconPersona,
+	IconNewChat,
+	IconPanelLeft,
 	IconPreset,
 	IconPuzzle,
 	IconRefresh,
@@ -93,9 +93,9 @@ import { authorScriptSig } from "../../src/authorScripts.ts";
 import { skinAtDepth } from "../../src/postprocess.ts";
 import { PanelDock } from "./components/PanelDock.tsx";
 import { PanelOrb } from "./components/PanelOrb.tsx";
-import { PersonaPanel } from "./components/PersonaPanel.tsx";
 import { PowersPanel } from "./components/PowersPanel.tsx";
 import { PresetPanel } from "./components/PresetPanel.tsx";
+import { RolesPanel, type RolesTab } from "./components/RolesPanel.tsx";
 import { RosterPanel } from "./components/RosterPanel.tsx";
 import { ScriptHost } from "./components/ScriptHost.tsx";
 import { SessionsPanel } from "./components/SessionsPanel.tsx";
@@ -143,7 +143,7 @@ interface PendingUpload extends AttachmentView {
 	size: string;
 }
 
-// ---------- 面板注册表（PLAN-PANELS-V2 §1.1：12 入口收纳为 10） ----------
+// ---------- 面板注册表（PLAN-FRONTEND-V2 §二/§三：五个入口收为三键 + 一条抽屉轨） ----------
 
 type PanelId =
 	| "sessions"
@@ -152,9 +152,8 @@ type PanelId =
 	| "preset"
 	| "powers"
 	| "settings"
-	| "card"
+	| "roles"
 	| "lorebook"
-	| "persona"
 	| "roster"
 	| "uploads"
 	| "assistant";
@@ -164,19 +163,16 @@ type AgentPanelId = `agent:${string}`;
 const agentId = (name: string): AgentPanelId => `agent:${name}`;
 
 /**
- * 顶栏 4-2-4（与对话框同宽对齐）：
- * - 左 4：连接 / 预设 / 扩展 / 上传
- * - 中 2：设置 / 面板（向下展开）
- * - 右 4：角色卡 / 世界书 / 知识库 / 用户角色
- * 会话在底栏。
+ * 左抽屉轨位（PLAN-FRONTEND-V2 §三）。
+ *
+ * 判据只有一条：**换一个会话它还在不在**。在＝资产/配置，进抽屉；不在＝这一场戏的
+ * 运行时状态，留聊天面或会话树。以后新面板往哪放照这条问，不必一事一议。
  */
-const LEFT_PANELS: PanelId[] = ["connect", "preset", "powers", "uploads"];
-const RIGHT_PANELS: PanelId[] = ["card", "lorebook", "persona"];
-/** 右栏可开面板全集：顶栏 4 入口 + 助手（入口在输入框发送钮右侧，不占顶栏） */
-const RIGHT_OPENABLE: PanelId[] = [...RIGHT_PANELS, "assistant"];
-
-/** 长文面板用宽档（横切基建 §1 面板宽度） */
-const WIDE_PANELS = new Set<PanelId>(["card", "lorebook"]);
+const DRAWER_SECTIONS: PanelId[] = ["roles", "connect", "preset", "lorebook", "powers", "uploads"];
+/** 抽屉可开全集＝轨位 + 轨底的设置 */
+const DRAWER_PANELS: PanelId[] = [...DRAWER_SECTIONS, "settings"];
+/** 右栏可开面板：会话树（顶栏右键）+ 助手（发送钮右侧） */
+const RIGHT_OPENABLE: PanelId[] = ["sessions", "assistant"];
 
 /**
  * 悬浮窗形态：侧栏那个窄条盛不下的面板。
@@ -198,17 +194,16 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	worldline: "世界线",
 	connect: "连接",
 	preset: "提示词",
-	powers: "扩展能力",
+	powers: "扩展",
 	settings: "设置",
-	card: "角色卡",
+	roles: "角色",
 	lorebook: "世界书",
-	persona: "用户角色",
 	roster: "登场名录",
-	uploads: "上传区",
+	uploads: "资料",
 	assistant: "助手",
 };
 
-/** 顶栏图标(收纳入口的关键:图标承载识别,文字进 tooltip/aria-label) */
+/** 图标承载识别，文字进 tooltip/aria-label */
 const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> = {
 	sessions: IconSessions,
 	worldline: IconWorldline,
@@ -216,31 +211,27 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 	preset: IconPreset,
 	powers: IconPuzzle,
 	settings: IconSettings,
-	card: IconCard,
+	roles: IconCard,
 	lorebook: IconLorebook,
-	persona: IconPersona,
 	roster: IconRoster,
 	uploads: IconUploads,
 	assistant: IconAssistant,
 };
 
-type CenterMenu = "settings" | "panels" | null;
-
-/** 左栏：顶栏左组 + 底栏会话/世界线/名录 + agent 面板 */
-const LEFT_OPENABLE: PanelId[] = [...LEFT_PANELS, "sessions", "worldline", "roster"];
-
-function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null } {
+function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null; lastSection: PanelId | null } {
 	try {
 		const raw = JSON.parse(localStorage.getItem("liyuan.panels") ?? "{}") as Record<string, unknown>;
 		const pick = (v: unknown, group: PanelId[]) => (group.includes(v as PanelId) ? (v as PanelId) : null);
-		const left = pick(raw.left, LEFT_OPENABLE);
-		// settings 走中央下拉，悬浮窗形态的面板自成一侧，旧 prefs 里的这些都不还原成左栏
-		return {
-			left: left === ("settings" as PanelId) || isFloatPanel(left) ? null : left,
-			right: pick(raw.right, RIGHT_OPENABLE),
-		};
+		const lastSection = pick(raw.left, DRAWER_PANELS);
+		/**
+		 * 手机上抽屉是铺满的：还原成「开着」＝打开应用先看见面板而不是聊天，
+		 * 与「聊天界面保持干净」相反。所以窄屏只记住是哪一格，不记住开着。
+		 * 桌面抽屉浮在左留白上，不挡聊天，沿用原来的还原行为。
+		 */
+		const mobile = typeof matchMedia !== "undefined" && matchMedia("(max-width: 999px)").matches;
+		return { left: mobile ? null : lastSection, right: pick(raw.right, RIGHT_OPENABLE), lastSection };
 	} catch {
-		return { left: null, right: null };
+		return { left: null, right: null, lastSection: null };
 	}
 }
 
@@ -352,13 +343,10 @@ export default function App() {
 		if (mobileRef.current && next !== null) setLeftPanel(null);
 		setRightPanel(next);
 	}, []);
-	/** 顶栏中央下拉：设置 | 面板 */
-	const [centerMenu, setCenterMenu] = useState<CenterMenu>(null);
-	/** 设置/面板坞保活：关下拉不卸 DOM，再开零冷启动 */
-	const [dropKeep, setDropKeep] = useState<"settings" | "panels" | null>(null);
-	useEffect(() => {
-		if (centerMenu) setDropKeep(centerMenu);
-	}, [centerMenu]);
+	/** 角色板块的当前页签：角色卡库 ⇄ 用户角色 */
+	const [rolesTab, setRolesTab] = useState<RolesTab>("card");
+	/** 抽屉上次停在哪一格（收起后仍记住，见落盘 effect 与 toggleDrawer） */
+	const lastSectionRef = useRef<PanelId | null>(initialPanels.lastSection);
 	/** /store 存档命名弹窗 */
 	const [storeOpen, setStoreOpen] = useState(false);
 	const [storeDefaultName, setStoreDefaultName] = useState("");
@@ -398,7 +386,8 @@ export default function App() {
 	 * 再开时不重复「读取中…」；每侧最多保留 5 个最近打开的面板。
 	 */
 	const [leftKeep, setLeftKeep] = useState<Array<PanelId | AgentPanelId>>(() =>
-		initialPanels.left ? [initialPanels.left] : [],
+		// 用 lastSection 而非 left：手机上抽屉不还原成开着，但「上次是哪一格」要记住
+		initialPanels.lastSection ? [initialPanels.lastSection] : [],
 	);
 	const [rightKeep, setRightKeep] = useState<PanelId[]>(() => (initialPanels.right ? [initialPanels.right] : []));
 	useEffect(() => {
@@ -440,7 +429,13 @@ export default function App() {
 	const atBottomRef = useRef(true);
 
 	useEffect(() => {
-		localStorage.setItem("liyuan.panels", JSON.stringify({ left: leftPanel, right: rightPanel }));
+		/**
+		 * 抽屉收起时不把 left 写成 null——那会抹掉「上次开的是哪一格」。
+		 * 记住格子、不记住开合：手机下次开应用先看见聊天，点开抽屉仍回到原来那格。
+		 */
+		const left = leftPanel ?? lastSectionRef.current;
+		if (leftPanel && DRAWER_PANELS.includes(leftPanel as PanelId)) lastSectionRef.current = leftPanel as PanelId;
+		localStorage.setItem("liyuan.panels", JSON.stringify({ left, right: rightPanel }));
 	}, [leftPanel, rightPanel]);
 
 	// 手机键盘顶起：用 visualViewport 把被挡高度写入 --kb-inset，避免输入框被盖住
@@ -1151,12 +1146,13 @@ export default function App() {
 		const t = window.setTimeout(() => {
 			// 预挂载常用面板进 keep（collapsed 侧栏仍保留 DOM）
 			setRightKeep((prev) => {
-				const next = [...RIGHT_PANELS];
+				const next: PanelId[] = ["sessions"];
 				for (const p of prev) if (!next.includes(p as PanelId)) next.push(p as PanelId);
 				return next.slice(0, 8) as PanelId[];
 			});
 			setLeftKeep((prev) => {
-				const base: Array<PanelId | AgentPanelId> = [...LEFT_PANELS, "sessions"];
+				// 角色最贵（封面）也最常开，首位预挂；其余轨位随用随挂
+				const base: Array<PanelId | AgentPanelId> = ["roles"];
 				for (const p of prev) if (!base.includes(p)) base.push(p);
 				return base.slice(0, 8);
 			});
@@ -1304,7 +1300,6 @@ export default function App() {
 			// 无参 /store → 弹窗起名（有参则直接命令）
 			openStoreModal();
 		} else if (/^\/line\s*$/i.test(typed) && pending.length === 0) {
-			setCenterMenu(null);
 			openLeft("worldline");
 		} else {
 			ws.send({ type: "prompt", text });
@@ -1512,37 +1507,46 @@ export default function App() {
 
 	// 面板开合：点同侧同钮=收起；开侧栏时收起中央下拉
 	const togglePanel = (id: PanelId) => {
-		setCenterMenu(null);
 		if (isFloatPanel(id)) {
 			// 悬浮窗自成一侧：开合只看它自己，不影响左右栏
 			setFloatPanel((cur) => (cur === id ? null : id));
 			return;
 		}
-		if (LEFT_OPENABLE.includes(id)) {
-			const next = leftPanel === id ? null : id;
-			openLeft(next);
-			if (next === "sessions") {
-				// 不清空：保留上次列表当场显示，后台静默重拉（回来替换）。
-				// 清成 null 会先渲染一帧「读取中…」再弹回 ⇒ 打开就闪一下。
-				ws.send({ type: "sessions" });
-			}
-		} else {
-			openRight(rightPanel === id ? null : id);
+		if (DRAWER_PANELS.includes(id)) {
+			openLeft(leftPanel === id ? null : id);
+			return;
+		}
+		const next = rightPanel === id ? null : id;
+		openRight(next);
+		if (next === "sessions") {
+			// 不清空：保留上次列表当场显示，后台静默重拉（回来替换）。
+			// 清成 null 会先渲染一帧「读取中…」再弹回 ⇒ 打开就闪一下。
+			ws.send({ type: "sessions" });
 		}
 	};
 
-	const toggleCenter = (menu: Exclude<CenterMenu, null>) => {
-		setCenterMenu((cur) => (cur === menu ? null : menu));
+	/**
+	 * 顶栏左键：开合抽屉。开的时候回到上次那一格（`leftKeep[0]`），首开落「角色」——
+	 * 用户点名的第一块，也是唯一带封面的一块，开箱即好看。
+	 */
+	const toggleDrawer = () => {
+		if (leftPanel) {
+			openLeft(null);
+			return;
+		}
+		const last =
+			lastSectionRef.current ?? (leftKeep.find((x) => DRAWER_PANELS.includes(x as PanelId)) as PanelId | undefined);
+		openLeft(last ?? "roles");
 	};
 
 	// 欢迎区 / 会话面板：列表为空时补拉（含新建会话后 hello 清空）
 	useEffect(() => {
 		if (conn !== "open") return;
-		if (welcome || (leftPanel === "sessions" && sessions === null)) {
+		if (welcome || (rightPanel === "sessions" && sessions === null)) {
 			ws.send({ type: "sessions" });
 		}
 		// eslint-disable-next-line react-hooks/exhaustive-deps -- ws.send 稳定；sessions 变 null 时要重拉
-	}, [conn, welcome, leftPanel, sessions]);
+	}, [conn, welcome, rightPanel, sessions]);
 
 	// 访问时间：未在欢迎态时心跳 + 离开页写入（久未访问 → 下次欢迎）
 	useEffect(() => {
@@ -1616,23 +1620,41 @@ export default function App() {
 			case "preset":
 				return <PresetPanel toast={pushToast} onAssistantPrompt={(text) => ws.send({ type: "assistant_prompt", text })} />;
 			case "powers":
-				return <PowersPanel toast={pushToast} />;
+				return (
+					<>
+						<PowersPanel toast={pushToast} />
+						{/* agent 自建面板的清单与导入导出：原顶栏「面板坞」下拉退场后落这里
+						    （它们是扩展能力跑出来的产物）。开合仍走悬浮球那套。 */}
+						<PanelDock
+							variant="dropdown"
+							panels={agentPanels}
+							charName={charName}
+							activeAgent={activeAgentName}
+							rosterActive={floatPanel === "roster"}
+							onOpenRoster={() => openLeft("roster")}
+							onOpen={(name) => openLeft(agentId(name))}
+							toast={pushToast}
+						/>
+					</>
+				);
 			case "settings":
 				return <SettingsPanel toast={pushToast} />;
-			case "card":
+			case "roles":
 				return (
-					<CardPanel
+					<RolesPanel
+						tab={rolesTab}
+						onTab={setRolesTab}
 						toast={pushToast}
+						onOpenStudio={() => setStudioOpen(true)}
+						active={leftPanel === "roles"}
 						onEnterChat={dismissWelcome}
 						onGoHome={showWelcome}
-						active={rightPanel === "card"}
 						onFrontChange={() => void refreshCardFront()}
+						headerTabs={true}
 					/>
 				);
 			case "lorebook":
 				return <LorebookPanel toast={pushToast} />;
-			case "persona":
-				return <PersonaPanel toast={pushToast} />;
 			case "roster":
 				return <RosterPanel state={worldState} toast={pushToast} />;
 			case "uploads":
@@ -1729,19 +1751,93 @@ export default function App() {
 			// 仅强制重挂载当前可见面板（表单草稿也会重置）；其它 keep 不动
 			setManualTick((t) => ({ ...t, [side]: t[side] + 1 }));
 		};
-		const wide = open && !agent && WIDE_PANELS.has(headId as PanelId);
 		return (
 			<aside
-				className={`side side-${side} ${wide ? "side-wide" : ""} ${open ? "" : "side-collapsed"}`}
+				className={`side side-${side} ${open ? "" : "side-collapsed"}`}
 				aria-hidden={!open}
 			>
+				{/* 左抽屉的轨：品牌在顶、板块在中、设置在底（PLAN-FRONTEND-V2 §三） */}
+				{side === "left" && (
+					<nav className="drawer-rail" aria-label="板块">
+						<button
+							type="button"
+							className="drawer-rail-brand"
+							title="欢迎页"
+							aria-label="打开欢迎页"
+							onClick={() => {
+								if (welcome) listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
+								else showWelcome();
+							}}
+						>
+							<BrandLogo className="brand-logo" size={26} />
+						</button>
+						<div className="drawer-rail-list">
+							{DRAWER_SECTIONS.map((sid) => {
+								const Ic = PANEL_ICON[sid];
+								return (
+									<button
+										key={sid}
+										type="button"
+										className={`drawer-rail-btn ${leftPanel === sid ? "active" : ""}`}
+										onClick={() => openLeft(sid)}
+										aria-label={PANEL_LABEL[sid]}
+										aria-current={leftPanel === sid}
+										data-tip={PANEL_LABEL[sid]}
+									>
+										<Ic size={19} />
+									</button>
+								);
+							})}
+						</div>
+						<button
+							type="button"
+							className={`drawer-rail-btn drawer-rail-foot ${leftPanel === "settings" ? "active" : ""}`}
+							onClick={() => openLeft("settings")}
+							aria-label="设置"
+							aria-current={leftPanel === "settings"}
+							data-tip="设置"
+						>
+							<IconSettings size={19} />
+						</button>
+					</nav>
+				)}
+								<div className="side-main">
 				{open && (
 					<div className="panel-head">
-						<span className="panel-head-title">
-							<HeadIcon size={15} />
-							{agent ? agent.name : PANEL_LABEL[headId as PanelId]}
-						</span>
+						{headId === "roles" ? (
+							<div className="panel-head-tabs" role="group" aria-label="角色视图">
+								<button
+									type="button"
+									className={`panel-head-tab ${rolesTab === "card" ? "active" : ""}`}
+									onClick={() => setRolesTab("card")}
+								>
+									角色卡库
+								</button>
+								<button
+									type="button"
+									className={`panel-head-tab ${rolesTab === "persona" ? "active" : ""}`}
+									onClick={() => setRolesTab("persona")}
+								>
+									用户角色
+								</button>
+							</div>
+						) : (
+							<span className="panel-head-title">
+								<HeadIcon size={15} />
+								{agent ? agent.name : PANEL_LABEL[headId as PanelId]}
+							</span>
+						)}
 						<span className="panel-head-actions">
+							{headId === "roles" && rolesTab === "card" && (
+								<button
+									className="icon-btn"
+									onClick={() => setStudioOpen(true)}
+									title="角色卡工坊"
+									aria-label="打开角色卡工坊"
+								>
+									<IconEdit size={15} />
+								</button>
+							)}
 							{refreshable && (
 								<button className="icon-btn" onClick={doRefresh} title="刷新" aria-label="刷新面板">
 									<IconRefresh size={15} />
@@ -1758,8 +1854,7 @@ export default function App() {
 						</span>
 					</div>
 				)}
-				{/* 保活：始终挂载；仅当前可见。收起侧栏时全体仍在 DOM */}
-				{ids.map((pid) => {
+{ids.map((pid) => {
 					const isAgent = pid.startsWith("agent:");
 					const ag = isAgent ? agentPanels.find((p) => agentId(p.name) === pid) : undefined;
 					if (isAgent && !ag) return null;
@@ -1798,6 +1893,7 @@ export default function App() {
 						</div>
 					);
 				})}
+				</div>
 			</aside>
 		);
 	};
@@ -1822,207 +1918,29 @@ export default function App() {
 		id: "connect" | "card" | "powers" | "sessions" | "lorebook" | "preset" | "persona",
 	) => {
 		// 不关欢迎区：面板与欢迎同屏
-		if (id === "card" || id === "lorebook" || id === "persona") {
-			openRight(id);
+		if (id === "sessions") {
+			openRight("sessions");
+			// 见 togglePanel：保留旧列表、后台重拉，避免「读取中…」闪一下
+			ws.send({ type: "sessions" });
+			return;
+		}
+		if (id === "card" || id === "persona") {
+			setRolesTab(id);
+			openLeft("roles");
 			return;
 		}
 		openLeft(id);
-		if (id === "sessions") {
-			// 见 togglePanel：保留旧列表、后台重拉，避免「读取中…」闪一下
-			ws.send({ type: "sessions" });
-		}
 	};
+
+	/** 顶栏主标题：会话名 → 首句 → 兜底。欢迎态固定「新对话」（与参考物同口径） */
+	const currentSession = sessions?.find((s) => s.current);
+	const sessionTitle = welcome
+		? "新对话"
+		: currentSession?.name || currentSession?.firstMessage?.slice(0, 40) || "新对话";
 
 	return (
 		<PanelRefreshContext.Provider value={agentTick}>
 		<div className="app">
-			<header className="topbar">
-				{/* 中 2：相对整条顶栏绝对居中 = 屏幕水平正中（不受左右留白不对称影响） */}
-				<div className="tb-slot tb-slot-center">
-					<button
-						type="button"
-						className={`tb-btn ${studioOpen ? "active" : ""}`}
-						onClick={() => setStudioOpen(true)}
-						aria-label="角色卡工坊"
-						data-tip="角色卡工坊"
-					>
-						<IconEdit size={18} />
-					</button>
-					<button
-						type="button"
-						className={`tb-btn ${centerMenu === "settings" ? "active" : ""}`}
-						onClick={() => toggleCenter("settings")}
-						aria-label="设置"
-						data-tip="设置"
-					>
-						<IconSettings size={18} />
-					</button>
-					<button
-						type="button"
-						className={`tb-btn ${centerMenu === "panels" || activeAgentName || floatPanel === "roster" ? "active" : ""}`}
-						onClick={() => toggleCenter("panels")}
-						aria-label="面板"
-						data-tip="面板"
-					>
-						<IconDock size={18} />
-						{agentPanels.length > 0 && <span className="dock-count">{agentPanels.length}</span>}
-					</button>
-				</div>
-				<div className="topbar-gutter topbar-gutter-left">
-					<button
-						type="button"
-						className="brand brand-btn"
-						title="欢迎页"
-						aria-label="打开欢迎页"
-						onClick={() => {
-							if (welcome) {
-								// 已在欢迎：滚到顶
-								listRef.current?.scrollTo({ top: 0, behavior: "smooth" });
-							} else {
-								showWelcome();
-							}
-						}}
-					>
-						<BrandLogo className="brand-logo" size={28} />
-						<span className="brand-text">梨园</span>
-					</button>
-				</div>
-				{/* 左 4 / 右 4：贴对话框左右缘；中间留白给绝对定位的中 2 */}
-				<div className="tb-groups tb-groups-tri">
-					<div className="tb-slot tb-slot-left">
-						{LEFT_PANELS.map((id) => {
-							const Ic = PANEL_ICON[id];
-							return (
-								<button
-									key={id}
-									type="button"
-									className={`tb-btn ${leftPanel === id ? "active" : ""}`}
-									onClick={() => togglePanel(id)}
-									aria-label={PANEL_LABEL[id]}
-									data-tip={PANEL_LABEL[id]}
-								>
-									<Ic size={18} />
-								</button>
-							);
-						})}
-					</div>
-					<div className="tb-center-spacer" aria-hidden="true" />
-					<div className="tb-slot tb-slot-right">
-						{RIGHT_PANELS.map((id) => {
-							const Ic = PANEL_ICON[id];
-							return (
-								<button
-									key={id}
-									type="button"
-									className={`tb-btn ${rightPanel === id ? "active" : ""}`}
-									onClick={() => togglePanel(id)}
-									aria-label={PANEL_LABEL[id]}
-									data-tip={PANEL_LABEL[id]}
-								>
-									<Ic size={18} />
-								</button>
-							);
-						})}
-					</div>
-				</div>
-				<div className="topbar-gutter topbar-gutter-right">
-					<span className="char" title={charName}>
-						{charName}
-					</span>
-					<div className="bell-wrap">
-						<button
-							type="button"
-							className={`tb-btn ${bellOpen ? "active" : ""}`}
-							onClick={() => setBellOpen((v) => !v)}
-							aria-label="告警记录"
-							data-tip="告警"
-						>
-							<IconBell size={17} />
-							{warnings.length > 0 && <span className="bell-badge">{warnings.length > 9 ? "9+" : warnings.length}</span>}
-						</button>
-						{bellOpen && (
-							<div className="bell-pop">
-								{warnings.length === 0 && <div className="sp-empty">暂无告警（旁侧审计的警告会留在这里）</div>}
-								{warnings.map((w, i) => (
-									<div key={i} className={`sp-warn ${w.level === "error" ? "sp-warn-error" : ""}`}>
-										<span className="sp-warn-time">{new Date(w.ts).toLocaleTimeString()}</span>
-										{w.text}
-									</div>
-								))}
-								{warnings.length > 0 && (
-									<button
-										type="button"
-										className="act"
-										onClick={() => {
-											setWarnings([]);
-											setBellOpen(false);
-										}}
-									>
-										清空
-									</button>
-								)}
-							</div>
-						)}
-					</div>
-					{busy ? <span className="busy">生成中</span> : <span className={`dot dot-${conn}`} title={conn} />}
-				</div>
-			</header>
-
-			{(centerMenu || dropKeep) && (
-				<div className={`tb-drop-root ${centerMenu ? "" : "tb-drop-collapsed"}`} aria-hidden={!centerMenu}>
-					{centerMenu && (
-						<button type="button" className="tb-drop-scrim" aria-label="关闭" onClick={() => setCenterMenu(null)} />
-					)}
-					<div
-						className="tb-drop"
-						role="dialog"
-						aria-modal={!!centerMenu}
-						aria-label={centerMenu === "settings" || dropKeep === "settings" ? "设置" : "面板"}
-						style={centerMenu ? undefined : { display: "none" }}
-					>
-						{centerMenu && (
-							<div className="tb-drop-head">
-								<span className="tb-drop-title">{centerMenu === "settings" ? "设置" : "面板"}</span>
-								<button type="button" className="icon-btn" title="收起" aria-label="收起" onClick={() => setCenterMenu(null)}>
-									<IconClose size={16} />
-								</button>
-							</div>
-						)}
-						<div className="tb-drop-body">
-							{/* 两套内容保活，仅显示当前 */}
-							{(dropKeep === "settings" || centerMenu === "settings") && (
-								<div
-									hidden={centerMenu !== "settings"}
-									style={centerMenu === "settings" ? undefined : { display: "none" }}
-								>
-									<SettingsPanel toast={pushToast} />
-								</div>
-							)}
-							{(dropKeep === "panels" || centerMenu === "panels") && (
-								<div hidden={centerMenu !== "panels"} style={centerMenu === "panels" ? undefined : { display: "none" }}>
-									<PanelDock
-										variant="dropdown"
-										panels={agentPanels}
-										charName={charName}
-										activeAgent={activeAgentName}
-										rosterActive={floatPanel === "roster"}
-										onOpenRoster={() => {
-											openLeft("roster");
-											setCenterMenu(null);
-										}}
-										onOpen={(name) => {
-											openLeft(agentId(name));
-											setCenterMenu(null);
-										}}
-										toast={pushToast}
-									/>
-								</div>
-							)}
-						</div>
-					</div>
-				</div>
-			)}
-
 			{/*
 			  * 页面级作者脚本宿主：卡/预设声明的悬浮球等常驻 UI 在此起跑，产物挂到父页 body。
 			  * 帧自身零尺寸不可见，放在这里只为跟着 App 的生命周期走（换卡即换帧、卸载即收 DOM）。
@@ -2047,10 +1965,122 @@ export default function App() {
 				<UpdateModal update={updateInfo} onClose={() => setUpdateModalOpen(false)} onToast={pushToast} />
 			)}
 
-			<div className="layout">
-				{sidePanel(leftPanel, "left")}
+			{/* 左侧栏：在桌面为平级满高分栏（与主工作区同图层分立）；移动端为浮层抽屉 */}
+			{sidePanel(leftPanel, "left")}
 
-				<main className="center">
+			<div className="workspace">
+				<header className="topbar">
+				{/* 左一键：开合左抽屉（PLAN-FRONTEND-V2 §四） */}
+				<div className="tb-side tb-side-left">
+					<button
+						type="button"
+						className={`tb-btn ${leftPanel ? "active" : ""}`}
+						onClick={toggleDrawer}
+						aria-label="板块"
+						aria-expanded={!!leftPanel}
+						data-tip="板块"
+					>
+						<IconPanelLeft size={18} />
+					</button>
+				</div>
+				{/*
+				  * 中：会话名 + 一行状态。卡名（原右 gutter）、扮演/写卡（原输入框上方那条）、
+				  * 忙闲与连接态（原右 gutter）三样合并到这里，右 gutter 整个退场。
+				  */}
+				<div className="tb-title">
+					<span className="tb-title-main" title={sessionTitle}>
+						{sessionTitle}
+					</span>
+					<span className="tb-title-sub">
+						<span className="tb-sub-card" title={charName}>
+							{charName}
+						</span>
+						<span className="tb-sub-sep" aria-hidden="true">
+							·
+						</span>
+						<button
+							type="button"
+							className="tb-sub-mode"
+							disabled={busy || conn !== "open"}
+							title="切换扮演 / 写卡"
+							onClick={() =>
+								ws.send({ type: "conversation_mode", mode: conversationMode === "roleplay" ? "authoring" : "roleplay" })
+							}
+						>
+							{conversationMode === "authoring" ? "写卡" : "扮演"}
+						</button>
+						<span className="tb-sub-sep" aria-hidden="true">
+							·
+						</span>
+						<span className={`tb-sub-state tb-sub-state-${conn === "open" ? (busy ? "busy" : "idle") : conn}`}>
+							{conn === "open" ? (busy ? "生成中" : "空闲") : conn === "connecting" ? "连接中" : "已断开"}
+						</span>
+						{warnings.length > 0 && (
+							<button
+								type="button"
+								className={`tb-warn ${bellOpen ? "active" : ""}`}
+								onClick={() => setBellOpen((v) => !v)}
+								aria-label={`告警 ${warnings.length} 条`}
+								title={`告警 ${warnings.length} 条`}
+							>
+								<IconBell size={13} />
+								{warnings.length > 9 ? "9+" : warnings.length}
+							</button>
+						)}
+					</span>
+					{bellOpen && (
+						<div className="bell-pop">
+							{warnings.length === 0 && <div className="sp-empty">暂无告警（旁侧审计的警告会留在这里）</div>}
+							{warnings.map((w, i) => (
+								<div key={i} className={`sp-warn ${w.level === "error" ? "sp-warn-error" : ""}`}>
+									<span className="sp-warn-time">{new Date(w.ts).toLocaleTimeString()}</span>
+									{w.text}
+								</div>
+							))}
+							{warnings.length > 0 && (
+								<button
+									type="button"
+									className="act"
+									onClick={() => {
+										setWarnings([]);
+										setBellOpen(false);
+									}}
+								>
+									清空
+								</button>
+							)}
+						</div>
+					)}
+				</div>
+				{/* 右两键：新建 / 会话树 */}
+				<div className="tb-side tb-side-right">
+					<button
+						type="button"
+						className="tb-btn"
+						onClick={() => {
+							ws.send({ type: "new" });
+							dismissWelcome();
+						}}
+						disabled={conn !== "open"}
+						aria-label="新建对话"
+						data-tip="新建"
+					>
+						<IconNewChat size={18} />
+					</button>
+					<button
+						type="button"
+						className={`tb-btn ${rightPanel === "sessions" ? "active" : ""}`}
+						onClick={() => togglePanel("sessions")}
+						aria-label="会话树"
+						data-tip="会话树"
+					>
+						<IconSessions size={18} />
+					</button>
+				</div>
+			</header>
+
+				<div className="layout">
+					<main className="center">
 					<div className="list" ref={listRef} onScroll={onScroll} onPointerDown={() => composerTools && setComposerTools(false)}>
 						<div className="flow">
 							{/* 欢迎区嵌在聊天流（学 ST）：顶栏/侧栏/输入框仍可用 */}
@@ -2067,7 +2097,7 @@ export default function App() {
 									onNew={newSessionFromWelcome}
 									onBrowseAll={() => {
 										dismissWelcome();
-										openLeft("sessions");
+										openRight("sessions");
 										// 保留旧列表、后台重拉（不清 null，避免闪「读取中…」）
 										ws.send({ type: "sessions" });
 									}}
@@ -2236,11 +2266,11 @@ export default function App() {
 									{(streamText || streamThinking) && <span className="caret" />}
 								</div>
 							)}
-								{draftWorkspace && <DraftPanel workspace={draftWorkspace} busy={busy}
+								{!welcome && draftWorkspace && <DraftPanel workspace={draftWorkspace} busy={busy}
 									revisions={draftHistory?.id === draftWorkspace.id ? draftHistory.revisions : undefined}
 									onInspect={() => ws.send({ type: "draft_history", id: draftWorkspace.id })}
 									onRestore={(version) => ws.send({ type: "draft_restore", id: draftWorkspace.id, version, expectedVersion: draftWorkspace.version })} />}
-								{activeChoice && (
+								{!welcome && activeChoice && (
 								<ChoiceCard
 									choice={activeChoice}
 									onReply={(r) => {
@@ -2272,14 +2302,7 @@ export default function App() {
 						<div className="composer-shell status-above">
 							{conversationMode === "roleplay" && <StatusStrip state={worldState} toast={pushToast} />}
 						</div>
-						<div className="composer-shell conversation-mode-bar">
-							<div className="conversation-mode-switch" role="group" aria-label="会话模式">
-								{(["roleplay", "authoring"] as const).map((mode) => <button key={mode} type="button"
-									aria-pressed={conversationMode === mode} disabled={busy || conn !== "open"}
-									onClick={() => ws.send({ type: "conversation_mode", mode })}>{mode === "roleplay" ? "扮演" : "写卡"}</button>)}
-							</div>
-							{conversationMode === "authoring" && <span>在当前对话中制作、修改卡片</span>}
-						</div>
+						{/* 扮演/写卡的开关已上移到顶栏副标题（PLAN-FRONTEND-V2 §四），此处不再重复一条 */}
 						{(pending.length > 0 || uploading) && (
 							<div className="composer-shell attach-row">
 								{pending.map((p) => (
@@ -2334,19 +2357,7 @@ export default function App() {
 								<IconPlus size={18} />
 							</button>
 							<div className={`composer-tools ${composerTools ? "open" : ""}`}>
-								<button
-									type="button"
-									className={`dock-btn ${leftPanel === "sessions" ? "active" : ""}`}
-									title="会话"
-									aria-label="会话"
-									onClick={() => {
-										togglePanel("sessions");
-										setComposerTools(false);
-									}}
-								>
-									<IconSessions size={18} />
-									<span className="composer-tool-label">会话</span>
-								</button>
+								{/* 会话已上移到顶栏右键（会话树），此处不再重复 */}
 								<button
 									type="button"
 									className={`dock-btn ${floatPanel === "worldline" ? "active" : ""}`}
@@ -2535,6 +2546,7 @@ export default function App() {
 
 				{sidePanel(rightPanel, "right")}
 			</div>
+			</div>
 			{floatPanel &&
 				(() => {
 					// agent 自建面板与内置面板共用同一个壳，只是标题/图标/刷新与内容各自不同
@@ -2600,7 +2612,6 @@ export default function App() {
 					})),
 				]}
 				onPick={(id) => {
-					setCenterMenu(null);
 					setFloatPanel((cur) => (cur === id ? null : (id as PanelId | AgentPanelId)));
 				}}
 			/>

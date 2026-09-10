@@ -27,6 +27,25 @@ function Icon({ size = 18, children, ...rest }: IconProps & { children: React.Re
 	);
 }
 
+/* ── 顶栏三键（PLAN-FRONTEND-V2 §四） ── */
+
+/** 左抽屉开合：方框带一道竖线，通用的「侧栏」记号 */
+export const IconPanelLeft = (p: IconProps) => (
+	<Icon {...p}>
+		<rect width="18" height="18" x="3" y="3" rx="2" />
+		<path d="M9 3v18" />
+	</Icon>
+);
+
+/** 新建对话：气泡里一个加号 */
+export const IconNewChat = (p: IconProps) => (
+	<Icon {...p}>
+		<path d="M21 11.5a8.38 8.38 0 0 1-.9 3.8 8.5 8.5 0 0 1-7.6 4.7 8.38 8.38 0 0 1-3.8-.9L3 21l1.9-5.7a8.38 8.38 0 0 1-.9-3.8 8.5 8.5 0 0 1 4.7-7.6 8.38 8.38 0 0 1 3.8-.9h.5a8.48 8.48 0 0 1 8 8v.5Z" />
+		<path d="M12.5 8.5v6" />
+		<path d="M9.5 11.5h6" />
+	</Icon>
+);
+
 /* ── 顶栏面板入口 ── */
 
 export const IconSessions = (p: IconProps) => (

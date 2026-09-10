@@ -74,6 +74,21 @@ function EditableSection({
 	const [editing, setEditing] = useState(false);
 	const [draft, setDraft] = useState("");
 	if (!text.trim() && !editable) return null;
+	if (!text.trim() && !editing) {
+		return (
+			<button
+				type="button"
+				className="card-empty-field-btn"
+				onClick={() => {
+					setDraft("");
+					setEditing(true);
+				}}
+				title={`填写${title}`}
+			>
+				＋ {title}
+			</button>
+		);
+	}
 	return (
 		<details className="legacy-group" open={open || editing}>
 			<summary>
@@ -402,15 +417,17 @@ function CardDetail({
 								)}
 							</div>
 						</div>
-						<div className="panel-row" style={{ marginBottom: 10, flexWrap: "wrap", gap: 8 }}>
-							<button type="button" className="drawer-btn" disabled={busy} onClick={() => doExport("json")}>
-								导出 JSON
-							</button>
-							<button type="button" className="drawer-btn" disabled={busy} onClick={() => doExport("png")}>
-								导出 PNG
-							</button>
-							<button type="button" className="drawer-btn card-delete-btn" disabled={busy} onClick={onDelete}>
-								删除角色卡
+						<div className="panel-row card-actions-row" style={{ marginBottom: 12, display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+							<div className="card-export-group" style={{ display: "inline-flex", gap: 6 }}>
+								<button type="button" className="drawer-btn" disabled={busy} onClick={() => doExport("json")}>
+									导出 JSON
+								</button>
+								<button type="button" className="drawer-btn" disabled={busy} onClick={() => doExport("png")}>
+									导出 PNG
+								</button>
+							</div>
+							<button type="button" className="drawer-btn card-delete-btn" disabled={busy} onClick={onDelete} title="删除角色卡">
+								删除
 							</button>
 						</div>
 						{front?.hasSkin && (

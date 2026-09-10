@@ -140,6 +140,8 @@ export async function apiGet<T>(path: string, opts?: { bypassCache?: boolean }):
 /** 按面板 id 清相关 GET 缓存（手动刷新按钮用，避免 remount 后 peek 仍是旧数据） */
 export function apiGetCacheClearForPanel(panelId: string): void {
 	const map: Record<string, string[]> = {
+		// 角色板块＝卡库 + 用户角色两页签，刷新一次清两边
+		roles: ["/api/card", "/api/cards", "/api/cardfront", "/api/personas", "/api/config"],
 		card: ["/api/card", "/api/cards", "/api/cardfront"],
 		lorebook: ["/api/lorebook", "/api/lorebooks", "/api/config"],
 		persona: ["/api/personas", "/api/config"],
