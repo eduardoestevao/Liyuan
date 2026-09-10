@@ -981,7 +981,7 @@ export default function App() {
 					const sel = leftPanelRef.current;
 					const fresh = next.find((p) => !prev.some((q) => q.name === p.name));
 					if (fresh) {
-						openLeft(agentId(fresh.name));
+						openRight(agentId(fresh.name));
 					} else {
 						const updated = next.find((p) => {
 							const q = prev.find((x) => x.name === p.name);
@@ -1307,7 +1307,7 @@ export default function App() {
 			// 无参 /store → 弹窗起名（有参则直接命令）
 			openStoreModal();
 		} else if (/^\/line\s*$/i.test(typed) && pending.length === 0) {
-			openLeft("worldline");
+			toggleRight("worldline");
 		} else {
 			ws.send({ type: "prompt", text });
 		}
@@ -1597,7 +1597,7 @@ export default function App() {
 						}}
 						onCompact={() => ws.send({ type: "compact" })}
 						onWorldline={() => {
-							openLeft("worldline");
+							toggleRight("worldline");
 						}}
 						onStore={openStoreModal}
 						onRefresh={() => {
@@ -1631,8 +1631,8 @@ export default function App() {
 							charName={charName}
 							activeAgent={activeAgentName}
 							rosterActive={rightPanel === "roster"}
-							onOpenRoster={() => openLeft("roster")}
-							onOpen={(name) => openLeft(agentId(name))}
+							onOpenRoster={() => toggleRight("roster")}
+							onOpen={(name) => toggleRight(agentId(name))}
 							toast={pushToast}
 						/>
 					</>
