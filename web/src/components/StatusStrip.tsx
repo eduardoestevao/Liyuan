@@ -74,7 +74,7 @@ export function Editable({
 	);
 }
 
-const isEmptyState = (s: WorldState) =>
+export const isEmptyState = (s: WorldState) =>
 	!s.time &&
 	!s.location &&
 	Object.keys(s.characters).length === 0 &&
@@ -122,13 +122,17 @@ export function SessionStatsBar({ stats }: { stats: WireStats | null }) {
 	);
 }
 
-/** 输入框上方：生效的世界状态（一行摘要，展开可编辑） */
+/** 输入框上方：生效的世界状态（一行摘要，点击展开右侧状态栏） */
 export function StatusStrip({
 	state,
 	toast,
+	onOpenPanel,
+	active = false,
 }: {
 	state: WorldState | null;
 	toast: (level: "info" | "warning" | "error", text: string) => void;
+	onOpenPanel?: () => void;
+	active?: boolean;
 }) {
 	const [open, setOpen] = useState(false);
 	const { run } = useAction(toast);
@@ -149,13 +153,22 @@ export function StatusStrip({
 		? "世界状态（随对话自动记录）"
 		: [state.time, state.location].filter(Boolean).join(" · ") || "世界状态";
 
+	const isOpen = onOpenPanel ? active : open;
+	const handleClick = () => {
+		if (onOpenPanel) {
+			onOpenPanel();
+		} else {
+			setOpen((v) => !v);
+		}
+	};
+
 	return (
-		<div className={`status-strip ${open ? "open" : ""}`}>
-			<button type="button" className="status-strip-bar" onClick={() => setOpen((v) => !v)} aria-expanded={open}>
+		<div className={`status-strip ${isOpen ? "open" : ""}`}>
+			<button type="button" className="status-strip-bar" onClick={handleClick} aria-expanded={isOpen}>
 				<span className={`status-strip-text ${empty ? "faint" : ""}`}>{summary}</span>
-				<IconChevronDown size={14} className={`strip-caret ${open ? "up" : ""}`} />
+				<IconChevronDown size={14} className={`strip-caret ${isOpen ? "up" : ""}`} />
 			</button>
-			{open && (
+			{!onOpenPanel && open && (
 				<div className="status-card">
 					<div className="kv">
 						<span className="kv-k">时间</span>

@@ -12,7 +12,7 @@ import {
 	IconSessions,
 } from "./icons.tsx";
 
-const COLLAPSED = 3;
+const COLLAPSED = 5;
 /** 项目仓库（主页顶栏图标入口） */
 const GITHUB_URL = "https://github.com/weidu12123/Liyuan";
 
@@ -130,16 +130,15 @@ export function WelcomePanel({
 				</div>
 			</header>
 
-			{/* ── 统一会话大卡片：整合成一个大框，杜绝一条条长条散落 ── */}
+			{/* ── 统一会话大卡片：有会话记录时展示，无会话时完全留白让输入框居中 ── */}
+			{ready && shown.length > 0 && (
 				<section className="welcome-recent-card" aria-label="最近会话">
 					<div className="welcome-recent-head">
 						<div className="welcome-recent-title-group">
 							<span className="welcome-section-title">最近会话</span>
-							{ready && (
-								<span className="welcome-recent-meta-pill">
-									{list.length} 会话 · {totalMsgs} 消息
-								</span>
-							)}
+							<span className="welcome-recent-meta-pill">
+								{list.length} 会话 · {totalMsgs} 消息
+							</span>
 						</div>
 						<div className="welcome-recent-actions">
 							<span className={`welcome-stat-dot dot-${conn}`} title={conn} />
@@ -150,20 +149,7 @@ export function WelcomePanel({
 						</div>
 					</div>
 
-					{!ready && <div className="welcome-hint-line">连接后台中…</div>}
-					{ready && sessions === null && <div className="welcome-hint-line">读取会话…</div>}
-					{ready && sessions !== null && list.length === 0 && (
-						<div className="welcome-empty-chats">
-							<BrandLogo size={40} className="welcome-empty-logo" />
-							<p>还没有会话</p>
-							<button type="button" className="welcome-cta welcome-cta-primary" onClick={onNew}>
-								新建第一场戏
-							</button>
-						</div>
-					)}
-
-					{ready && shown.length > 0 && (
-						<ul className="welcome-chat-list">
+					<ul className="welcome-chat-list">
 							{shown.map((s) => (
 								<li key={s.path}>
 									<button
@@ -203,10 +189,10 @@ export function WelcomePanel({
 									</button>
 								</li>
 							))}
-						</ul>
-					)}
+					</ul>
 				</section>
-			</div>
+			)}
+		</div>
 	);
 }
 

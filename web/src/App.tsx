@@ -37,6 +37,7 @@ import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { FloatWindow } from "./components/FloatWindow.tsx";
 import { CardStudio } from "./components/CardStudio.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
+import { StatusPanel } from "./components/StatusPanel.tsx";
 import { UpdateModal, UpdateToast } from "./components/UpdateFlow.tsx";
 import { PanelRefreshContext } from "./components/kit.tsx";
 import { registerLiyuanToast, registerTavernChatBridge } from "./tavernShim.ts";
@@ -63,6 +64,7 @@ import {
 	IconSend,
 	IconSessions,
 	IconSettings,
+	IconStatus,
 	IconStop,
 	IconUploads,
 	IconWorldline,
@@ -156,7 +158,8 @@ type PanelId =
 	| "lorebook"
 	| "roster"
 	| "uploads"
-	| "assistant";
+	| "assistant"
+	| "status";
 
 /** agent 自建面板的右栏选择 id（柱 2）：`agent:` + 面板名，页签随 panels 帧动态长出 */
 type AgentPanelId = `agent:${string}`;
@@ -171,23 +174,18 @@ const agentId = (name: string): AgentPanelId => `agent:${name}`;
 const DRAWER_SECTIONS: PanelId[] = ["roles", "connect", "preset", "lorebook", "powers", "uploads"];
 /** 抽屉可开全集＝轨位 + 轨底的设置 */
 const DRAWER_PANELS: PanelId[] = [...DRAWER_SECTIONS, "settings"];
-/** 右栏可开面板：会话树（顶栏右键）+ 助手（发送钮右侧） */
-const RIGHT_OPENABLE: PanelId[] = ["sessions", "assistant"];
+/** 右栏可开面板：状态栏 / 世界线 / 登场名录 / 会话树 / 助手 / agent 面板（桌面端平立分栏，会话左移） */
+const RIGHT_OPENABLE: PanelId[] = ["sessions", "assistant", "status", "worldline", "roster"];
 
 /**
- * 悬浮窗形态：侧栏那个窄条盛不下的面板。
- * 侧栏宽度是布局算出来的（`.side` = max(300px, (100% - 聊天列) / 2 - 26px)），改不动。
- * 世界线的分叉图每多一层存档就宽 112px，撞死在窄栏里；登场名录是四张表在窄栏里
- * 只能纵向排队、名字还被截断——两者要的不一样（一个要大画布、一个要横向铺开），
- * 但都要「比侧栏宽」。这类面板改用悬浮窗（可拖可缩放、位置记忆），入口与开合逻辑不变。
+ * 悬浮窗形态：保留为兜底，但在桌面端所有右侧面板统一走平立分栏，彻底消灭遮挡式弹窗。
  */
-const FLOAT_PANELS = new Set<PanelId>(["worldline", "roster"]);
+const FLOAT_PANELS = new Set<PanelId>([]);
 /**
- * 悬浮窗形态判据。agent 自建面板一律算在内——它们正是「梨园自己的自定义面板」，
- * 和世界线/名录一起归悬浮球那套入口，不再挤在侧栏窄条里。
+ * 悬浮窗形态判据。
  */
 const isFloatPanel = (id: PanelId | AgentPanelId | null): id is PanelId | AgentPanelId =>
-	id != null && (FLOAT_PANELS.has(id as PanelId) || id.startsWith("agent:"));
+	id != null && FLOAT_PANELS.has(id as PanelId);
 
 const PANEL_LABEL: Record<PanelId, string> = {
 	sessions: "会话",
@@ -201,6 +199,7 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	roster: "登场名录",
 	uploads: "资料",
 	assistant: "助手",
+	status: "状态栏",
 };
 
 /** 图标承载识别，文字进 tooltip/aria-label */
@@ -216,6 +215,7 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 	roster: IconRoster,
 	uploads: IconUploads,
 	assistant: IconAssistant,
+	status: IconStatus,
 };
 
 function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null; lastSection: PanelId | null } {
@@ -305,7 +305,7 @@ export default function App() {
 	// 面板系统
 	const initialPanels = useMemo(loadPanelPrefs, []);
 	const [leftPanel, setLeftPanel] = useState<PanelId | AgentPanelId | null>(initialPanels.left);
-	const [rightPanel, setRightPanel] = useState<PanelId | null>(initialPanels.right);
+	const [rightPanel, setRightPanel] = useState<PanelId | AgentPanelId | null>(initialPanels.right);
 	/** 悬浮窗当前显示的面板（与左右栏并列的第三种形态，同时只开一个） */
 	const [floatPanel, setFloatPanel] = useState<PanelId | AgentPanelId | null>(null);
 	const [studioOpen, setStudioOpen] = useState(false);
@@ -338,11 +338,18 @@ export default function App() {
 		if (mobileRef.current && next !== null) setRightPanel(null);
 		setLeftPanel(next);
 	}, []);
-	/** 开右栏：手机上先关左栏 */
-	const openRight = useCallback((next: PanelId | null) => {
+	/** 开右栏：手机上先关左栏（桌面端平立分栏，会话左移） */
+	const openRight = useCallback((next: PanelId | AgentPanelId | null) => {
 		if (mobileRef.current && next !== null) setLeftPanel(null);
 		setRightPanel(next);
 	}, []);
+	/** 切换右栏面板（点同钮收起，点异钮切换） */
+	const toggleRight = useCallback(
+		(id: PanelId | AgentPanelId) => {
+			openRight(rightPanelRef.current === id ? null : id);
+		},
+		[openRight],
+	);
 	/** 角色板块的当前页签：角色卡库 ⇄ 用户角色 */
 	const [rolesTab, setRolesTab] = useState<RolesTab>("card");
 	/** 抽屉上次停在哪一格（收起后仍记住，见落盘 effect 与 toggleDrawer） */
@@ -389,7 +396,7 @@ export default function App() {
 		// 用 lastSection 而非 left：手机上抽屉不还原成开着，但「上次是哪一格」要记住
 		initialPanels.lastSection ? [initialPanels.lastSection] : [],
 	);
-	const [rightKeep, setRightKeep] = useState<PanelId[]>(() => (initialPanels.right ? [initialPanels.right] : []));
+	const [rightKeep, setRightKeep] = useState<Array<PanelId | AgentPanelId>>(() => (initialPanels.right ? [initialPanels.right] : []));
 	useEffect(() => {
 		if (!leftPanel) return;
 		setLeftKeep((prev) => [leftPanel, ...prev.filter((x) => x !== leftPanel)].slice(0, 5));
@@ -415,7 +422,7 @@ export default function App() {
 	const asstStreamThinkingRef = useRef("");
 	const asstActsRef = useRef<WireActivity[]>([]);
 	const asstAbortingRef = useRef(false);
-	const rightPanelRef = useRef<PanelId | null>(initialPanels.right);
+	const rightPanelRef = useRef<PanelId | AgentPanelId | null>(initialPanels.right);
 	// onFrame 闭包内读最新面板/左栏选择（useCallback 依赖冻结，走 ref 防陈旧）
 	const agentPanelsRef = useRef<RpPanel[]>([]);
 	const leftPanelRef = useRef<PanelId | AgentPanelId | null>(initialPanels.left);
@@ -1505,22 +1512,15 @@ export default function App() {
 		pushToast("info", copyText(text) ? "已复制正文" : "复制失败（浏览器限制）");
 	};
 
-	// 面板开合：点同侧同钮=收起；开侧栏时收起中央下拉
-	const togglePanel = (id: PanelId) => {
-		if (isFloatPanel(id)) {
-			// 悬浮窗自成一侧：开合只看它自己，不影响左右栏
-			setFloatPanel((cur) => (cur === id ? null : id));
-			return;
-		}
-		if (DRAWER_PANELS.includes(id)) {
+	// 面板开合：点同侧同钮=收起；桌面端右侧面板统一走平立分栏（会话左移）
+	const togglePanel = (id: PanelId | AgentPanelId) => {
+		if (DRAWER_PANELS.includes(id as PanelId)) {
 			openLeft(leftPanel === id ? null : id);
 			return;
 		}
-		const next = rightPanel === id ? null : id;
-		openRight(next);
-		if (next === "sessions") {
+		toggleRight(id);
+		if (id === "sessions" && rightPanel !== "sessions") {
 			// 不清空：保留上次列表当场显示，后台静默重拉（回来替换）。
-			// 清成 null 会先渲染一帧「读取中…」再弹回 ⇒ 打开就闪一下。
 			ws.send({ type: "sessions" });
 		}
 	};
@@ -1630,7 +1630,7 @@ export default function App() {
 							panels={agentPanels}
 							charName={charName}
 							activeAgent={activeAgentName}
-							rosterActive={floatPanel === "roster"}
+							rosterActive={rightPanel === "roster"}
 							onOpenRoster={() => openLeft("roster")}
 							onOpen={(name) => openLeft(agentId(name))}
 							toast={pushToast}
@@ -1657,6 +1657,8 @@ export default function App() {
 				return <LorebookPanel toast={pushToast} />;
 			case "roster":
 				return <RosterPanel state={worldState} toast={pushToast} />;
+			case "status":
+				return <StatusPanel state={worldState} toast={pushToast} />;
 			case "uploads":
 				return (
 					<UploadsPanel
@@ -2080,7 +2082,7 @@ export default function App() {
 			</header>
 
 				<div className="layout">
-					<main className="center">
+					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""}`}>
 					<div className="list" ref={listRef} onScroll={onScroll} onPointerDown={() => composerTools && setComposerTools(false)}>
 						<div className="flow">
 							{/* 欢迎区嵌在聊天流（学 ST）：顶栏/侧栏/输入框仍可用 */}
@@ -2300,7 +2302,14 @@ export default function App() {
 					>
 						{/* 生效世界状态：输入框上方，与输入同宽一排 */}
 						<div className="composer-shell status-above">
-							{conversationMode === "roleplay" && <StatusStrip state={worldState} toast={pushToast} />}
+							{conversationMode === "roleplay" && (
+								<StatusStrip
+									state={worldState}
+									toast={pushToast}
+									active={rightPanel === "status"}
+									onOpenPanel={() => toggleRight("status")}
+								/>
+							)}
 						</div>
 						{/* 扮演/写卡的开关已上移到顶栏副标题（PLAN-FRONTEND-V2 §四），此处不再重复一条 */}
 						{(pending.length > 0 || uploading) && (
@@ -2360,11 +2369,11 @@ export default function App() {
 								{/* 会话已上移到顶栏右键（会话树），此处不再重复 */}
 								<button
 									type="button"
-									className={`dock-btn ${floatPanel === "worldline" ? "active" : ""}`}
+									className={`dock-btn ${rightPanel === "worldline" ? "active" : ""}`}
 									title="世界线"
 									aria-label="世界线"
 									onClick={() => {
-										togglePanel("worldline");
+										toggleRight("worldline");
 										setComposerTools(false);
 									}}
 								>
@@ -2373,11 +2382,11 @@ export default function App() {
 								</button>
 								<button
 									type="button"
-									className={`dock-btn ${floatPanel === "roster" ? "active" : ""}`}
+									className={`dock-btn ${rightPanel === "roster" ? "active" : ""}`}
 									title="登场名录"
 									aria-label="登场名录"
 									onClick={() => {
-										togglePanel("roster");
+										toggleRight("roster");
 										setComposerTools(false);
 									}}
 								>
@@ -2595,24 +2604,33 @@ export default function App() {
 			  */}
 			<PanelOrb
 				entries={[
-					...[...FLOAT_PANELS].map((id) => ({
-						id,
-						label: PANEL_LABEL[id],
-						icon: (() => {
-							const Icon = PANEL_ICON[id];
-							return <Icon size={14} />;
-						})(),
-						active: floatPanel === id,
-					})),
+					{
+						id: "status",
+						label: "状态栏",
+						icon: <IconStatus size={14} />,
+						active: rightPanel === "status",
+					},
+					{
+						id: "worldline",
+						label: "世界线",
+						icon: <IconWorldline size={14} />,
+						active: rightPanel === "worldline",
+					},
+					{
+						id: "roster",
+						label: "登场名录",
+						icon: <IconRoster size={14} />,
+						active: rightPanel === "roster",
+					},
 					...agentPanels.map((p) => ({
 						id: agentId(p.name),
 						label: p.name,
 						icon: <IconDock size={14} />,
-						active: floatPanel === agentId(p.name),
+						active: rightPanel === agentId(p.name),
 					})),
 				]}
 				onPick={(id) => {
-					setFloatPanel((cur) => (cur === id ? null : (id as PanelId | AgentPanelId)));
+					toggleRight(id as PanelId | AgentPanelId);
 				}}
 			/>
 			{storeOpen && (
