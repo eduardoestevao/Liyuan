@@ -75,11 +75,18 @@
   - 11 问 COT 零字面执行（`【问题】`×0）但仪式税照收——地板靠「反复确认合规」生效，不靠模板。
   - 文风两边都在卡侧；状态栏（卡所有）两边照常；乙探索工具反而更多（memory_search＋lorebook_search）。
   - **判据四项全拉开：拆的路活，函数法留备胎。**
-- 2026-09-12：**声明步骤产品化完成**（窄拆全链路进产品）：
-  - `src/preset-declare.ts`（纯函数）：站点闭集（identity/writing/thinking/draft/output/memory/wrapper，各带去向数据表）、`buildDeclarePrompt`（编译全文分段＋站别判据，数据加工通道非 RP 送模面）、`parseDeclareResponse`（宽容解析：未知站别落 writing、漏声明段落落 writing）、`translatePresetWithDeclaration`（分流：identity→APPEND_SYSTEM.md、writing→AGENTS.md 板块、机制站→停用、wrapper→跳过、末条 assistant 预填照 8/23 丢弃）、`upsertSection`（板块原位替换）。
+- 2026-09-12：**声明步骤产品化完成**（窄拆全链路进产品，提交 `4d02c01`；⚠ 次日用户定案 UI 改回直用，见下条——端点与纯函数保留）：
   - REST：`POST /api/presets/declare`（调 `restHost.runSideText` 旁路模型声明，草稿落本卡 `.liyuan/预设声明-*.json`，失败零落盘）；`GET /api/presets/declaration`（回读）；`POST /api/presets/translate` 加 `declaration` 分支（先查两处冲突再动笔；无档案的卡用投影打底＋板块，刀3 文件模式语义不破；overwrite 时板块替换不叠加）。不带 declaration 的旧整份转译原样保留。
   - 前端：预设库每份预设加「声明」按钮 → 内联过目清单（站别下拉可改、汇总计数）→「按声明转译」（内联卡片非弹窗，守前端观感规则）；旧「转译」按钮确认语改「整份收入，不剥离机制」。
   - 验证：`test/preset-declare.test.ts` 5/5；全量 794 项 790 过 4 红——4 红全部为实卡环境性既有失败（stash 排除法坐实与本改动无关：本机卡池下 stash 前后同样红）；前端 typecheck＋生产构建过；faux 模型 e2e（隔离端口＋假 openai-completions）：声明 29 段落草稿、GET 回读、分流落盘三产物、冲突保护（APPEND 已存在→拒；板块已存在→拒；overwrite→板块原位替换不叠加）全部通过，证据 `.liyuan-artifacts/preset-declare-e2e/`。
   - 真模型声明（DeepSeek 余额耗尽未跑）：充值后对任意预设点「声明」即验。
-- 顺带发现（与预设无关）：node 24.14.1 `fs.cpSync` 遇非 ASCII **目录**路径原生崩溃 0xC0000409（中文文件名无恙）；`src/backup.ts:365` 的备份路径会踩中，待修。
+- 2026-09-12（深夜·用户定案修正）：**预设库 UI 改回直用**——「声明/转译」按钮退场，改为
+  **装载**（设为活动预设，config.preset）＋**保存**（改动写回预设文件）＋**卸载**（停用，文件保留）；
+  编辑器条目带来源标注（预设块 / 梨园材料槽），不标注就没法判断哪条能动。窄拆的声明/分流
+  REST 端点与纯函数保留在后台（机制已验证，甲乙数据在案），不再从界面进入。
+  **剥离开销的正确入口回到预设自身的块开关**——与窄拆法原定的数据通道（prompt_order[].enabled）
+  一致；用户在编辑器里手动停用机制段即得甲态。REST 冒烟七步验证装载→编辑→保存→卸载全链路。
+- 2026-09-12（深夜）：cpSync 崩溃修复——`src/fs-copy.ts` copyPathSafe 替换 backup 恢复两处与
+  卡迁移跨盘搬移一处；中文目录回归测试入库（`test/fs-copy.test.ts`）。提交 `ea42259`。
+- 顺带发现（与预设无关）：node 24.14.1 `fs.cpSync` 遇非 ASCII **目录**路径原生崩溃 0xC0000409（中文文件名无恙）——已修（上条）。
 
