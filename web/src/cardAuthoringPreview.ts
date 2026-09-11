@@ -5,6 +5,7 @@ import { buildScriptHostDoc, AUTHOR_SCRIPTS_GLOBAL, SCRIPT_HOST_SANDBOX } from "
 import { splitRichContentParts } from "./richContentParts.ts";
 import { rulesAtDepth } from "../../src/cardfront.ts";
 import { applyMacros } from "../../src/card-macros.ts";
+import { mountMvuPanel } from "../../src/mvu.ts";
 
 /** 外层用 data: 的独立 opaque origin；子 srcdoc 可同源访问预览壳，无法访问真实应用。 */
 export const CARD_PREVIEW_SANDBOX = "allow-scripts allow-same-origin";
@@ -37,9 +38,11 @@ export function buildCardAuthoringPreview(
 	variables: Record<string, unknown>,
 	token: string,
 ): string {
-	// 与正式显示路径同源：宏 → 显示规则 → HTML 分块 → 消息帧。
+	// 与正式显示路径同源：宏 → MVU 挂载点补挂 → 显示规则 → HTML 分块 → 消息帧。
 	const text = applyMacros(message, { charName: data.front.charName, userName: data.front.userName });
-	const parts = splitRichContentParts(text, { ...data.front, rules: rulesAtDepth(data.front.rules, 0) }).map((p, i) =>
+	// MVU 卡：正式运行时由 postprocess 在最新一条正文补挂占位点；预览同一条判据，让状态栏模板真的被触发
+	const mounted = mountMvuPanel(text, data.front.rules);
+	const parts = splitRichContentParts(mounted, { ...data.front, rules: rulesAtDepth(data.front.rules, 0) }).map((p, i) =>
 		p.kind === "text" ? p : {
 			kind: "html", doc: diagnostics(buildSrcDoc(p.html, p.scripts, true, 640), variables, "消息 " + (i + 1)),
 			height: looksLikeProgramApp(p.html, p.scripts) ? 640 : 240,

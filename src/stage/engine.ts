@@ -14,7 +14,7 @@ import { DraftStore, draftDirectory, listDrafts } from "./draft-store.ts";
 import { applyDraftRevisions, DRAFT_REVISION_TYPE } from "./draft-projection.ts";
 import { PreviousDraftEditor } from "./previous-draft.ts";
 import { projectToolContext } from "./context.ts";
-import { authoringHistory, authoringRequestIds, contextText, conversationMode, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE, isConversationMode, type ConversationMode, type ContextMessage } from "../conversation-mode.ts";
+import { authoringHistory, authoringRequestIds, contextText, conversationMode, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE, isConversationMode, roleplayHistory, type ConversationMode, type ContextMessage } from "../conversation-mode.ts";
 import { authoringTools, authoringSystemPrompt, runAuthoringTool, AUTHORING_NATIVE_TOOLS, CONVERSATION_MODE_TOOL } from "./authoring.ts";
 import type { CardDeps } from "../tools/card.ts";
 import type { GateInput } from "../tools/gate.ts";
@@ -769,7 +769,15 @@ export class StageEngine {
 			...(userText !== null ? [{ type: "message", message: nowMsg(userText) }] : []),
 		] as BranchEntryLike[];
 		const state = stateFromBranch(branch);
-		const { history, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
+		const { history: storyHistory, lastNarrativeText, summary } = rebuildHistory(branch, materials.promptRules);
+		// 无缝模式（9/11 定案）：维护性的输入/输出在扮演上下文里也可见——带标记的外围消息，
+		// 不进 story 流（rebuildHistory 内的 storyBranch 已滤），持久化隔离不变。
+		// 位置：插在剧情流**之前**——末端 user 消息是「本拍输入挂在数据块之后」的装配锚点，
+		// 维护段排在它后面会被并进末端注入块（9/11 实弹：RETURN_REQUEST 被世界状态块吞掉）。
+		const maintenance = authoringTurn ? [] : roleplayHistory(sm.getBranch() as BranchEntryLike[]).map((m) => ({
+			role: m.role as "user" | "assistant", text: (m.content as Array<{ type?: string; text?: string }>)[0]?.text ?? "",
+		})).filter((m) => m.text);
+		const history = [...maintenance, ...storyHistory];
 		const lastUserText = userText ?? contextText([...branch].reverse().find((e) => e.type === "message" && e.message?.role === "user")?.message?.content);
 		if (!lastUserText.trim()) {
 			ev.onNotify?.("error", "没有可开演的用户输入。");
@@ -779,7 +787,8 @@ export class StageEngine {
 		const languageMismatch = lastNarrativeText
 			? detectsLanguageMismatch(lastNarrativeText, config.language)
 			: false;
-		const windowText = history
+		// 关键词扫描只看剧情流：维护文本不该触发世界书绿灯
+		const windowText = storyHistory
 			.slice(-config.scanDepth)
 			.map((m) => m.text)
 			.join("\n");

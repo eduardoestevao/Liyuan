@@ -522,28 +522,39 @@ const stateOrPanels = (kind: "state" | "panels") => (kind === "state" ? stateFil
  * （世界书 `[initvar]` 优先，没有就退到卡自带脚本里 Zod schema 的 prefault），使状态栏面板与
  * 作者悬浮球在开局就有数据（之后由场记每拍推动）。按 cardPath 记忆卡料，避免每次读盘。
  */
-let mvuBookCache: { path: string; entries: Array<{ comment?: string; content?: string }> } | null = null;
+/** 卡文件指纹：(mtime, size)。写卡应用、面板改卡、手工替换都会变——按路径 memo 会在应用后读到旧料（9/11 实弹：状态栏应用后挂载点永不补）。 */
+const cardFingerprint = (abs: string): string => {
+	try {
+		const st = statSync(abs);
+		return `${st.mtimeMs}:${st.size}`;
+	} catch {
+		return "missing";
+	}
+};
+let mvuBookCache: { key: string; entries: Array<{ comment?: string; content?: string }> } | null = null;
 const cardBookForMvu = (): Array<{ comment?: string; content?: string }> => {
 	if (!cardPath) return [];
-	if (mvuBookCache?.path === cardPath) return mvuBookCache.entries;
+	const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
+	const key = cardPath + "@" + cardFingerprint(abs);
+	if (mvuBookCache?.key === key) return mvuBookCache.entries;
 	try {
-		const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
 		const entries = loadCardFile(abs).book.map((e) => ({ comment: e.comment, content: e.content }));
-		mvuBookCache = { path: cardPath, entries };
+		mvuBookCache = { key, entries };
 		return entries;
 	} catch {
 		return [];
 	}
 };
-/** 卡自带运行时脚本（初值第二形式的住处）；与卡书同一套 memo 纪律 */
-let mvuScriptCache: { path: string; scripts: Array<{ content?: string }> } | null = null;
+/** 卡自带运行时脚本（初值第二形式的住处）；与卡书同一套 memo 纪律（指纹随卡文件失效） */
+let mvuScriptCache: { key: string; scripts: Array<{ content?: string }> } | null = null;
 const cardScriptsForMvu = (): Array<{ content?: string }> => {
 	if (!cardPath) return [];
-	if (mvuScriptCache?.path === cardPath) return mvuScriptCache.scripts;
+	const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
+	const key = cardPath + "@" + cardFingerprint(abs);
+	if (mvuScriptCache?.key === key) return mvuScriptCache.scripts;
 	try {
-		const abs = isAbsolute(cardPath) ? cardPath : join(cwd, cardPath);
 		const scripts = extractAuthorScripts(readCardRawJson(abs).raw, "card");
-		mvuScriptCache = { path: cardPath, scripts };
+		mvuScriptCache = { key, scripts };
 		return scripts;
 	} catch {
 		return [];
@@ -571,12 +582,13 @@ const currentState = (): WorldState => {
  * 归梨园管，梨园就要连 MVU 插件「回复后追加面板挂载点」那一步也一起干（src/mvu.ts）。
  * 按 cardPath memo：显示侧每条消息都要问一次，别重复解 YAML / 扫脚本。
  */
-let mvuOwnedCache: { path: string; owned: boolean } | null = null;
+let mvuOwnedCache: { key: string; owned: boolean } | null = null;
 const hasMvuTree = (): boolean => {
 	if (!cardPath) return false;
-	if (mvuOwnedCache?.path === cardPath) return mvuOwnedCache.owned;
+	const key = cardPath + "@" + cardFingerprint(isAbsolute(cardPath) ? cardPath : join(cwd, cardPath));
+	if (mvuOwnedCache?.key === key) return mvuOwnedCache.owned;
 	const owned = findInitVar(cardBookForMvu()) !== null || findSchemaDefaults(cardScriptsForMvu()) !== null;
-	mvuOwnedCache = { path: cardPath, owned };
+	mvuOwnedCache = { key, owned };
 	return owned;
 };
 

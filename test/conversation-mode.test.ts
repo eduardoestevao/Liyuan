@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { authoringHistory, conversationMode, displayConversationBranch, storyBranch, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE } from "../src/conversation-mode.ts";
+import { authoringHistory, conversationMode, displayConversationBranch, roleplayHistory, storyBranch, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE } from "../src/conversation-mode.ts";
 import { rebuildHistory, stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
 import { planCompaction, serializeForSummary } from "../src/stage/compact.ts";
 import { previousReply } from "../src/stage/previous-draft.ts";
@@ -81,4 +81,24 @@ test("回复变体跨过持久化过程节点；分支里没有最终回复时�
 	const variants = listReplyVariants(entries, "u", "a");
 	assert.equal(variants.length, 2);
 	assert.ok(variants.some(v => v.rootId === "p1" && v.leafId === "a"));
+});
+
+test("无缝模式：扮演上下文可见维护输入与输出（带标记），剧情流与持久化隔离不变", () => {
+	const branch = [msg("u1", "user", "去山门。"), msg("a1", "assistant", "她点头。"),
+		msg("u2", "user", "状态栏没有输出", "authoring"), msg("a2", "assistant", "已修复，preview 全绿。", "authoring"),
+		mode("m1", "roleplay"), msg("u3", "user", "继续走。")];
+	const maintenance = roleplayHistory(branch);
+	assert.equal(maintenance.length, 2, "维护输入与输出各一条");
+	assert.match(maintenance[0].content![0]!.text, /【写卡维护】.*状态栏没有输出/s);
+	assert.match(maintenance[1].content![0]!.text, /【写卡维护】.*已修复/s);
+	// 剧情流与账本完全不含维护内容
+	assert.doesNotMatch(serializeForSummary(branch, "我", "她"), /状态栏|修复/);
+	assert.deepEqual(rebuildHistory(branch).history.map(m => m.text), ["去山门。", "她点头。", "继续走。"]);
+	// 工具过程不进扮演上下文（只有文本层可见）
+	const call = { role: "assistant", content: [{ type: "toolCall", id: "c1", name: "card_project", arguments: {} }] };
+	const withTools = [...branch.slice(0, 3), raw("r1", "u2", call), ...branch.slice(3)];
+	assert.equal(roleplayHistory(withTools).length, 2, "工具调用与回执不重复出现");
+	// 空输出的维护轮不产生空消息
+	const empty = [msg("u4", "user", "检查一下", "authoring"), msg("a4", "assistant", "", "authoring")];
+	assert.equal(roleplayHistory(empty).length, 1);
 });

@@ -678,11 +678,18 @@ test("写卡模式：同一原生循环自动切入、改资源并应用；切�
 		reg.setResponses([
 			(ctx) => {
 				assert.match(ctx.systemPrompt, /她身穿青色道袍/);
-				assert.doesNotMatch(JSON.stringify(ctx.messages), /AUTHOR_REQUEST_SENTINEL|AUTHOR_REPORT_SENTINEL|NATIVE_EDIT_SENTINEL|RETURN_REQUEST_SENTINEL|card_project|authoring-test/);
+				// 无缝模式（9/11 定案）：维护文本以带标记的外围消息可见，工具过程与文件名不可见
+				assert.match(JSON.stringify(ctx.messages), /【写卡维护】[\s\S]*AUTHOR_REQUEST_SENTINEL/);
+				assert.match(JSON.stringify(ctx.messages), /【写卡维护】[\s\S]*AUTHOR_REPORT_SENTINEL/);
+				assert.doesNotMatch(JSON.stringify(ctx.messages), /NATIVE_EDIT_SENTINEL|card_project|authoring-test/);
 				assert.ok(!ctx.tools.some((t: any) => t.name === "write" || t.name === "card_project"));
 				return fauxAssistantMessage("她推开山门，请你进来。");
 			},
-			(ctx) => { assert.doesNotMatch(JSON.stringify(ctx.messages), /AUTHOR_|NATIVE_EDIT|RETURN_REQUEST/); return fauxScribeEmpty(); },
+			(ctx) => {
+				assert.match(JSON.stringify(ctx.messages), /【写卡维护】[\s\S]*RETURN_REQUEST_SENTINEL/);
+				assert.doesNotMatch(JSON.stringify(ctx.messages), /NATIVE_EDIT_SENTINEL/);
+				return fauxScribeEmpty();
+			},
 		]);
 		await engine.performTurn("继续向山门走。");
 		assert.ok(!ends.at(-1).error);
@@ -820,7 +827,8 @@ test("写卡模式：中途停止保留已流出的维护记录，重开续演�
 		assert.match(JSON.stringify(authoringHistory(reopened.getBranch())), /STOP_AUTHOR_REPORT/);
 		assert.deepEqual(rebuildHistory(reopened.getBranch()).history, initialStory);
 		const resumed = await makePiEngine(piDeps(cwd, reopened, reg.getModel("faux-rp")));
-		reg.setResponses([(ctx) => { assert.doesNotMatch(JSON.stringify(ctx.messages), /STOP_AUTHOR/); return fauxAssistantMessage("她仍在山门旁等你。"); }, fauxScribeEmpty()]);
+		// 无缝模式：维护文本带标记可见，但不进剧情流与场记
+		reg.setResponses([(ctx) => { assert.match(JSON.stringify(ctx.messages), /【写卡维护】[\s\S]*STOP_AUTHOR_REQUEST/); return fauxAssistantMessage("她仍在山门旁等你。"); }, fauxScribeEmpty()]);
 		await resumed.performTurn("走到山门前。");
 		assert.equal(reg.getPendingResponseCount(), 0);
 		assert.match(rebuildHistory(reopened.getBranch()).history.at(-1)!.text, /山门旁/);

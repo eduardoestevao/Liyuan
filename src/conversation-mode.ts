@@ -67,6 +67,39 @@ export function storyBranch<T extends ConversationEntry>(branch: T[]): T[] {
 	});
 }
 
+/**
+ * 维护记录在上下文里的形态（2026-09-11 用户定案「无缝切换」）：扮演模式也看得见维护性的
+ * 输入与输出，但作为带标记的外围消息，不与剧情混淆——可见性归上下文，持久化归账本（storyBranch
+ * 仍然整体滤掉它们，场记/摘要/记忆/向量库不变）。
+ */
+export const AUTHORING_CONTEXT_TAG = "【写卡维护】";
+
+/** 扮演上下文：story 流 ＋ 维护性 user/assistant 文本（加标记、剥工具过程）。 */
+export function roleplayHistory<T extends ConversationEntry>(branch: T[]): ContextMessage[] {
+	const out: ContextMessage[] = [];
+	const add = (role: "user" | "assistant", text: string) => {
+		const clean = text.trim();
+		if (!clean) return;
+		out.push(role === "user"
+			? { role: "user", content: [{ type: "text", text: `${AUTHORING_CONTEXT_TAG}（用户对写卡 agent 说）
+${clean}` }], timestamp: 0 }
+			: { role: "assistant", content: [{ type: "text", text: `${AUTHORING_CONTEXT_TAG}（写卡 agent 的答复）
+${clean}` }], timestamp: 0, stopReason: "stop" });
+	};
+	const hidden = authoringRequestIds(branch);
+	let authoring = false;
+	for (const e of branch) {
+		if (e.type === "message" && e.message) {
+			const m = e.message as ContextMessage;
+			if (m.role === "user") authoring = hidden.has(e.id ?? "") || messageMode(m) === "authoring";
+			if (!authoring && messageMode(m) !== "authoring") continue; // 剧情消息走 story 流，这里只补维护段
+			if (m.role === "user") add("user", contextText(m.content));
+			else if (m.role === "assistant") add("assistant", contextText(m.content));
+		}
+	}
+	return out;
+}
+
 export function processRecord(entry: ConversationEntry): ProcessRecord | undefined {
 	if (entry.type !== "custom" || entry.customType !== CONVERSATION_PROCESS_TYPE) return undefined;
 	const d = entry.data as ProcessRecord | undefined;
