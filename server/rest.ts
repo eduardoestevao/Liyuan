@@ -137,16 +137,6 @@ import {
 	translatePresetToRules,
 	translateReport,
 } from "../src/user-rules.ts";
-import {
-	assembleForDeclare,
-	buildDeclarePrompt,
-	declarePieces,
-	declareTranslateReport,
-	parseDeclareResponse,
-	stripPresetEntries,
-	translatePresetWithDeclaration,
-	type PresetDeclaration,
-} from "../src/preset-declare.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
 import { cardProjectOperation, inspectCardProject, previewCardProject, readCardCover } from "../src/card-authoring.ts";
 import type { CardPreviewReport } from "./card-preview.ts";
@@ -2878,86 +2868,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
-			/**
-			 * 预设窄拆·声明（PLAN-PRESET-HARNESS-STRIP §三）：编译后全文交当前会话模型
-			 * 一次性声明站点（拿不准落 writing、破限落 identity），草稿落本卡 .liyuan/，
-			 * 过目后经 translate 的 declaration 分支分流落盘。失败不写任何东西。
-			 */
-			case "POST /api/presets/declare": {
-				if (refuseWhileStreaming()) return true;
-				const body = JSON.parse(await readBody(req)) as { file?: string; reasoning?: string };
-				const file = validatePresetPath(body.file ?? "");
-				const abs = resolvePath(host.cwd, file);
-				if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);
-				const config = loadConfig(host.cwd);
-				const card = loadCardFile(resolvePath(host.cwd, config.card));
-				const doc = loadPresetDoc(JSON.parse(readFileSync(abs, "utf8")), presetNameFromFile(file));
-				const r = assembleForDeclare(doc, { charName: card.name, userName: config.userName });
-				const pieces = declarePieces(r);
-				if (pieces.length === 0) throw new Error("该预设编译后没有可声明的分段");
-				const prompt = buildDeclarePrompt(pieces, { preset: doc.name, card: card.name });
-				const cur = host.listModels().current;
-				const resp = await host.runSideText(prompt.systemPrompt, prompt.userText, {
-					maxTokens: 16384,
-					reasoning: typeof body.reasoning === "string" && body.reasoning.trim() ? body.reasoning.trim() : "low",
-					signal: AbortSignal.timeout(600_000),
-				});
-				if (typeof resp !== "string") throw new Error(`声明模型调用失败：${resp.error}`);
-				const parsed = parseDeclareResponse(resp, pieces);
-				const declaration: PresetDeclaration = {
-					version: 1,
-					preset: doc.name,
-					card: card.name,
-					createdAt: new Date().toISOString(),
-					model: cur ? `${cur.provider}/${cur.id}` : undefined,
-					entries: parsed.entries,
-				};
-				const cardDir = dirname(resolvePath(host.cwd, config.card));
-				const declAbs = join(cardDir, ".liyuan", `预设声明-${presetSlug(doc.name)}.json`);
-				mkdirSync(dirname(declAbs), { recursive: true });
-				writeFileSync(declAbs, JSON.stringify(declaration, null, "\t"), "utf8");
-				sendJson(res, 200, {
-					ok: true,
-					declaration,
-					pieces: pieces.length,
-					declared: parsed.declared,
-					defaulted: parsed.defaulted.length,
-					path: declAbs,
-				});
-				return true;
-			}
-			/** 声明草稿回读（过目界面刷新用） */
-			case "GET /api/presets/declaration": {
-				const file = validatePresetPath(query.get("file") ?? "");
-				const config = loadConfig(host.cwd);
-				const cardDir = dirname(resolvePath(host.cwd, config.card));
-				const abs = join(cardDir, ".liyuan", `预设声明-${presetSlug(presetNameFromFile(file))}.json`);
-				if (!existsSync(abs)) {
-					sendJson(res, 200, { exists: false });
-					return true;
-				}
-				try {
-					const declaration = JSON.parse(readFileSync(abs, "utf8")) as PresetDeclaration;
-					sendJson(res, 200, { exists: true, declaration });
-				} catch {
-					sendJson(res, 200, { exists: false, error: "声明草稿不可读" });
-				}
-				return true;
-			}
-			/**
-			 * 预设 → 规矩文件（一次性转译，刀2）：预设作者的文本块落本卡 APPEND_SYSTEM.md，
-			 * marker 槽位跳过（卡内容的归位归装配/AGENTS.md 链），samplers 迁 config，
-			 * 逐块去向落转译报告；config.preset 清空——预设从此只是留档的原文。
-			 * 带 declaration（窄拆过目后的声明）则分流落盘：身份→APPEND_SYSTEM.md、
-			 * 写作规则→AGENTS.md 板块、机制模拟停用（PLAN-PRESET-HARNESS-STRIP）。
-			 */
 			case "POST /api/presets/translate": {
 				if (refuseWhileStreaming()) return true;
 				const body = JSON.parse(await readBody(req)) as {
-					file?: string;
-					overwrite?: boolean;
-					declaration?: PresetDeclaration;
-				};
+					file?: string; overwrite?: boolean };
 				const file = validatePresetPath(body.file ?? "");
 				const abs = resolvePath(host.cwd, file);
 				if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);
@@ -2965,70 +2879,6 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const cardDir = dirname(resolvePath(host.cwd, config.card));
 				const card = loadCardFile(resolvePath(host.cwd, config.card));
 				const doc = loadPresetDoc(JSON.parse(readFileSync(abs, "utf8")), presetNameFromFile(file));
-
-				if (body.declaration && Array.isArray(body.declaration.entries)) {
-					const r = translatePresetWithDeclaration(doc, body.declaration, {
-						charName: card.name,
-						userName: config.userName,
-					});
-
-					// 条目级合并：先剥掉旧的预设条目（含注释态与旧式「转译自」），再追加新的——重转译幂等
-					const appendPath = cardRulesPath(cardDir);
-					const appendBase = existsSync(appendPath) ? stripPresetEntries(readFileSync(appendPath, "utf8")) : "";
-					let appendNext = appendBase;
-					if (r.appendMarkdown) {
-						appendNext = appendBase ? `${appendBase}\n\n${r.appendMarkdown}` : r.appendMarkdown;
-					}
-					if (appendNext !== appendBase || !existsSync(appendPath)) {
-						mkdirSync(cardDir, { recursive: true });
-						writeFileSync(appendPath, appendNext ? `${appendNext.trim()}\n` : "", "utf8");
-					}
-
-					const agentsAbs = cardAgentsPath(cardDir);
-					let agentsMode: "appended" | "replaced" | "created" | "skipped" = "skipped";
-					if (r.agentsSection) {
-						let agentsBase: string;
-						if (existsSync(agentsAbs)) {
-							const raw = readFileSync(agentsAbs, "utf8");
-							const stripped = stripPresetEntries(raw);
-							agentsMode = stripped !== raw ? "replaced" : "appended";
-							agentsBase = stripped ? `${stripped}\n\n${r.agentsSection}` : r.agentsSection;
-						} else {
-							// 无档案的卡：投影打底＋条目——档案一落盘卡即进文件模式（刀3），
-							// 投影就是原本要喂的内容，行为不丢
-							const materials = loadStageMaterials(host.cwd);
-							agentsBase =
-								projectCardToAgents(materials.card, constantLoreOf(materials), config) + r.agentsSection;
-							agentsMode = "created";
-						}
-						writeFileSync(agentsAbs, agentsBase.trim() + "\n", "utf8");
-					}
-
-					const reportAbs = join(cardDir, ".liyuan", `转译报告-${presetSlug(presetNameFromFile(file))}.md`);
-					mkdirSync(dirname(reportAbs), { recursive: true });
-					writeFileSync(reportAbs, declareTranslateReport(doc, r, body.declaration, file), "utf8");
-
-					const next = applyConfigPatch(config, {
-						preset: null,
-						...(Object.keys(r.samplers).length > 0 ? { samplers: r.samplers } : { samplers: null }),
-					});
-					writeJsonWithBackup(configPath(host.cwd), next);
-					clearPresetOverride(host.cwd);
-					await host.softRefreshConfig();
-					sendJson(res, 200, {
-						ok: true,
-						narrow: true,
-						appendChars: r.appendMarkdown.length,
-						agentsChars: r.agentsSection.length,
-						agentsMode,
-						activeAppend: r.lines.filter((l) => l.action === "append" || l.action === "agents").length,
-						commented: r.lines.filter((l) => l.action === "disabled" || l.action === "off-option").length,
-						lines: r.lines.length,
-						samplersMoved: Object.keys(r.samplers).length,
-						report: reportAbs,
-					});
-					return true;
-				}
 
 				const r = translatePresetToRules(doc, { charName: card.name, userName: config.userName });
 
