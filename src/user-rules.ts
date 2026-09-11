@@ -140,7 +140,7 @@ export function translatePresetToRules(doc: PresetDoc, opts: { charName: string;
 		pieces.map((p) => p.text.trim()).filter((t) => t.length > 0);
 
 	const parts: string[] = [
-		`# 我的规矩（这张卡）`,
+		`# 预设提示词`,
 		``,
 		`> 转译自预设「${doc.name}」· ${fmtDate()}。原文存档在预设库，可重新转译；本文件是你的，随便改。`,
 	];

@@ -143,8 +143,8 @@ import {
 	declarePieces,
 	declareTranslateReport,
 	parseDeclareResponse,
+	stripPresetEntries,
 	translatePresetWithDeclaration,
-	upsertSection,
 	type PresetDeclaration,
 } from "../src/preset-declare.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
@@ -2972,44 +2972,36 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 						userName: config.userName,
 					});
 
-					// 先查两处冲突再动笔（不落半套产物）
-					const appendTarget = cardRulesPath(cardDir);
-					const agentsAbs = cardAgentsPath(cardDir);
-					const appendConflict = r.appendMarkdown && existsSync(appendTarget) && body.overwrite !== true;
-					let agentsBase: string | null = null;
-					let agentsMode: "appended" | "replaced" | "created" | "skipped" = "skipped";
-					if (r.agentsSection) {
-						if (existsSync(agentsAbs)) {
-							agentsBase = readFileSync(agentsAbs, "utf8");
-							if (agentsBase.includes(r.agentsSectionTitle) && body.overwrite !== true) {
-								sendJson(res, 200, { ok: false, exists: true, which: "agents", path: agentsAbs });
-								return true;
-							}
-							agentsMode = agentsBase.includes(r.agentsSectionTitle) ? "replaced" : "appended";
-						} else {
-							agentsMode = "created";
-						}
+					// 条目级合并：先剥掉旧的预设条目（含注释态与旧式「转译自」），再追加新的——重转译幂等
+					const appendPath = cardRulesPath(cardDir);
+					const appendBase = existsSync(appendPath) ? stripPresetEntries(readFileSync(appendPath, "utf8")) : "";
+					let appendNext = appendBase;
+					if (r.appendMarkdown) {
+						appendNext = appendBase ? `${appendBase}\n\n${r.appendMarkdown}` : r.appendMarkdown;
 					}
-					if (appendConflict) {
-						sendJson(res, 200, { ok: false, exists: true, which: "append", path: appendTarget });
-						return true;
+					if (appendNext !== appendBase || !existsSync(appendPath)) {
+						mkdirSync(cardDir, { recursive: true });
+						writeFileSync(appendPath, appendNext ? `${appendNext.trim()}\n` : "", "utf8");
 					}
 
-					if (r.appendMarkdown) {
-						mkdirSync(cardDir, { recursive: true });
-						writeFileSync(appendTarget, r.appendMarkdown, "utf8");
-					}
+					const agentsAbs = cardAgentsPath(cardDir);
+					let agentsMode: "appended" | "replaced" | "created" | "skipped" = "skipped";
 					if (r.agentsSection) {
-						if (agentsMode === "created") {
-							// 无档案的卡：投影打底＋板块——档案一落盘卡即进文件模式（刀3），
+						let agentsBase: string;
+						if (existsSync(agentsAbs)) {
+							const raw = readFileSync(agentsAbs, "utf8");
+							const stripped = stripPresetEntries(raw);
+							agentsMode = stripped !== raw ? "replaced" : "appended";
+							agentsBase = stripped ? `${stripped}\n\n${r.agentsSection}` : r.agentsSection;
+						} else {
+							// 无档案的卡：投影打底＋条目——档案一落盘卡即进文件模式（刀3），
 							// 投影就是原本要喂的内容，行为不丢
 							const materials = loadStageMaterials(host.cwd);
 							agentsBase =
 								projectCardToAgents(materials.card, constantLoreOf(materials), config) + r.agentsSection;
-						} else {
-							agentsBase = upsertSection(agentsBase!, r.agentsSectionTitle, r.agentsSection);
+							agentsMode = "created";
 						}
-						writeFileSync(agentsAbs, agentsBase, "utf8");
+						writeFileSync(agentsAbs, agentsBase.trim() + "\n", "utf8");
 					}
 
 					const reportAbs = join(cardDir, ".liyuan", `转译报告-${presetSlug(presetNameFromFile(file))}.md`);
@@ -3029,7 +3021,8 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 						appendChars: r.appendMarkdown.length,
 						agentsChars: r.agentsSection.length,
 						agentsMode,
-						disabled: r.lines.filter((l) => l.action === "disabled").length,
+						activeAppend: r.lines.filter((l) => l.action === "append" || l.action === "agents").length,
+						commented: r.lines.filter((l) => l.action === "disabled" || l.action === "off-option").length,
 						lines: r.lines.length,
 						samplersMoved: Object.keys(r.samplers).length,
 						report: reportAbs,

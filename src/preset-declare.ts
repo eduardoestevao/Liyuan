@@ -11,6 +11,8 @@
  * 纯函数 + 零模块级可变状态（jiti 二象性红线），可单测。
  */
 import { assemble, type AssembledPiece, type AssembleResult } from "./preset-assemble.ts";
+import { createMacroEnv, evalPresetMacros } from "./preset-macro.ts";
+import { deleteEntry, parsePromptEntries } from "./prompt-entries.ts";
 import type { PresetDoc } from "./preset-doc.ts";
 
 /** 站点闭集：每个站点带标签与去向（数据表，UI 与报告共用） */
@@ -74,14 +76,6 @@ export const assembleForDeclare = (
 	opts: { charName: string; userName: string },
 ): AssembleResult => assemble(doc.entries, opts);
 
-/** 在 AGENTS.md 全文里原位替换（或追加）一个 `## ` 板块；返回新全文 */
-export function upsertSection(base: string, title: string, section: string): string {
-	const at = base.indexOf(title);
-	if (at < 0) return base.replace(/\s*$/, "\n") + section;
-	const after = base.indexOf("\n## ", at + title.length);
-	const next = after < 0 ? base.length : after + 1; // 保留下一个标题前的换行
-	return base.slice(0, at) + section.replace(/\s*$/, "\n") + base.slice(next);
-}
 
 // ---------------- 声明提示词（数据加工通道，非 RP 送模面） ----------------
 
@@ -199,6 +193,16 @@ export function normalizeDeclaration(
 
 // ---------------- 按声明分流转译 ----------------
 
+/**
+ * 转译产物形态（2026-09-12 用户定案）：**逐块条目，不合并**。
+ * - 每个预设块一条 `## 块名（预设）` 条目（标题后缀＝来源标注，条目视图剥掉显示、挂徽标）
+ * - 身份块 → 卡级 APPEND_SYSTEM.md（`# 预设提示词` 下）
+ * - 写作块 → 卡档案 AGENTS.md（平级条目，不设伞形板块）
+ * - 停用的机制块与预设里本来就关着的块（文风/基调/去八股等选项）→ **HTML 注释包裹的关闭条目**，
+ *   在条目视图里拨开关即可选择——送模时被剥掉，零上下文成本
+ */
+export const PRESET_TITLE_SUFFIX = "（预设）";
+
 export interface DeclareLineItem {
 	identifier: string;
 	name: string;
@@ -207,9 +211,9 @@ export interface DeclareLineItem {
 		| "append"
 		| "agents"
 		| "disabled"
+		| "off-option"
 		| "wrapper"
 		| "skipped-marker"
-		| "skipped-disabled"
 		| "skipped-empty"
 		| "dropped-prefill";
 	station?: DeclareStation;
@@ -217,11 +221,11 @@ export interface DeclareLineItem {
 }
 
 export interface DeclareTranslateResult {
-	/** 卡级 APPEND_SYSTEM.md 全文（identity 段为空则空串） */
+	/** 卡级 APPEND_SYSTEM.md 追加段（`# 预设提示词` ＋ 身份条目；无身份块则空串） */
 	appendMarkdown: string;
-	/** 卡档案 AGENTS.md 的追加板块（writing 段为空则空串） */
+	/** 卡档案 AGENTS.md 追加段（写作条目＋停用/关闭选项条目；无则空串） */
 	agentsSection: string;
-	/** 板块标题（AGENTS.md 内定位/去重用） */
+	/** 兼容字段：旧伞形板块标题，恒为空（REST 不再用它定位） */
 	agentsSectionTitle: string;
 	lines: DeclareLineItem[];
 	samplers: Record<string, number>;
@@ -235,6 +239,25 @@ const fmtDate = (): string => {
 	return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
 };
 
+/** 条目名加（预设）后缀；重名追加序号（条目名是开关的键，必须唯一） */
+function uniqueEntryName(base: string, used: Set<string>): string {
+	const clean = (base || "未命名").replace(/\s+$/, "");
+	let name = `${clean}${PRESET_TITLE_SUFFIX}`;
+	let i = 2;
+	while (used.has(name)) name = `${clean}·${i++}${PRESET_TITLE_SUFFIX}`;
+	used.add(name);
+	return name;
+}
+
+/** 条目正文里的 markdown 标题行转全角＃：视觉不变，但不再被条目解析器当成新条目割裂 */
+const escapeEntryText = (text: string) => text.replace(/^(#{1,6})(\s)/gm, "＃$2");
+
+/** 活条目 */
+const activeEntry = (name: string, text: string) => `## ${name}\n\n${escapeEntryText(text.trim())}\n`;
+/** 关闭条目（HTML 注释包裹，内部首行是标题——prompt-entries 的关闭约定） */
+const commentedEntry = (name: string, text: string) =>
+	`<!--\n## ${name}\n\n${escapeEntryText(text.trim())}\n-->`;
+
 export function translatePresetWithDeclaration(
 	doc: PresetDoc,
 	declaration: PresetDeclaration,
@@ -245,8 +268,10 @@ export function translatePresetWithDeclaration(
 	const norm = normalizeDeclaration(declaration, pieces);
 	const stationOf = new Map(norm.entries.map((e) => [e.identifier, e]));
 
-	const identityTexts: string[] = [];
-	const writingTexts: string[] = [];
+	const appendNames = new Set<string>();
+	const agentsNames = new Set<string>();
+	const appendEntries: string[] = [];
+	const agentsEntries: string[] = [];
 	const lines: DeclareLineItem[] = [];
 
 	for (const p of pieces) {
@@ -260,18 +285,52 @@ export function translatePresetWithDeclaration(
 			station,
 			note: e?.note,
 		};
-		if (station === "identity") {
-			identityTexts.push(p.text.trim());
+		if (station === "wrapper") {
+			item.action = "wrapper";
+		} else if (station === "identity") {
+			appendEntries.push(activeEntry(uniqueEntryName(p.name, appendNames), p.text));
 			item.action = "append";
 		} else if (station === "writing") {
-			writingTexts.push(p.text.trim());
+			agentsEntries.push(activeEntry(uniqueEntryName(p.name, agentsNames), p.text));
 			item.action = "agents";
-		} else if (station === "wrapper") {
-			item.action = "wrapper";
 		} else {
+			agentsEntries.push(commentedEntry(uniqueEntryName(p.name, agentsNames), p.text));
 			item.action = "disabled";
 		}
 		lines.push(item);
+	}
+
+	// 预设里本来就关着的块＝选项目录（文风/基调/去八股…）：求值有字的，全部收进关闭条目。
+	// 宏环境用装配终值做种子（getvar 解析到当前选中值），setvar 副作用只落在这个临时环境里。
+	const offEnv = createMacroEnv({ charName: opts.charName, userName: opts.userName });
+	for (const [k, v] of r.vars) offEnv.vars.set(k, v);
+	for (const entry of doc.entries) {
+		if (entry.enabled || entry.marker || entry.missing) continue;
+		const before = new Map(offEnv.vars);
+		const text = evalPresetMacros(entry.content, offEnv).text.trim();
+		// setvar 型选项块（如文风块 {{setvar::base_writing::…}}）：求值后正文为空，
+		// 但恰好净改了一个变量——那个变量的值就是这块的选项内容
+		let payload = text;
+		if (!payload) {
+			const changed = [...offEnv.vars.entries()].filter(([k, v]) => before.get(k) !== v);
+			if (changed.length === 1 && changed[0][1].trim()) payload = changed[0][1];
+		}
+		if (!payload) {
+			lines.push({
+				identifier: entry.identifier,
+				name: entry.name,
+				chars: entry.content.length,
+				action: "skipped-empty",
+			});
+			continue;
+		}
+		agentsEntries.push(commentedEntry(uniqueEntryName(entry.name, agentsNames), payload));
+		lines.push({
+			identifier: entry.identifier,
+			name: entry.name,
+			chars: payload.length,
+			action: "off-option",
+		});
 	}
 
 	// 预填位丢弃
@@ -280,49 +339,41 @@ export function translatePresetWithDeclaration(
 	for (const p of r.after.slice(end)) {
 		lines.push({ identifier: p.id, name: p.name, chars: p.text.length, action: "dropped-prefill" });
 	}
-	// 非片段去向（marker / 关闭 / 零字 / 缺失）
+	// 非片段去向（marker / 零字 / 缺失）
 	for (const item of r.report) {
 		if (pieces.some((p) => p.id === item.identifier)) continue;
 		if (item.action === "marker 槽位" || item.action === "marker 无料") {
 			if (item.identifier === "chatHistory") continue;
 			lines.push({ identifier: item.identifier, name: item.name, chars: item.chars, action: "skipped-marker" });
-		} else if (item.action === "关闭") {
-			lines.push({ identifier: item.identifier, name: item.name, chars: item.chars, action: "skipped-disabled" });
 		} else if (item.action === "零字" || item.action === "缺失定义") {
 			lines.push({ identifier: item.identifier, name: item.name, chars: item.chars, action: "skipped-empty" });
 		}
 	}
 
 	const appendMarkdown =
-		identityTexts.length === 0
+		appendEntries.length === 0
 			? ""
 			: [
-					`# 我的规矩（这张卡）`,
+					`# 预设提示词`,
 					``,
-					`> 转译自预设「${doc.name}」· ${fmtDate()} · 窄拆：只收身份/破限段。预设的思考/草稿/输出格式/记忆机制段已停用，逐块去向见本卡 .liyuan/转译报告。原文存档在预设库，可重新转译；本文件是你的，随便改。`,
+					`<!-- 来源：预设「${doc.name}」· ${fmtDate()} 窄拆转译；停用与逐块去向见本卡 .liyuan/转译报告；本文件是你的，随便改 -->`,
 					``,
-					identityTexts.join("\n\n"),
-					``,
+					...appendEntries,
 				].join("\n");
 
-	const agentsSectionTitle = `## 预设写作规则（转译自「${doc.name}」）`;
 	const agentsSection =
-		writingTexts.length === 0
+		agentsEntries.length === 0
 			? ""
 			: [
+					`<!-- 预设「${doc.name}」· ${fmtDate()} 窄拆转译；关闭条目＝预设里停用/未启用的块，拨开关即可选择；去向见 .liyuan/转译报告 -->`,
 					``,
-					agentsSectionTitle,
-					``,
-					`> ${fmtDate()} 窄拆转译：预设的文风与写作规则段，按原序收进本档案。思考/草稿/输出格式/记忆机制段未收入（梨园原生机制承接，去向见本卡 .liyuan/转译报告）。`,
-					``,
-					writingTexts.join("\n\n"),
-					``,
+					...agentsEntries,
 				].join("\n");
 
 	return {
 		appendMarkdown,
 		agentsSection,
-		agentsSectionTitle,
+		agentsSectionTitle: "",
 		lines,
 		samplers: { ...doc.samplers },
 		usesLastUserMessage: r.usesLastUserMessage,
@@ -330,15 +381,28 @@ export function translatePresetWithDeclaration(
 	};
 }
 
+/** 从现有全文剥掉所有预设条目（（预设）后缀或旧式「转译自」标题，含注释态），保留用户自己的内容 */
+export function stripPresetEntries(md: string): string {
+	let text = md;
+	const names = parsePromptEntries(text)
+		.filter((e) => e.name.endsWith(PRESET_TITLE_SUFFIX) || e.name.includes("转译自"))
+		.map((e) => e.name);
+	for (const name of names) {
+		const next = deleteEntry(text, name);
+		if (next !== null) text = next;
+	}
+	return text.replace(/\n{3,}/g, "\n\n").trim();
+}
+
 // ---------------- 报告 ----------------
 
 const DECLARE_ACTION_LABEL: Record<DeclareLineItem["action"], string> = {
-	append: "收入 APPEND_SYSTEM.md（身份/破限）",
-	agents: "收入卡档案（写作规则）",
-	disabled: "停用",
+	append: "收入 APPEND_SYSTEM.md（身份/破限，活动条目）",
+	agents: "收入卡档案（写作规则，活动条目）",
+	disabled: "停用（关闭条目保留，可拨回）",
+	"off-option": "关闭条目（预设里未启用——选项目录，可拨开）",
 	wrapper: "跳过（装配器本职）",
 	"skipped-marker": "跳过（槽位）",
-	"skipped-disabled": "未启用",
 	"skipped-empty": "无正文",
 	"dropped-prefill": "丢弃（预填位，8/23 定案）",
 };
@@ -354,8 +418,8 @@ export function declareTranslateReport(
 		``,
 		`- 原文：\`${sourceFile}\`（未改动，可重新转译）`,
 		`- 日期：${declaration.createdAt}；卡：${declaration.card}${declaration.model ? `；声明模型：${declaration.model}` : ""}`,
-		`- 产物一：本卡 APPEND_SYSTEM.md（${r.lines.filter((l) => l.action === "append").length} 块，${r.appendMarkdown.length.toLocaleString()} 字）`,
-		`- 产物二：本卡 AGENTS.md「预设写作规则」板块（${r.lines.filter((l) => l.action === "agents").length} 块，${r.agentsSection.length.toLocaleString()} 字）`,
+		`- 产物一：本卡 APPEND_SYSTEM.md（${r.lines.filter((l) => l.action === "append").length} 块身份条目，${r.appendMarkdown.length.toLocaleString()} 字）`,
+		`- 产物二：本卡 AGENTS.md（写作条目 ${r.lines.filter((l) => l.action === "agents").length} 条＋停用条目 ${r.lines.filter((l) => l.action === "disabled").length} 条＋关闭选项 ${r.lines.filter((l) => l.action === "off-option").length} 条，共 ${r.agentsSection.length.toLocaleString()} 字；关闭条目不进送模）`,
 		`- 停用：${r.lines.filter((l) => l.action === "disabled").length} 块（harness 模拟，梨园原生机制承接）`,
 		`- 采样参数：${Object.keys(r.samplers).length} 项 → 已迁入 config.samplers`,
 	];

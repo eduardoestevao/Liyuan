@@ -63,13 +63,14 @@ function diffPreview(base: string, mine: string): string {
 
 /** 转译条目的来源识别（2026-09-12 用户定案）：界面给「预设」徽标，辨认不靠正文里的「转译自」字样 */
 function presetDerivedOf(name: string, content: string): boolean {
-	if (name.includes("转译自")) return true;
+	if (name.endsWith("（预设）") || name.includes("转译自")) return true;
 	const first = content.split("\n").find((l) => l.trim() !== "");
 	return !!first && first.trim().startsWith(">") && first.includes("转译自");
 }
 
 /** 标题里的（转译自「…」）注记从显示名剥掉——来源进徽标，标题保持干净 */
-const stripSourceNote = (name: string) => name.replace(/（转译自[^）]*）+/g, "").trim();
+const stripSourceNote = (name: string) =>
+	name.replace(/（转译自[^）]*）+/g, "").replace(/（预设）$/, "").trim();
 
 /** 条目形提示词文件的双视图编辑器（GitHub 式 条目|源码）：文件是真源，条目是投影 */
 function EntriesEditor({

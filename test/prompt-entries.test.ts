@@ -43,6 +43,26 @@ test("解析：## 节＝条目；注释包裹的节＝关闭；备注注释不�
 	assert.equal(entries[3].name, "岔口");
 });
 
+test("CRLF 文件同样解析成条目（Windows 换行的卡档案回归）", () => {
+	const crlf = MD.replace(/\n/g, "\r\n");
+	const entries = parsePromptEntries(crlf);
+	assert.equal(entries.length, 4, "CRLF 不再整份吞成一条无名条目");
+	assert.equal(entries[0].name, "扮演定义");
+	assert.equal(entries[1].name, "文风：第一人称");
+	assert.equal(entries[2].name, "文风：第二人称");
+	assert.equal(entries[2].enabled, false);
+	assert.equal(entries[3].name, "岔口");
+	// 手术也认得 CRLF 条目
+	const toggled = toggleEntry(crlf, "文风：第二人称", true);
+	assert.ok(toggled !== null && toggled.includes("## 文风：第二人称"));
+	const removed = deleteEntry(crlf, "岔口");
+	assert.ok(removed !== null && !removed.includes("该问就问"));
+	// 送模：条目齐全
+	const out = renderForModel(crlf);
+	assert.ok(out.includes("文风：第一人称"));
+	assert.ok(!out.includes("第二人称"));
+});
+
 test("引擎 renderForModel：关闭条目与备注不送模，开启条目带标题直通", () => {
 	const out = renderForModel(MD);
 	assert.ok(out.includes("## 文风：第一人称"), "开启条目带标题");

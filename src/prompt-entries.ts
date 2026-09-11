@@ -30,7 +30,8 @@ export interface PromptEntry {
 
 const COMMENT_OPEN = "<!--";
 const COMMENT_CLOSE = "-->";
-const HEADING_RE = /^(#{1,6})\s+(.*)$/;
+/** 标题行：容忍 CRLF 行尾（. 不吃 \r，裸 $ 会把整行判死——Windows 换行的文件曾整份解析不成条目） */
+const HEADING_RE = /^(#{1,6})[ \t]+(.*)\r?$/;
 
 /** 行是否是独占一行的注释定界 */
 const isCommentLine = (line: string, token: string): boolean => line.trim() === token;

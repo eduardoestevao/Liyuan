@@ -6,10 +6,11 @@ import {
 	buildDeclarePrompt,
 	declarePieces,
 	parseDeclareResponse,
+	stripPresetEntries,
 	translatePresetWithDeclaration,
-	upsertSection,
 	type PresetDeclaration,
 } from "../src/preset-declare.ts";
+import { parsePromptEntries } from "../src/prompt-entries.ts";
 import { loadPresetDoc } from "../src/preset-doc.ts";
 
 /** 最小酒馆预设：身份/文风/包装/思考/格式/关闭块/末条预填，marker 全套 */
@@ -93,7 +94,7 @@ test("parseDeclareResponse：合法站别收下；未知站别落 writing；漏�
 	assert.equal(parsed.declared, 5);
 });
 
-test("translatePresetWithDeclaration：按声明分流，产物三份各就各位", () => {
+test("translatePresetWithDeclaration：逐块条目＋关闭选项，不合并", () => {
 	const pieces = declarePieces(assembled);
 	const parsed = parseDeclareResponse(
 		JSON.stringify([
@@ -115,36 +116,64 @@ test("translatePresetWithDeclaration：按声明分流，产物三份各就各�
 	};
 	const r = translatePresetWithDeclaration(doc, declaration, { charName: "角色", userName: "用户" });
 
+	// APPEND：# 预设提示词 ＋ 身份活条目
+	assert.match(r.appendMarkdown, /^# 预设提示词/);
+	assert.match(r.appendMarkdown, /## 身份（预设）/);
 	assert.match(r.appendMarkdown, /资深写手/);
-	assert.match(r.appendMarkdown, /窄拆：只收身份\/破限段/);
 	assert.ok(!r.appendMarkdown.includes("白描"));
-	assert.match(r.agentsSection, /白描/);
-	assert.match(r.agentsSection, /预设写作规则（转译自「测试预设」）/);
-	assert.ok(!r.agentsSection.includes("资深写手"));
-	assert.ok(!r.agentsSection.includes("<thinking>"));
 
+	// AGENTS：文风活条目；机制块关闭条目；预设里关掉的块＝选项目录（关闭条目）
+	assert.match(r.agentsSection, /## 文风（预设）/);
+	assert.match(r.agentsSection, /白描/);
+	assert.match(r.agentsSection, /<!--\n## 思考（预设）/);
+	assert.match(r.agentsSection, /<!--\n## 格式（预设）/);
+	assert.match(r.agentsSection, /<!--\n## 关闭的（预设）/);
+	assert.match(r.agentsSection, /不该出现/);
+	assert.ok(!r.agentsSection.includes("资深写手"));
+	assert.ok(!r.agentsSection.includes("<Lore>")); // wrapper 不落任何形态
+
+	// 去向账
 	const byAction = (a: string) => r.lines.filter((l) => l.action === a).map((l) => l.identifier);
 	assert.deepEqual(byAction("append"), ["main"]);
 	assert.deepEqual(byAction("agents"), ["style"]);
 	assert.deepEqual(byAction("wrapper"), ["w1", "w2"]);
 	assert.deepEqual(byAction("disabled"), ["cot", "fmt"]);
+	assert.deepEqual(byAction("off-option"), ["off"]);
 	assert.deepEqual(byAction("dropped-prefill"), ["pf"]);
-	assert.deepEqual(byAction("skipped-disabled"), ["off"]);
-	// marker 槽位：worldInfoBefore 报跳过，chatHistory 静默
 	assert.deepEqual(byAction("skipped-marker"), ["worldInfoBefore"]);
 });
 
-test("upsertSection：无则追加，有则原位替换且不动后续板块", () => {
-	const base = "# 档案\n\n## 世界观\n\n内容甲\n\n## 其他\n\n内容乙\n";
-	const title = "## 预设写作规则（转译自「测试预设」）";
-	const section = "\n## 预设写作规则（转译自「测试预设」）\n\n规则正文\n";
-	const appended = upsertSection(base, title, section);
-	assert.match(appended, /## 其他[\s\S]*内容乙[\s\S]*预设写作规则/);
-	assert.ok(appended.includes("规则正文"));
-
-	const replaced = upsertSection(appended, title, "\n## 预设写作规则（转译自「测试预设」）\n\n新版规则\n");
-	assert.ok(replaced.includes("新版规则"));
-	assert.ok(!replaced.includes("规则正文"));
-	assert.match(replaced, /## 其他[\s\S]*内容乙/);
-	assert.match(replaced, /## 世界观[\s\S]*内容甲/);
+test("stripPresetEntries：剥掉（预设）条目（含注释态）与旧式「转译自」，保留用户自己的", () => {
+	const mixed = [
+		"# 我的档案",
+		"",
+		"## 世界观（预设）",
+		"",
+		"预设内容。",
+		"",
+		"<!--",
+		"## 轻小说文风（预设）",
+		"",
+		"关闭的选项。",
+		"-->",
+		"",
+		"## 预设写作规则（转译自「旧版」）",
+		"",
+		"旧伞形板块。",
+		"",
+		"## 用户自己的条目",
+		"",
+		"用户内容。",
+		"",
+	].join("\n");
+	const stripped = stripPresetEntries(mixed);
+	const entries = parsePromptEntries(stripped);
+	assert.deepEqual(
+		entries.map((e) => e.name),
+		["我的档案", "用户自己的条目"],
+	);
+	assert.ok(stripped.includes("用户内容"));
+	assert.ok(!stripped.includes("预设内容"));
+	assert.ok(!stripped.includes("轻小说文风"));
+	assert.ok(!stripped.includes("旧伞形板块"));
 });
