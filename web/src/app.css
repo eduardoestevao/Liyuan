@@ -7880,6 +7880,16 @@ label.drawer-btn {
 .preset-del-btn { color: var(--danger, #c0392b); border-color: var(--danger, #c0392b); opacity: 0.85; }
 .preset-del-btn:hover { opacity: 1; }
 
+/* 预设窄拆：站点声明过目清单（PLAN-PRESET-HARNESS-STRIP，内联卡片非弹窗） */
+.preset-declare-review { margin: 8px 0 4px; padding: 10px; border: 1px solid var(--border, #444); border-radius: 8px; display: flex; flex-direction: column; gap: 4px; }
+.preset-declare-review .preset-chan-head { margin: 0 0 4px; }
+.preset-declare-review .preset-chan-head h4 { margin: 0; font-size: 13px; }
+.preset-declare-review .lore-meta { white-space: normal; word-break: break-word; }
+.preset-declare-row { padding: 4px 0; border-bottom: 1px solid rgba(128,128,128,.12); }
+.preset-declare-row:last-of-type { border-bottom: none; }
+.preset-declare-row select { max-width: 13em; font-size: 12px; }
+.preset-declare-review .preset-actions { margin-top: 6px; }
+
 /* ---------- 悬浮窗：面板的第三种形态（见 components/FloatWindow.tsx） ---------- */
 /* z 60：盖住顶栏(50)，但让 tooltip(80)/世界线节点菜单(90)/居中弹窗(200) 照常盖在本窗之上 */
 .floatwin {

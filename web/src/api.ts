@@ -585,6 +585,8 @@ export interface PresetTranslateResponse {
 	ok: boolean;
 	/** ok=false 且 exists=true：卡级规矩文件已存在，需 overwrite=true 重试 */
 	exists?: boolean;
+	/** exists 时指哪一份冲突（窄拆：append=APPEND_SYSTEM.md，agents=卡档案板块） */
+	which?: "append" | "agents";
 	path?: string;
 	chars?: number;
 	lines?: number;
@@ -592,6 +594,50 @@ export interface PresetTranslateResponse {
 	markersSkipped?: number;
 	samplersMoved?: number;
 	report?: string;
+	/** 窄拆分流 */
+	narrow?: boolean;
+	appendChars?: number;
+	agentsChars?: number;
+	agentsMode?: "appended" | "replaced" | "created" | "skipped";
+	disabled?: number;
+}
+
+/** 预设窄拆：站点（与 src/preset-declare.ts 的闭集同步） */
+export type PresetDeclareStation =
+	| "identity"
+	| "writing"
+	| "thinking"
+	| "draft"
+	| "output"
+	| "memory"
+	| "wrapper";
+
+export interface PresetDeclareEntry {
+	identifier: string;
+	name: string;
+	role: string;
+	where: "before" | "after" | "depth";
+	chars: number;
+	station: PresetDeclareStation;
+	note?: string;
+}
+
+export interface PresetDeclaration {
+	version: 1;
+	preset: string;
+	card: string;
+	createdAt: string;
+	model?: string;
+	entries: PresetDeclareEntry[];
+}
+
+export interface PresetDeclareResponse {
+	ok: boolean;
+	declaration: PresetDeclaration;
+	pieces: number;
+	declared: number;
+	defaulted: number;
+	path?: string;
 }
 
 /** 卡档案 AGENTS.md（刀3）：文件为准 / 投影兜底两态 */
