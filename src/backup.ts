@@ -22,7 +22,6 @@
 import {
 	closeSync,
 	copyFileSync,
-	cpSync,
 	existsSync,
 	mkdirSync,
 	openSync,
@@ -36,6 +35,7 @@ import {
 import { dirname, join, relative, resolve } from "node:path";
 
 import { DIRS, MCP_CONFIG_FILE, PERSONAS_FILE } from "./paths.ts";
+import { copyPathSafe } from "./fs-copy.ts";
 import { extractZipFile } from "./ziplite.ts";
 
 const BACKUP_FORMAT = "liyuan-backup";
@@ -362,7 +362,7 @@ function restoreFromExtracted(cwd: string, agentHome: string, extractedDir: stri
 		clearDirContents(dst);
 		if (existsSync(src)) {
 			mkdirSync(dirname(dst), { recursive: true });
-			cpSync(src, dst, { recursive: true, force: true });
+			copyPathSafe(src, dst);
 		}
 	}
 	for (const rel of DOT_LIYUAN_DATA_FILES) {
@@ -389,7 +389,7 @@ function restoreFromExtracted(cwd: string, agentHome: string, extractedDir: stri
 	clearDirContents(sessionDir);
 	if (existsSync(sessionsRoot)) {
 		mkdirSync(sessionDir, { recursive: true });
-		cpSync(sessionsRoot, sessionDir, { recursive: true, force: true });
+		copyPathSafe(sessionsRoot, sessionDir);
 	}
 }
 

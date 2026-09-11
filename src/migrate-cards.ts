@@ -20,11 +20,12 @@
  * - 目录名的唯一主人仍是 `src/paths.ts`。
  */
 
-import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { randomBytes } from "node:crypto";
 import { basename, join } from "node:path";
 
 import { loadCardFile } from "./card.ts";
+import { copyPathSafe } from "./fs-copy.ts";
 import { loadPersonas, savePersonas } from "./personas.ts";
 import { appendSessionCardRebind, createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
 import { stripBom } from "./jsonio.ts";
@@ -195,7 +196,7 @@ function move(from: string, to: string, label: string, log: string[]): boolean {
 			// 语义仍是「搬」（失败时源还在，重跑幂等）。
 			const code = (err as { code?: string }).code;
 			if (code !== "EXDEV" && code !== "EPERM") throw err;
-			cpSync(from, to, { recursive: true, force: false, errorOnExist: true });
+			copyPathSafe(from, to); // to 已确认不存在，语义仍是「不覆盖已存在的目标」
 			rmSync(from, { recursive: true, force: true });
 		}
 		return true;

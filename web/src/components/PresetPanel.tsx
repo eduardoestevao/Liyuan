@@ -3,9 +3,8 @@
  * - 全局系统提示词：SYSTEM.md（梨园扮演骨架，改后重启生效）+ APPEND_SYSTEM.md
  *   （全局，对所有卡生效——角色相当于原来的预设）
  * - 局部提示词：这张卡的 AGENTS.md（卡档案）+ 这张卡的 APPEND_SYSTEM.md
- * - 预设库：酒馆预设退场为一次性转译——导入原文 → 转译成本卡 APPEND_SYSTEM.md +
- *   采样参数进 config + 逐块去向报告。旧的块级编辑 UI 只在 config.preset 仍指向
- *   某文件时作为遗留态出现（未迁移用户不受影响，不强制）。
+ * - 预设库（2026-09-12 用户定案：预设直用，不转译）——「装载」设为活动预设，
+ *   改动经「保存」写回预设文件本身；条目带来源标注（预设块 / 梨园槽位）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -20,12 +19,8 @@ import {
 	type CardAgentsSaveResponse,
 	type PresetBlockPatch,
 	type PresetBlockView,
-	type PresetDeclareResponse,
-	type PresetDeclareStation,
-	type PresetDeclaration,
 	type PresetResponse,
 	type PresetsResponse,
-	type PresetTranslateResponse,
 	type RulesResponse,
 	type RulesSaveResponse,
 } from "../api.ts";
@@ -41,23 +36,6 @@ import {
 const CHANNEL_LABEL: Record<string, string> = {
 	system: "历史前",
 	postHistory: "历史后",
-};
-
-/** 窄拆站点（与 src/preset-declare.ts 同步）：标签 + 去向一句话 */
-const STATION_OPTIONS: Array<{ id: PresetDeclareStation; label: string }> = [
-	{ id: "identity", label: "身份/破限 → 规矩文件" },
-	{ id: "writing", label: "写作规则 → 卡档案" },
-	{ id: "thinking", label: "思考协议 → 停用" },
-	{ id: "draft", label: "草稿协议 → 停用" },
-	{ id: "output", label: "输出合约 → 停用" },
-	{ id: "memory", label: "记忆记账 → 停用" },
-	{ id: "wrapper", label: "材料包装 → 跳过" },
-];
-
-const WHERE_LABEL: Record<string, string> = {
-	before: "历史前",
-	after: "历史后",
-	depth: "深度注入",
 };
 
 const SAMPLER_META: Array<{ key: string; min: number; max: number; step: number; hint: string }> = [
@@ -414,91 +392,34 @@ export function PresetPanel({
 		[toast],
 	);
 
-	/** 预设 → 本卡提示词文件（一次性转译） */
-	const translate = (file: string, overwrite: boolean) =>
+	// ---------------- 预设库：装载 / 保存（用户定案 2026-09-12：预设直用，改动存回预设本身） ----------------
+
+	/** 装载：把库里的预设设为活动预设（config.preset，编辑器随之出现） */
+	const loadPreset = (file: string) =>
 		run(async () => {
-			const r = await apiPost<PresetTranslateResponse>("/api/presets/translate", { file, overwrite });
-			if (r.exists) {
-				toast(
-					"warning",
-					"本卡已有 APPEND_SYSTEM.md——再点一次「转译」将覆盖（现有内容请先自行备份）",
-				);
-				return;
-			}
-			toast("info", `已转译为本卡 APPEND_SYSTEM.md（${(r.chars ?? 0).toLocaleString()} 字）`);
+			await apiPost("/api/presets/select", { file });
+			toast("info", "已装载——在下方编辑器里改动，点「保存」写回文件");
 			files.reload();
-			rules.reload();
-		});
-
-	// ---------------- 窄拆：声明 → 过目 → 按声明转译（PLAN-PRESET-HARNESS-STRIP） ----------------
-
-	const [declare, setDeclare] = useState<{
-		file: string;
-		declaration: PresetDeclaration;
-		pieces: number;
-		declared: number;
-		defaulted: number;
-	} | null>(null);
-
-	const doDeclare = (file: string) =>
-		run(async () => {
-			const r = await apiPost<PresetDeclareResponse>("/api/presets/declare", { file });
-			setDeclare({
-				file,
-				declaration: r.declaration,
-				pieces: r.pieces,
-				declared: r.declared,
-				defaulted: r.defaulted,
-			});
-			toast(
-				"info",
-				`声明完成：${r.pieces} 段${r.defaulted > 0 ? `，其中 ${r.defaulted} 段保守保留` : ""}——过目后转译`,
-			);
-		});
-
-	const patchStation = (identifier: string, station: PresetDeclareStation) => {
-		setDeclare((d) =>
-			d
-				? {
-						...d,
-						declaration: {
-							...d.declaration,
-							entries: d.declaration.entries.map((e) =>
-								e.identifier === identifier ? { ...e, station } : e,
-							),
-						},
-					}
-				: d,
-		);
-	};
-
-	const translateDeclared = (file: string, overwrite: boolean) =>
-		run(async () => {
-			if (!declare) return;
-			const r = await apiPost<PresetTranslateResponse>("/api/presets/translate", {
-				file,
-				overwrite,
-				declaration: declare.declaration,
-			});
-			if (r.exists) {
-				toast(
-					"warning",
-					r.which === "agents" ? "卡档案已有该板块——再点一次将替换" : "本卡已有 APPEND_SYSTEM.md——再点一次将覆盖",
-				);
-				return;
+			if (rules.data?.card) {
+				toast("warning", "本卡已有规矩文件（APPEND_SYSTEM.md），预设会与它同时生效");
 			}
-			toast(
-				"info",
-				`已按声明转译：规矩文件 ${(r.appendChars ?? 0).toLocaleString()} 字、卡档案板块 ${(r.agentsChars ?? 0).toLocaleString()} 字、停用 ${r.disabled ?? 0} 块`,
-			);
-			setDeclare(null);
-			files.reload();
-			rules.reload();
-			agents.reload();
 		});
 
-	const stationCount = (s: PresetDeclareStation) =>
-		declare?.declaration.entries.filter((e) => e.station === s).length ?? 0;
+	/** 保存：把活动预设的未落盘改动写回文件（与编辑器工具条的「保存」同一条端点） */
+	const savePreset = () =>
+		run(async () => {
+			await apiPost("/api/preset/save", {});
+			setDirty(false);
+			files.reload();
+		}, "预设已保存到文件");
+
+	/** 卸载：不再使用活动预设（文件保留在库里） */
+	const unloadPreset = () =>
+		run(async () => {
+			await apiPost("/api/presets/select", { file: null });
+			toast("info", "已卸载——预设文件保留在库里");
+			files.reload();
+		});
 
 	/** 卡档案（刀3）：保存 / 删除回投影 / 让助手生成 */
 	const saveAgents = useCallback(
@@ -698,7 +619,7 @@ export function PresetPanel({
 				"/api/presets/import",
 				{ name: file.name.replace(/\.json$/i, ""), json },
 			);
-			toast("info", `已导入预设库（${r.blockCount} 条 · 启用 ${r.enabledCount}）——点「转译」生成本卡 APPEND_SYSTEM.md`);
+			toast("info", `已导入预设库（${r.blockCount} 条 · 启用 ${r.enabledCount}）——已设为活动预设`);
 			files.reload();
 		} catch (e) {
 			toast("error", e instanceof Error ? e.message : String(e));
@@ -833,8 +754,8 @@ export function PresetPanel({
 				<>
 					<section className="sp-section">
 						<div className="preset-chan-head">
-							<h4>预设库（转译用）</h4>
-							<label className="drawer-btn" title="导入酒馆预设 JSON（原文存档，不做转换）">
+							<h4>预设库</h4>
+							<label className="drawer-btn" title="导入酒馆预设 JSON（原文存档，导入后自动装载）">
 								导入
 								<input
 									type="file"
@@ -854,22 +775,24 @@ export function PresetPanel({
 								<div className="lore-head">
 									<div className="block-info">
 										<span className="lore-title">{p.name}</span>
-										{activeFile === p.file && (
-											<span className="lore-meta">当前活动（未转译）</span>
-										)}
+										{activeFile === p.file && <span className="lore-meta">活动预设</span>}
 									</div>
 									<div className="preset-block-acts">
-										<button className="act" disabled={busy} onClick={() => void doDeclare(p.file)}>
-											声明
-										</button>
-										<ConfirmButton
+										<button
 											className="act"
-											disabled={busy}
-											confirmText="确认转译（整份收入，不剥离机制）"
-											onConfirm={() => void translate(p.file, true)}
+											disabled={busy || activeFile === p.file}
+											onClick={() => void loadPreset(p.file)}
 										>
-											转译
-										</ConfirmButton>
+											{activeFile === p.file ? "已装载" : "装载"}
+										</button>
+										<button
+											className="act"
+											disabled={busy || activeFile !== p.file}
+											title="把未落盘的改动写回预设文件"
+											onClick={() => void savePreset()}
+										>
+											保存
+										</button>
 										<button className="act" disabled={busy} onClick={() => void doExport(p.file)}>
 											导出
 										</button>
@@ -883,61 +806,6 @@ export function PresetPanel({
 										</ConfirmButton>
 									</div>
 								</div>
-
-								{declare?.file === p.file && (
-									<div className="preset-declare-review">
-										<div className="preset-chan-head">
-											<h4>站点声明（{declare.pieces} 段）</h4>
-											<span className="lore-meta">
-												身份 {stationCount("identity")} · 写作 {stationCount("writing")} · 停用{" "}
-												{stationCount("thinking") + stationCount("draft") + stationCount("output") + stationCount("memory")} · 包装{" "}
-												{stationCount("wrapper")}
-												{declare.defaulted > 0 ? ` · ${declare.defaulted} 段保守保留` : ""}
-											</span>
-										</div>
-										{declare.declaration.entries.map((e) => (
-											<div key={e.identifier} className="lore-item preset-declare-row">
-												<div className="lore-head">
-													<div className="block-info">
-														<span className="lore-title">{e.name || e.identifier}</span>
-														<span className="lore-meta">
-															{e.chars.toLocaleString()} 字 · {WHERE_LABEL[e.where] ?? e.where} · {e.role}
-															{e.note ? ` · ${e.note}` : ""}
-														</span>
-													</div>
-													<select
-														className="panel-search"
-														value={e.station}
-														disabled={busy}
-														aria-label="站点"
-														onChange={(ev) =>
-															patchStation(e.identifier, ev.target.value as PresetDeclareStation)
-														}
-													>
-														{STATION_OPTIONS.map((o) => (
-															<option key={o.id} value={o.id}>
-																{o.label}
-															</option>
-														))}
-													</select>
-												</div>
-											</div>
-										))}
-										<div className="panel-row list-toolbar preset-actions">
-											<ConfirmButton
-												className="act"
-												disabled={busy}
-												confirmText="确认按声明转译"
-												onConfirm={() => void translateDeclared(p.file, false)}
-											>
-												按声明转译
-											</ConfirmButton>
-											<button className="act" disabled={busy} onClick={() => setDeclare(null)}>
-												收起
-											</button>
-										</div>
-									</div>
-								)}
 							</div>
 						))}
 						{files.data && files.data.presets.length === 0 && (
@@ -948,10 +816,10 @@ export function PresetPanel({
 					{activeFile && (
 						<section className="sp-section">
 							<div className="preset-chan-head">
-								<h4>未转译的活动预设（旧编辑器）</h4>
-								<button className="act" disabled={busy} onClick={() => void translate(activeFile, false)}>
-									转译并停用预设
-								</button>
+								<h4>活动预设</h4>
+								<ConfirmButton className="act" disabled={busy} confirmText="确认卸载（不再使用，文件保留）" onConfirm={() => void unloadPreset()}>
+									卸载
+								</ConfirmButton>
 							</div>
 									<div className="panel-row list-toolbar preset-actions">
 								<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={() => void saveToDisk()}>
@@ -963,7 +831,7 @@ export function PresetPanel({
 							</div>
 							{dirty && (
 								<div className="field-hint preset-dirty-hint">
-									有未保存修改：已立即用于对话；转译前请先「保存」。
+									有未保存修改：已立即用于对话；点「保存」写回预设文件。
 								</div>
 							)}
 							<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />
@@ -1018,6 +886,7 @@ export function PresetPanel({
 												<div className="lore-head">
 													<div className="block-info">
 														<span className="lore-title">{b.name || b.id}</span>
+															<span className={"preset-src-badge " + (b.marker ? "liyuan" : "preset")}>{b.marker ? "梨园槽位" : "预设"}</span>
 														<span className="lore-meta">
 															{b.content.length.toLocaleString()} 字 ·{" "}
 															{CHANNEL_LABEL[b.channel] ?? b.channel}
