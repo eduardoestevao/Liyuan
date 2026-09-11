@@ -68,7 +68,13 @@ function collectUrls(text: string, into: Map<string, number>) {
 	}
 }
 
-export function buildCardOutline(raw: R, resources: CardResource[], declarations: CardSectionDeclarations = {}): CardOutline {
+export interface OutlineMarks { removed: Set<string>; added: Set<string> }
+const underAny = (path: string[], marks: Set<string>) => {
+	for (let i = path.length; i >= 1; i--) if (marks.has(JSON.stringify(path.slice(0, i)))) return true;
+	return false;
+};
+
+export function buildCardOutline(raw: R, resources: CardResource[], declarations: CardSectionDeclarations = {}, marks?: OutlineMarks): CardOutline {
 	const data = record(raw.data) ?? raw;
 	const prefix = data === raw ? [] : ["data"];
 	const byPath = new Map<string, CardResource>();
@@ -77,7 +83,10 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 	const items: CardOutlineItem[] = [];
 	const push = (item: Omit<CardOutlineItem, "section" | "declared">) => {
 		const declared = declarations[item.key];
-		items.push({ ...item, section: declared ?? item.defaultSection, declared: declared !== undefined && declared !== item.defaultSection });
+		const flags = item.path && marks
+			? { ...(underAny(item.path, marks.removed) ? { removed: true } : {}), ...(underAny(item.path, marks.added) ? { addition: true } : {}) }
+			: {};
+		items.push({ ...item, ...flags, section: declared ?? item.defaultSection, declared: declared !== undefined && declared !== item.defaultSection });
 	};
 	const owner = (field: string) => Object.hasOwn(data, field) ? data : raw;
 	const pathOf = (field: string, ...rest: string[]) => [...(owner(field) === raw ? [] : prefix), field, ...rest];
@@ -94,10 +103,10 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 			size: str(value).length, enabled: true, facts: { field } });
 	}
 	const meta = { creator: str(data.creator), version: str(data.character_version), tags: Array.isArray(data.tags) ? data.tags.length : 0, spec: (str(raw.spec) + " " + str(raw.spec_version)).trim() };
-	push({ key: "settings-meta", defaultSection: "settings", label: "作者 / 版本 / 标签", resources: [], size: 0, enabled: true, facts: meta });
+	push({ key: "settings-meta", defaultSection: "settings", label: "作者 / 版本 / 标签", resources: [], path: prefix, size: 0, enabled: true, facts: meta });
 	const depthPrompt = record(record(data.extensions)?.depth_prompt);
 	if (depthPrompt && str(depthPrompt.prompt).trim()) push({ key: "settings-depth-prompt", defaultSection: "settings", label: "深度提示", resources: [],
-		size: str(depthPrompt.prompt).length, enabled: true, facts: { depth: Number(depthPrompt.depth ?? 0), role: str(depthPrompt.role) } });
+		path: [...prefix, "extensions", "depth_prompt"], size: str(depthPrompt.prompt).length, enabled: true, facts: { depth: Number(depthPrompt.depth ?? 0), role: str(depthPrompt.role) } });
 
 	// 创作规则：spec 自带的两个指令槽位
 	for (const [field, label] of [["system_prompt", "卡内系统提示"], ["post_history_instructions", "卡内末端提示"]] as const) {
@@ -111,7 +120,7 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 		const text = str(value);
 		const resource = resourceAt(path);
 		collectUrls(text, urls);
-		push({ key: resource?.id ?? keyOf("greeting", path), defaultSection: "greetings", label, resources: resource ? [resource.id] : [], size: text.length, enabled: true,
+		push({ key: resource?.id ?? keyOf("greeting", path), defaultSection: "greetings", label, resources: resource ? [resource.id] : [], ...(path[path.length - 1] === "first_mes" ? {} : { path }), size: text.length, enabled: true,
 			facts: { html: HTML_RE.test(text), script: /<script\b/i.test(text), placeholder: /<StatusPlaceHolderImpl\/>/.test(text), macro: /\{\{[^}]+\}\}/.test(text) } });
 	};
 	greeting(pathOf("first_mes"), "默认开场", owner("first_mes").first_mes);
@@ -120,8 +129,15 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 	const groupOnly = owner("group_only_greetings").group_only_greetings;
 	if (Array.isArray(groupOnly)) groupOnly.forEach((g, i) => greeting(pathOf("group_only_greetings", String(i)), "群聊开场 " + (i + 1), g));
 
-	// 世界书
+	// 世界书：书本身的字段是一项，条目各一项
 	const book = record(owner("character_book").character_book);
+	if (book) {
+		const bookFacts: CardOutlineItem["facts"] = {};
+		for (const f of ["name", "description"] as const) if (str(book[f])) bookFacts[f] = str(book[f]);
+		for (const f of ["scan_depth", "token_budget"] as const) if (typeof book[f] === "number") bookFacts[f] = book[f] as number;
+		if (typeof book.recursive_scanning === "boolean") bookFacts.recursive_scanning = book.recursive_scanning;
+		push({ key: "book", defaultSection: "settings", label: "世界书设置", resources: [], path: pathOf("character_book"), size: 0, enabled: true, facts: bookFacts });
+	}
 	if (book?.entries && typeof book.entries === "object") {
 		for (const [key, value] of Object.entries(book.entries)) {
 			const e = record(value);
@@ -141,7 +157,7 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 			if (HTML_RE.test(content)) facts.html = true;
 			if (typeof e.id === "number" || typeof e.id === "string") facts.id = e.id;
 			push({ key: resource?.id ?? keyOf("lore", path), defaultSection: loreSection(e), label: str(e.comment || e.name) || "条目 " + key,
-				resources: resource ? [resource.id] : [], size: content.length, enabled: e.enabled !== false, facts });
+				resources: resource ? [resource.id] : [], path: path.slice(0, -1), size: content.length, enabled: e.enabled !== false, facts });
 		}
 	}
 
@@ -164,7 +180,7 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 		if (typeof r.minDepth === "number") facts.minDepth = r.minDepth;
 		if (typeof r.maxDepth === "number") facts.maxDepth = r.maxDepth;
 		push({ key: keyOf("regex", path), defaultSection: regexSection(r), label: str(r.scriptName) || "正则 " + (i + 1),
-			resources: [pattern?.id, template?.id].filter((id): id is string => Boolean(id)), size: str(r.findRegex).length + replace.length,
+			resources: [pattern?.id, template?.id].filter((id): id is string => Boolean(id)), path, size: str(r.findRegex).length + replace.length,
 			enabled: r.disabled !== true, facts });
 	});
 	// 助手脚本与卡级变量
@@ -184,11 +200,11 @@ export function buildCardOutline(raw: R, resources: CardResource[], declarations
 			const buttons = Array.isArray(button?.buttons) ? button.buttons.length : 0;
 			const importOnly = content.trim().split("\n").every(line => !line.trim() || /^\s*import\b/.test(line));
 			push({ key: resource?.id ?? keyOf("script", path), defaultSection: "scripts", label: str(s.name) || "脚本 " + (i + 1),
-				resources: resource ? [resource.id] : [], size: content.length, enabled: s.enabled !== false,
+				resources: resource ? [resource.id] : [], path: path.slice(0, -1), size: content.length, enabled: s.enabled !== false,
 				facts: { type: str(s.type), buttons, importOnly, remote: remote.length, data: Object.keys(record(s.data) ?? {}).length } });
 		});
 		const variables = record(helper.variables);
-		if (variables && Object.keys(variables).length) push({ key: keyOf("variables", [...prefix, "extensions", ns, "variables"]), defaultSection: "mvu",
+		if (variables) push({ key: keyOf("variables", [...prefix, "extensions", ns, "variables"]), defaultSection: "mvu", path: [...prefix, "extensions", ns, "variables"],
 			label: "卡级变量初值", resources: [], size: JSON.stringify(variables).length, enabled: true, facts: { keys: Object.keys(variables).length, namespace: ns } });
 	}
 	// 外部依赖：按主机汇总

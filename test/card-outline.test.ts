@@ -56,7 +56,7 @@ function labels(outline: CardOutline, id: CardSectionId) {
 test("板块投影只看 spec 结构，不看标题", () => {
 	const raw = fixture();
 	const outline = buildCardOutline(raw, cardResources(raw));
-	assert.deepEqual(labels(outline, "settings"), ["卡名", "描述", "性格", "场景", "对话示例", "作者注", "作者 / 版本 / 标签", "深度提示"]);
+	assert.deepEqual(labels(outline, "settings"), ["卡名", "描述", "性格", "场景", "对话示例", "作者注", "作者 / 版本 / 标签", "深度提示", "世界书设置"]);
 	assert.deepEqual(section(outline, "settings").items.find(i => i.key === "settings-meta")?.facts, { creator: "作者", version: "1.0", tags: 2, spec: "chara_card_v3 3.0" });
 	assert.deepEqual(labels(outline, "rules"), ["卡内系统提示", "卡内末端提示"]);
 	assert.deepEqual(labels(outline, "greetings"), ["默认开场", "备选开场 1", "备选开场 2", "群聊开场 1"]);

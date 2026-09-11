@@ -193,7 +193,7 @@ export const cardUpdate: ToolSpec<CardDeps> = {
 	name: "card_update",
 	domain: "card",
 	mode: "write",
-	surfaces: ["authoring", "assistant"],
+	surfaces: ["assistant"],
 	label: "修改角色卡",
 	description: (ctx) =>
 		"改当前角色卡的字段（只传要改的，没传的原样保留）。直接改卡文件、跨会话生效、不可撤销——" +
@@ -356,7 +356,7 @@ export const cardGreetings: ToolSpec<CardDeps> = {
 	name: "card_greetings",
 	domain: "card",
 	mode: "write",
-	surfaces: ["authoring", "assistant"],
+	surfaces: ["assistant"],
 	label: "开场白增删改",
 	description: () =>
 		"管理角色卡的开场白（序号 0 = first_mes，1 起是备选）。action: list 列出 / add 追加 / edit 改一条 / delete 删一条。" +
@@ -419,23 +419,32 @@ export const cardProject: ToolSpec<CardDeps> = {
 	surfaces: ["authoring", "assistant"],
 	label: "卡创作工程",
 	description: () =>
-		"读取、修改当前卡的完整代码与内容资源。outline 按板块列目录（默认只给概览，传 section 读一个板块，full 读全部）；inspect 列资源清单；" +
-		"prepare 展开到创作目录；read 按资源 ID 读原文（raw 读原包 JSON）；write 保存创作稿；check 校验并组装；apply 按 buildHash 应用且重载；undo 撤回最后一次应用；" +
-		"assign 把目录项归入板块（结构分不开的分组由此声明，section 留空恢复默认）。" +
-		"资源也可用原生文件工具编辑；预览在角色卡面板的代码与资源中。此工程不修改卡档案 AGENTS.md。",
+		"当前卡的唯一修改通道：创作工程。guide 读写卡手册（卡的构成、各操作的用法、预览能看到什么）；outline 按板块列目录（默认概览，传 section 读一个板块，full 读全部；每项有 key、path、facts）；inspect 列资源清单；" +
+		"prepare 展开到创作目录；read 按资源 ID 读原文（raw 读基线原包，draft 读含未应用改动的草稿）；write 保存正文稿；" +
+		"add 新增一项（kind：lore / greeting / regex / script，fields 给元数据，lore 与 script 可带 content）；remove / restore 按目录项 key 标记删除或撤销；" +
+		"meta 按 key 改元数据（条目：comment / keys / secondary_keys / constant / enabled / selective / insertion_order / position / depth / role / probability；" +
+		"正则：scriptName / placement / disabled / markdownOnly / promptOnly / minDepth / maxDepth；脚本：name / enabled；settings-meta：tags；book：name / description / scan_depth / token_budget / recursive_scanning）；" +
+		"assign 把目录项归入板块；check 校验并组装；preview 在用户页面里渲染当前稿并回报错误与 DOM 摘要；apply 按 buildHash 应用且重载；undo 撤回最后一次应用；" +
+		"discard 放弃全部未应用改动；rebase 在原卡被其他入口改动后重新同步并列出冲突。资源也可用原生文件工具编辑。此工程不修改卡档案 AGENTS.md。",
 	parameters: () => ({
 		type: "object",
 		properties: {
-			action: { type: "string", enum: ["outline", "inspect", "prepare", "read", "write", "check", "apply", "undo", "assign"] },
-			resource: { type: "string", description: "清单中的资源 ID；read 可用 raw" },
+			action: { type: "string", enum: ["guide", "outline", "inspect", "prepare", "read", "write", "add", "remove", "restore", "meta", "assign", "check", "preview", "apply", "undo", "discard", "rebase"] },
+			resource: { type: "string", description: "清单中的资源 ID；read 可用 raw / draft" },
 			section: { type: "string", description: "板块 ID：settings / greetings / lore-knowledge / lore-constant / rules / mvu / ui / prompt-regex / scripts / ejs / deps / other" },
 			full: { type: "boolean", description: "outline 时返回全部板块的全部项" },
-			key: { type: "string", description: "assign 必填：目录项的 key" },
+			key: { type: "string", description: "remove / restore / meta / assign 必填：目录项的 key" },
+			kind: { type: "string", enum: ["lore", "greeting", "regex", "script"], description: "add 必填" },
+			fields: { type: "object", description: "add / meta 的字段" },
 			text: { type: "string", description: "write 的完整新内容，原样保存" },
 			version: { type: "string", description: "write 必填：最近读取资源返回的 hash" },
 			buildHash: { type: "string", description: "apply 必填：最近 check 返回的 hash" },
 			offset: { type: "number", description: "read 可选起始行，1 起" },
 			limit: { type: "number", description: "read 可选行数，返回 nextOffset 时可续读" },
+			message: { type: "string", description: "preview 可选：要渲染的消息正文，默认第一条开场" },
+			greeting: { type: "number", description: "preview 可选：渲染第几条开场（0 = 默认开场）" },
+			variables: { type: "object", description: "preview 可选：测试变量，默认卡内初值" },
+			wait: { type: "number", description: "preview 可选：页面就绪后再观察多少毫秒，默认 3000" },
 		},
 		required: ["action"],
 	}),

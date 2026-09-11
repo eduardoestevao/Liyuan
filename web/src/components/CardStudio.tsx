@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type {
 	CardOutline,
+	CardOutlineItem,
 	CardProjectBuild,
 	CardProjectPreview,
 	CardProjectStatus,
@@ -10,6 +11,7 @@ import type {
 import { apiGet, apiGetCacheClear, apiPost, type CardResponse } from "../api.ts";
 import { buildCardAuthoringPreview, CARD_PREVIEW_SANDBOX, cardPreviewUrl } from "../cardAuthoringPreview.ts";
 import { IconClose, IconEdit } from "./icons.tsx";
+import { PreviewEventList, type PreviewEvent } from "./PreviewRunner.tsx";
 import "./CardStudio.css";
 
 type SectionCode = "00" | "01" | "02" | "03" | "04" | "05" | "06" | "07" | "08" | "09";
@@ -95,6 +97,8 @@ interface RawCardData {
 	};
 }
 
+type LoreEntry = NonNullable<NonNullable<RawCardData["character_book"]>["entries"]>[number];
+
 export function CardStudio({ onClose, onApplied }: { onClose: () => void; onApplied: () => void }) {
 	const [cardInfo, setCardInfo] = useState<CardResponse | null>(null);
 	const [status, setStatus] = useState<CardProjectStatus | null>(null);
@@ -127,8 +131,20 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 	const [customCoverUrl, setCustomCoverUrl] = useState<string | null>(null);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
-	// 测试预览弹层
+	// 测试预览弹层与预览壳上报的事件
 	const [preview, setPreview] = useState<{ url: string; token: string } | null>(null);
+	const [previewEvents, setPreviewEvents] = useState<PreviewEvent[]>([]);
+	useEffect(() => {
+		if (!preview) return;
+		setPreviewEvents([]);
+		const onMessage = (e: MessageEvent) => {
+			const p = (e.data as { liyuanCardPreview?: PreviewEvent } | null)?.liyuanCardPreview;
+			if (!p || p.token !== preview.token || typeof p.message !== "string") return;
+			setPreviewEvents((old) => [...old.slice(-49), { ...p, message: p.message.slice(0, 4000) }]);
+		};
+		window.addEventListener("message", onMessage);
+		return () => window.removeEventListener("message", onMessage);
+	}, [preview]);
 	const frame = useRef<HTMLIFrameElement>(null);
 	const active = useRef(true);
 
@@ -140,7 +156,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 	}, []);
 
 	const cardPath = cardInfo?.path ?? "";
-	const coverUrl = customCoverUrl || (cardPath ? `/api/cards/image?path=${encodeURIComponent(cardPath)}` : null);
+	const coverUrl = customCoverUrl || (status?.changes.cover ? `/api/card/authoring/cover?v=${status.version}` : cardPath ? `/api/cards/image?path=${encodeURIComponent(cardPath)}` : null);
 
 	const operation = <T,>(args: Record<string, unknown>) =>
 		apiPost<T>("/api/card/authoring", { ...args, card: cardPath });
@@ -157,7 +173,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 				curStatus = await operation<CardProjectStatus>({ action: "prepare" });
 			}
 			const curOutline = await operation<CardOutline>({ action: "outline", full: true });
-			const rawRes = await operation<{ text: string }>({ action: "read", resource: "raw" });
+			const rawRes = await operation<{ text: string }>({ action: "read", resource: "draft" });
 			let parsed: RawCardData = {};
 			try {
 				const full = JSON.parse(rawRes.text);
@@ -198,7 +214,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 				const rawRes = await apiPost<{ text: string }>("/api/card/authoring", {
 					card: info.path,
 					action: "read",
-					resource: "raw",
+					resource: "draft",
 				});
 				let parsed: RawCardData = {};
 				try {
@@ -232,6 +248,33 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 		return fallback;
 	};
 
+	// 一次工程操作：忙态、错误、完成后整体刷新
+	const runOp = async (fn: () => Promise<void>) => {
+		setBusy(true);
+		setError("");
+		setNotice("");
+		try {
+			await fn();
+			setBuild(null);
+			await refreshAll();
+		} catch (e) {
+			setError(e instanceof Error ? e.message : String(e));
+		} finally {
+			setBusy(false);
+		}
+	};
+	const setMeta = (key: string, fields: Record<string, unknown>, note = "已更新") =>
+		runOp(async () => { await operation({ action: "meta", key, fields }); setNotice(note); });
+	const removeItem = (key: string, restore: boolean) =>
+		runOp(async () => { await operation({ action: restore ? "restore" : "remove", key }); setNotice(restore ? "已撤销删除" : "已标记删除，随「应用」生效"); });
+	const assignItem = (key: string, section: string) =>
+		runOp(async () => { await operation({ action: "assign", key, section: section || undefined }); setNotice("板块归属已更新"); });
+	const addItem = (kind: "lore" | "greeting" | "regex" | "script", fields: Record<string, unknown>, after?: (item: CardOutlineItem) => void) =>
+		runOp(async () => {
+			const result = await operation<{ item: CardOutlineItem }>({ action: "add", kind, fields });
+			setNotice(`已新增：${result.item.label || "未命名"}`);
+			after?.(result.item);
+		});
 	// 异步读取某个资源原文并放入草稿
 	const ensureDraft = async (resource: CardResource) => {
 		if (drafts[resource.id] !== undefined) return;
@@ -276,7 +319,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			if (result.errors.length) {
 				setError(`检查发现 ${result.errors.length} 处错误`);
 			} else {
-				setNotice(`检查通过！共 ${result.changed.length} 项变更待应用`);
+				setNotice(`检查通过！正文 ${result.changed.length} 项，新增 ${result.added.length}，删除 ${result.removed.length}，元数据 ${result.meta.length}${result.cover ? "，封面" : ""}`);
 			}
 			await refreshAll();
 		} catch (e) {
@@ -302,6 +345,10 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			}
 			await operation({ action: "apply", buildHash: currentBuild.hash });
 			apiGetCacheClear("/api/card");
+			// 应用后资源 ID 可能随下标重排：本地草稿缓冲整体作废，按需重新读取
+			setDrafts({});
+			setBuild(null);
+			setCustomCoverUrl(null);
 			setNotice("已成功应用到当前角色卡！");
 			onApplied();
 			await refreshAll();
@@ -320,7 +367,9 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 		try {
 			await operation({ action: "undo" });
 			apiGetCacheClear("/api/card");
-			setNotice("已撤回上次应用，草稿仍保留在本地。");
+			setDrafts({});
+			setBuild(null);
+			setNotice("已撤回上次应用，应用前的稿件已恢复为待修改稿。");
 			onApplied();
 			await refreshAll();
 		} catch (e) {
@@ -384,34 +433,51 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 					</div>
 					<div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-strong)" }}>角色卡图片</div>
 					<div className="cs-cover-desc">
-						选择 PNG 图像后可即时预览，在「09 检查与导出」中可直接打包导出带封面的角色卡。
+						{status?.changes.cover ? "已选新封面，随「应用」写入角色卡；只换图像，卡数据不动。" : "选择 PNG 图像后进入创作稿，随「应用」写入角色卡。"}
 					</div>
 					<input
 						ref={fileInputRef}
 						type="file"
-						accept="image/png,image/jpeg,image/webp"
+						accept="image/png"
 						style={{ display: "none" }}
 						onChange={(e) => {
 							const file = e.target.files?.[0];
+							e.target.value = "";
 							if (!file) return;
 							const reader = new FileReader();
 							reader.onload = () => {
-								if (typeof reader.result === "string") {
-									setCustomCoverUrl(reader.result);
-									setNotice("已加载新封面预览（导出时可打包）");
-								}
+								if (typeof reader.result !== "string") return;
+								const base64 = reader.result.split(",")[1] ?? "";
+								void runOp(async () => {
+									await operation({ action: "cover", data: base64 });
+									setCustomCoverUrl(reader.result as string);
+									setNotice("新封面已进入创作稿");
+								});
 							};
 							reader.readAsDataURL(file);
 						}}
 					/>
-					<button
-						type="button"
-						className="cs-btn-ghost"
-						style={{ width: "100%", justifyContent: "center" }}
-						onClick={() => fileInputRef.current?.click()}
-					>
-						更换封面图片
-					</button>
+					<div style={{ display: "flex", gap: 8 }}>
+						<button
+							type="button"
+							className="cs-btn-ghost"
+							style={{ flex: 1, justifyContent: "center" }}
+							disabled={busy}
+							onClick={() => fileInputRef.current?.click()}
+						>
+							更换封面图片
+						</button>
+						{status?.changes.cover && (
+							<button
+								type="button"
+								className="cs-btn-ghost"
+								disabled={busy}
+								onClick={() => void runOp(async () => { await operation({ action: "cover", data: null }); setCustomCoverUrl(null); setNotice("已放弃新封面"); })}
+							>
+								撤销
+							</button>
+						)}
+					</div>
 				</div>
 
 				<div>
@@ -575,42 +641,59 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 02 世界书与设定集（带搜索检索、分类过滤、条目属性编辑与正文编辑）
 	const renderSection02 = () => {
-		const rawEntries = rawCard?.character_book?.entries || [];
-		const loreResources = status?.resources.filter((r) => r.kind === "lore") || [];
+		// 条目按草稿视图列出；每条对应一个目录项（元数据、删除、归属都按它寻址）与一个正文资源
+		const rawEntries = rawCard?.character_book?.entries as LoreEntry[] | Record<string, LoreEntry> | undefined;
+		const entryPairs: Array<[string, LoreEntry]> = Array.isArray(rawEntries)
+			? rawEntries.map((e, i): [string, LoreEntry] => [String(i), e])
+			: rawEntries && typeof rawEntries === "object" ? Object.entries(rawEntries) : [];
+		const loreItems = new Map<string, CardOutlineItem>();
+		for (const item of outline?.sections.flatMap((s) => s.items) || []) {
+			const p = item.path;
+			if (p && p.length >= 3 && p[p.length - 3] === "character_book" && p[p.length - 2] === "entries") loreItems.set(p[p.length - 1], item);
+		}
+		const rows = entryPairs.map(([key, e], idx) => {
+			const item = loreItems.get(key);
+			const res = item?.resources[0] ? status?.resources.find((r) => r.id === item.resources[0]) : undefined;
+			return { key, e, idx, item, res };
+		});
 
-		// 过滤条目
-		const filteredIndices = rawEntries
-			.map((e, idx) => ({ e, idx }))
-			.filter(({ e }) => {
-				if (loreFilter === "constant" && !e.constant) return false;
-				if (loreFilter === "keyed" && (!e.keys || e.keys.length === 0)) return false;
-				if (loreFilter === "disabled" && e.enabled !== false) return false;
-				if (!loreSearch.trim()) return true;
-				const q = loreSearch.toLowerCase();
-				return (
-					(e.comment || "").toLowerCase().includes(q) ||
-					(e.content || "").toLowerCase().includes(q) ||
-					(e.keys || []).some((k) => k.toLowerCase().includes(q))
-				);
-			})
-			.map(({ idx }) => idx);
+		const filtered = rows.filter(({ e, item }) => {
+			if (loreFilter === "constant" && !e.constant) return false;
+			if (loreFilter === "keyed" && (!e.keys || e.keys.length === 0)) return false;
+			if (loreFilter === "disabled" && e.enabled !== false && !item?.removed) return false;
+			if (!loreSearch.trim()) return true;
+			const q = loreSearch.toLowerCase();
+			return (
+				(e.comment || "").toLowerCase().includes(q) ||
+				(e.content || "").toLowerCase().includes(q) ||
+				(e.keys || []).some((k) => k.toLowerCase().includes(q))
+			);
+		});
 
-		const activeIdx = filteredIndices.includes(selectedLoreIdx)
-			? selectedLoreIdx
-			: (filteredIndices[0] ?? 0);
-		const currentEntry = rawEntries[activeIdx];
-		const currentRes = loreResources[activeIdx];
-		const curContent = currentRes ? getFieldValue(currentRes.id, currentEntry?.content || "") : "";
+		const activeIdx = filtered.some((r) => r.idx === selectedLoreIdx) ? selectedLoreIdx : (filtered[0]?.idx ?? -1);
+		const current = rows[activeIdx];
+		const curContent = current?.res ? getFieldValue(current.res.id, current.e.content || "") : "";
+		const positionOptions = ["before_char", "after_char", "an_top", "an_bottom", "at_depth", "em_top", "em_bottom"];
+		const curPosition = typeof current?.e.extensions?.position === "number" ? positionOptions[current.e.extensions.position] ?? "after_char" : current?.e.position || "after_char";
+		const sectionOptions: Array<[string, string]> = [["", "默认（按结构判据）"], ["settings", "作品设置"], ["lore-knowledge", "世界书·知识"], ["lore-constant", "世界书·常驻块"], ["rules", "创作规则"], ["mvu", "MVU 变量"], ["ejs", "EJS"], ["other", "其他"]];
 
 		return (
 			<div className="cs-split-pane">
 				<div className="cs-split-list">
 					<div className="cs-split-list-header">
-						<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+						<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
 							<span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-strong)" }}>
-								设定条目 ({rawEntries.length})
+								设定条目 ({rows.length})
 							</span>
-							<span className="cs-badge cs-badge-gray">匹配 {filteredIndices.length} 项</span>
+							<button
+								type="button"
+								className="cs-btn-ghost"
+								style={{ padding: "3px 10px" }}
+								disabled={busy}
+								onClick={() => void addItem("lore", { comment: "新条目" }, () => { setLoreFilter("all"); setLoreSearch(""); setSelectedLoreIdx(rows.length); })}
+							>
+								＋ 新增条目
+							</button>
 						</div>
 						<input
 							type="text"
@@ -620,95 +703,74 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 							onChange={(e) => setLoreSearch(e.target.value)}
 						/>
 						<div className="cs-filter-row">
-							<button
-								type="button"
-								className={`cs-pill-btn ${loreFilter === "all" ? "is-active" : ""}`}
-								onClick={() => setLoreFilter("all")}
-							>
-								全部 ({rawEntries.length})
-							</button>
-							<button
-								type="button"
-								className={`cs-pill-btn ${loreFilter === "constant" ? "is-active" : ""}`}
-								onClick={() => setLoreFilter("constant")}
-							>
-								常驻
-							</button>
-							<button
-								type="button"
-								className={`cs-pill-btn ${loreFilter === "keyed" ? "is-active" : ""}`}
-								onClick={() => setLoreFilter("keyed")}
-							>
-								关键词
-							</button>
-							<button
-								type="button"
-								className={`cs-pill-btn ${loreFilter === "disabled" ? "is-active" : ""}`}
-								onClick={() => setLoreFilter("disabled")}
-							>
-								已停用
-							</button>
+							{([["all", `全部 (${rows.length})`], ["constant", "常驻"], ["keyed", "关键词"], ["disabled", "停用/待删"]] as const).map(([id, label]) => (
+								<button key={id} type="button" className={`cs-pill-btn ${loreFilter === id ? "is-active" : ""}`} onClick={() => setLoreFilter(id)}>
+									{label}
+								</button>
+							))}
 						</div>
 					</div>
 
 					<div className="cs-split-list-items">
-						{filteredIndices.map((idx) => {
-							const e = rawEntries[idx];
-							const isAct = idx === activeIdx;
-							const res = loreResources[idx];
-							const isChanged = res?.changed;
-							return (
-								<div
-									key={idx}
-									className={`cs-split-item ${isAct ? "is-active" : ""}`}
-									onClick={() => {
-										setSelectedLoreIdx(idx);
-										if (res) ensureDraft(res);
-									}}
-								>
-									<div className="cs-split-item-row">
-										<span className="cs-split-item-title">{e.comment || `条目 #${idx + 1}`}</span>
-										{isChanged && <span className="cs-badge cs-badge-gold">已改</span>}
-									</div>
-									<div className="cs-split-item-meta">
-										<span>{(e.content || "").length} 字</span>
-										{e.constant && <span className="cs-badge cs-badge-green">常驻</span>}
-										{e.keys && e.keys.length > 0 && <span>{e.keys.length} 词</span>}
-										{e.enabled === false && <span style={{ color: "var(--text-faint)" }}>停用</span>}
-									</div>
+						{filtered.map(({ e, idx, item, res }) => (
+							<div
+								key={idx}
+								className={`cs-split-item ${idx === activeIdx ? "is-active" : ""}`}
+								style={item?.removed ? { opacity: 0.5, textDecoration: "line-through" } : undefined}
+								onClick={() => {
+									setSelectedLoreIdx(idx);
+									if (res) ensureDraft(res);
+								}}
+							>
+								<div className="cs-split-item-row">
+									<span className="cs-split-item-title">{e.comment || `条目 #${idx + 1}`}</span>
+									{item?.addition && <span className="cs-badge cs-badge-green">新增</span>}
+									{item?.removed && <span className="cs-badge cs-badge-gray">待删</span>}
+									{res?.changed && !item?.addition && <span className="cs-badge cs-badge-gold">已改</span>}
 								</div>
-							);
-						})}
+								<div className="cs-split-item-meta">
+									<span>{(e.content || "").length} 字</span>
+									{e.constant && <span className="cs-badge cs-badge-green">常驻</span>}
+									{e.keys && e.keys.length > 0 && <span>{e.keys.length} 词</span>}
+									{e.enabled === false && <span style={{ color: "var(--text-faint)" }}>停用</span>}
+									{item?.declared && <span style={{ color: "var(--text-faint)" }}>已归位</span>}
+								</div>
+							</div>
+						))}
 					</div>
 				</div>
 
 				<div className="cs-split-detail">
-					{currentEntry ? (
+					{current && current.item ? (
 						<>
 							<div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
 								<div style={{ fontSize: 16, fontWeight: 700, color: "var(--text-strong)" }}>
-									{currentEntry.comment || `条目 #${activeIdx + 1}`}
+									{current.e.comment || `条目 #${activeIdx + 1}`}
 								</div>
-								<div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+								<div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
 									<button
 										type="button"
-										className={`cs-toggle-btn ${currentEntry.constant ? "is-on" : ""}`}
-										onClick={() => {
-											currentEntry.constant = !currentEntry.constant;
-											setNotice(currentEntry.constant ? "已切换为常驻注入（蓝灯）" : "已切换为按需触发");
-										}}
+										className={`cs-toggle-btn ${current.e.constant ? "is-on" : ""}`}
+										disabled={busy}
+										onClick={() => void setMeta(current.item!.key, { constant: !current.e.constant }, current.e.constant ? "已切换为关键词触发" : "已切换为常驻注入（蓝灯）")}
 									>
-										{currentEntry.constant ? "常驻注入 (开)" : "关键词触发"}
+										{current.e.constant ? "常驻注入 (开)" : "关键词触发"}
 									</button>
 									<button
 										type="button"
-										className={`cs-toggle-btn ${currentEntry.enabled !== false ? "is-on" : ""}`}
-										onClick={() => {
-											currentEntry.enabled = currentEntry.enabled === false;
-											setNotice(currentEntry.enabled ? "条目已启用" : "条目已停用");
-										}}
+										className={`cs-toggle-btn ${current.e.enabled !== false ? "is-on" : ""}`}
+										disabled={busy}
+										onClick={() => void setMeta(current.item!.key, { enabled: current.e.enabled === false }, current.e.enabled === false ? "条目已启用" : "条目已停用")}
 									>
-										{currentEntry.enabled !== false ? "已启用" : "已停用"}
+										{current.e.enabled !== false ? "已启用" : "已停用"}
+									</button>
+									<button
+										type="button"
+										className="cs-btn-ghost"
+										disabled={busy}
+										onClick={() => void removeItem(current.item!.key, Boolean(current.item!.removed))}
+									>
+										{current.item.removed ? "撤销删除" : "删除条目"}
 									</button>
 								</div>
 							</div>
@@ -719,11 +781,9 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 									<input
 										type="text"
 										className="cs-input"
-										value={currentEntry.comment || ""}
-										onChange={(e) => {
-											currentEntry.comment = e.target.value;
-											setNotice("条目名称已更新");
-										}}
+										defaultValue={current.e.comment || ""}
+										key={`comment-${current.key}-${current.e.comment}`}
+										onBlur={(e) => { if (e.target.value !== (current.e.comment || "")) void setMeta(current.item!.key, { comment: e.target.value }, "条目名称已更新"); }}
 										placeholder="例如：世界观、境界划分、角色关系"
 									/>
 								</div>
@@ -732,15 +792,58 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 									<input
 										type="text"
 										className="cs-input"
-										value={(currentEntry.keys || []).join(", ")}
-										onChange={(e) => {
-											currentEntry.keys = e.target.value
-												.split(/[,，]/)
-												.map((k) => k.trim())
-												.filter(Boolean);
+										defaultValue={(current.e.keys || []).join(", ")}
+										key={`keys-${current.key}-${(current.e.keys || []).join(",")}`}
+										onBlur={(e) => {
+											const keys = e.target.value.split(/[,，]/).map((k) => k.trim()).filter(Boolean);
+											if (keys.join(" ") !== (current.e.keys || []).join(" ")) void setMeta(current.item!.key, { keys }, "关键词已更新");
 										}}
 										placeholder="常驻条目无需填写"
 									/>
+								</div>
+							</div>
+							<div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 12 }}>
+								<div className="cs-field">
+									<label className="cs-label">插入位置</label>
+									<select
+										className="cs-input"
+										value={curPosition}
+										disabled={busy}
+										onChange={(e) => void setMeta(current.item!.key, { position: e.target.value }, "插入位置已更新")}
+									>
+										{positionOptions.map((p) => <option key={p} value={p}>{p}</option>)}
+									</select>
+								</div>
+								<div className="cs-field">
+									<label className="cs-label">深度 / 顺序</label>
+									<div style={{ display: "flex", gap: 6 }}>
+										<input
+											type="number"
+											className="cs-input"
+											key={`depth-${current.key}-${current.e.extensions?.depth}`}
+											defaultValue={current.e.extensions?.depth ?? 4}
+											disabled={curPosition !== "at_depth"}
+											onBlur={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== (current.e.extensions?.depth ?? 4)) void setMeta(current.item!.key, { depth: v }, "深度已更新"); }}
+										/>
+										<input
+											type="number"
+											className="cs-input"
+											key={`order-${current.key}-${current.e.insertion_order}`}
+											defaultValue={current.e.insertion_order ?? 100}
+											onBlur={(e) => { const v = Number(e.target.value); if (Number.isFinite(v) && v !== (current.e.insertion_order ?? 100)) void setMeta(current.item!.key, { insertion_order: v }, "顺序已更新"); }}
+										/>
+									</div>
+								</div>
+								<div className="cs-field">
+									<label className="cs-label">板块归属{current.item.declared ? "（已声明）" : ""}</label>
+									<select
+										className="cs-input"
+										value={current.item.declared ? current.item.section : ""}
+										disabled={busy}
+										onChange={(e) => void assignItem(current.item!.key, e.target.value)}
+									>
+										{sectionOptions.map(([id, label]) => <option key={id} value={id}>{label}{id === "" ? `：${current.item!.defaultSection}` : ""}</option>)}
+									</select>
 								</div>
 							</div>
 
@@ -756,7 +859,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 									style={{ flex: 1, minHeight: 340 }}
 									value={curContent}
 									onChange={(e) => {
-										if (currentRes) setDrafts((d) => ({ ...d, [currentRes.id]: e.target.value }));
+										if (current.res) setDrafts((d) => ({ ...d, [current.res!.id]: e.target.value }));
 									}}
 									placeholder="在此编写详细设定正文..."
 								/>
@@ -766,20 +869,18 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 								<button
 									type="button"
 									className="cs-btn-primary"
-									disabled={busy || !currentRes}
+									disabled={busy || !current.res || drafts[current.res.id] === undefined}
 									onClick={async () => {
-										if (currentRes && drafts[currentRes.id] !== undefined) {
-											await saveResource(currentRes, drafts[currentRes.id]);
-										}
+										if (current.res && drafts[current.res.id] !== undefined) await saveResource(current.res, drafts[current.res.id]);
 									}}
 								>
-									保存此条目
+									保存正文
 								</button>
 							</div>
 						</>
 					) : (
 						<div style={{ color: "var(--text-faint)", padding: 40, textAlign: "center" }}>
-							没有匹配的条目，请调整筛选条件。
+							{rows.length ? "没有匹配的条目，请调整筛选条件。" : "这张卡还没有世界书条目，点「新增条目」开始。"}
 						</div>
 					)}
 				</div>
@@ -848,44 +949,62 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 04 开场白与分支故事
 	const renderSection04 = () => {
-		const greetings = [rawCard?.first_mes || "", ...(rawCard?.alternate_greetings || [])];
+		// 默认开场 ＋ 备选 ＋ 群聊开场：全部来自资源清单，顺序与卡内一致；备选/群聊可增删
 		const greetingResources = status?.resources.filter((r) => r.kind === "greeting") || [];
-		const curGreetingRes = greetingResources[selectedGreetingIdx];
-		const curGreetingText = curGreetingRes
-			? getFieldValue(curGreetingRes.id, greetings[selectedGreetingIdx] || "")
-			: "";
+		const greetingItems = new Map<string, CardOutlineItem>();
+		for (const item of outline?.sections.find((s) => s.id === "greetings")?.items || []) if (item.resources[0]) greetingItems.set(item.resources[0], item);
+		const idx = Math.min(selectedGreetingIdx, Math.max(0, greetingResources.length - 1));
+		const curGreetingRes = greetingResources[idx];
+		const curItem = curGreetingRes ? greetingItems.get(curGreetingRes.id) : undefined;
+		const fallback = (r: CardResource | undefined) => {
+			if (!r) return "";
+			const last = r.path[r.path.length - 1];
+			if (last === "first_mes") return rawCard?.first_mes || "";
+			const list = r.path[r.path.length - 2] === "group_only_greetings" ? (rawCard as { group_only_greetings?: string[] }).group_only_greetings : rawCard?.alternate_greetings;
+			return list?.[Number(last)] || "";
+		};
+		const curGreetingText = curGreetingRes ? getFieldValue(curGreetingRes.id, fallback(curGreetingRes)) : "";
 
 		return (
 			<div className="cs-card">
-				<div className="cs-tabs">
-					{greetings.map((_, idx) => (
-						<button
-							key={idx}
-							type="button"
-							className={`cs-tab ${selectedGreetingIdx === idx ? "is-active" : ""}`}
-							onClick={() => {
-								setSelectedGreetingIdx(idx);
-								if (greetingResources[idx]) ensureDraft(greetingResources[idx]);
-							}}
-						>
-							{idx === 0 ? "默认开场 (first_mes)" : `备选开场 ${idx}`}
-						</button>
-					))}
+				<div className="cs-tabs" style={{ flexWrap: "wrap", alignItems: "center" }}>
+					{greetingResources.map((r, i) => {
+						const item = greetingItems.get(r.id);
+						return (
+							<button
+								key={r.id}
+								type="button"
+								className={`cs-tab ${idx === i ? "is-active" : ""}`}
+								style={item?.removed ? { textDecoration: "line-through", opacity: 0.6 } : undefined}
+								onClick={() => {
+									setSelectedGreetingIdx(i);
+									ensureDraft(r);
+								}}
+							>
+								{r.name}{item?.addition ? " ·新" : ""}{r.changed && !item?.addition ? " ·改" : ""}
+							</button>
+						);
+					})}
+					<button type="button" className="cs-btn-ghost" style={{ padding: "3px 10px" }} disabled={busy}
+						onClick={() => void addItem("greeting", {}, () => setSelectedGreetingIdx(greetingResources.length))}>
+						＋ 备选开场
+					</button>
+					<button type="button" className="cs-btn-ghost" style={{ padding: "3px 10px" }} disabled={busy}
+						onClick={() => void addItem("greeting", { group: true }, () => setSelectedGreetingIdx(greetingResources.length))}>
+						＋ 群聊开场
+					</button>
 				</div>
 
 				<div className="cs-field">
-					<div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-						<label className="cs-label">
-							{selectedGreetingIdx === 0 ? "默认第一条消息内容" : `备选开场 #${selectedGreetingIdx} 正文`}
-						</label>
-						<span style={{ fontSize: 11, color: "var(--text-faint)" }}>
-							{curGreetingText.length} 字
-						</span>
+					<div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6, gap: 8 }}>
+						<label className="cs-label">{curGreetingRes?.name ?? "开场白"} 正文</label>
+						<span style={{ fontSize: 11, color: "var(--text-faint)" }}>{curGreetingText.length} 字</span>
 					</div>
 					<textarea
 						className="cs-textarea cs-textarea-code"
 						rows={14}
 						value={curGreetingText}
+						disabled={!curGreetingRes || Boolean(curItem?.removed)}
 						onChange={(e) => {
 							if (curGreetingRes) setDrafts((d) => ({ ...d, [curGreetingRes.id]: e.target.value }));
 						}}
@@ -893,15 +1012,20 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 					/>
 				</div>
 
-				<div style={{ display: "flex", justifyContent: "flex-end", marginTop: 14 }}>
+				<div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 14 }}>
+					{curItem?.path && (
+						<button type="button" className="cs-btn-ghost" disabled={busy} onClick={() => void removeItem(curItem.key, Boolean(curItem.removed))}>
+							{curItem.removed ? "撤销删除" : "删除这条开场"}
+						</button>
+					)}
 					<button
 						type="button"
 						className="cs-btn-primary"
-						disabled={busy || !curGreetingRes}
+						disabled={busy || !curGreetingRes || drafts[curGreetingRes.id] === undefined}
 						onClick={async () => {
 							if (curGreetingRes && drafts[curGreetingRes.id] !== undefined) {
 								await saveResource(curGreetingRes, drafts[curGreetingRes.id]);
-								setNotice("开场白已保存！");
+								setNotice("开场白已保存");
 							}
 						}}
 					>
@@ -981,95 +1105,162 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 06 状态栏与卡面组件（带真实 HTML/CSS 模板编辑与预览）
 	const renderSection06 = () => {
+		// 界面 ＝ 显示正则里带 HTML 的模板；页面脚本 ＝ tavern_helper.scripts。两种都可增删、改元数据、编辑源码
 		const uiItems = outline?.sections.find((s) => s.id === "ui")?.items || [];
-		const curUiItem = uiItems[selectedUiIdx];
-		// ui item 的 resources 通常是 [patternResId, templateResId]
-		const templateResId = curUiItem?.resources[1] || curUiItem?.resources[0];
-		const templateRes = status?.resources.find((r) => r.id === templateResId);
-		const curTemplateCode = templateRes ? getFieldValue(templateRes.id, "") : "";
+		const scriptItems = outline?.sections.find((s) => s.id === "scripts")?.items || [];
+		const list: Array<{ item: CardOutlineItem; kind: "ui" | "script" }> = [
+			...uiItems.map((item) => ({ item, kind: "ui" as const })),
+			...scriptItems.map((item) => ({ item, kind: "script" as const })),
+		];
+		const cur = list[selectedUiIdx];
+		const codeResId = cur?.kind === "ui" ? cur.item.resources[1] || cur.item.resources[0] : cur?.item.resources[0];
+		const codeRes = status?.resources.find((r) => r.id === codeResId);
+		const curCode = codeRes ? getFieldValue(codeRes.id, "") : "";
+		const patternRes = cur?.kind === "ui" && cur.item.resources.length > 1 ? status?.resources.find((r) => r.id === cur.item.resources[0]) : undefined;
+		const curPattern = patternRes ? getFieldValue(patternRes.id, "") : "";
 
 		return (
 			<div className="cs-split-pane">
 				<div className="cs-split-list">
 					<div className="cs-split-list-header">
-						<span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-strong)" }}>
-							状态栏与界面组件 ({uiItems.length})
-						</span>
+						<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+							<span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-strong)" }}>
+								界面组件 ({uiItems.length}) · 页面脚本 ({scriptItems.length})
+							</span>
+							<div style={{ display: "flex", gap: 6 }}>
+								<button type="button" className="cs-btn-ghost" style={{ padding: "3px 8px" }} disabled={busy}
+									onClick={() => void addItem("regex", { scriptName: "新界面", placement: [2], markdownOnly: true }, () => setSelectedUiIdx(uiItems.length))}>
+									＋ 界面
+								</button>
+								<button type="button" className="cs-btn-ghost" style={{ padding: "3px 8px" }} disabled={busy}
+									onClick={() => void addItem("script", { name: "新脚本" }, () => setSelectedUiIdx(list.length))}>
+									＋ 脚本
+								</button>
+							</div>
+						</div>
 					</div>
 					<div className="cs-split-list-items">
-						{uiItems.map((item, idx) => {
-							const isAct = idx === selectedUiIdx;
-							return (
-								<div
-									key={item.key}
-									className={`cs-split-item ${isAct ? "is-active" : ""}`}
-									onClick={() => {
-										setSelectedUiIdx(idx);
-										const res = status?.resources.find((r) => (item.resources[1] || item.resources[0]) === r.id);
-										if (res) ensureDraft(res);
-									}}
-								>
-									<span className="cs-split-item-title">{item.label}</span>
-									<div className="cs-split-item-meta">
-										<span>{item.size} 字节</span>
-										{item.facts.placeholder && <span className="cs-badge cs-badge-gold">状态栏</span>}
-									</div>
+						{list.map(({ item, kind }, idx) => (
+							<div
+								key={item.key}
+								className={`cs-split-item ${idx === selectedUiIdx ? "is-active" : ""}`}
+								style={item.removed ? { opacity: 0.5, textDecoration: "line-through" } : undefined}
+								onClick={() => {
+									setSelectedUiIdx(idx);
+									const id = kind === "ui" ? item.resources[1] || item.resources[0] : item.resources[0];
+									const res = status?.resources.find((r) => r.id === id);
+									if (res) ensureDraft(res);
+									const pat = kind === "ui" && item.resources.length > 1 ? status?.resources.find((r) => r.id === item.resources[0]) : undefined;
+									if (pat) ensureDraft(pat);
+								}}
+							>
+								<div className="cs-split-item-row">
+									<span className="cs-split-item-title">{item.label || (kind === "ui" ? "未命名界面" : "未命名脚本")}</span>
+									{item.addition && <span className="cs-badge cs-badge-green">新增</span>}
+									{item.removed && <span className="cs-badge cs-badge-gray">待删</span>}
 								</div>
-							);
-						})}
-						{uiItems.length === 0 && (
+								<div className="cs-split-item-meta">
+									<span>{kind === "ui" ? "界面" : "脚本"}</span>
+									<span>{item.size} 字节</span>
+									{item.facts.placeholder && <span className="cs-badge cs-badge-gold">状态栏挂载点</span>}
+									{item.facts.importOnly && <span>仅远程 import</span>}
+									{!item.enabled && <span style={{ color: "var(--text-faint)" }}>停用</span>}
+								</div>
+							</div>
+						))}
+						{list.length === 0 && (
 							<div style={{ color: "var(--text-faint)", padding: 16, fontSize: 12 }}>
-								无独立状态栏组件
+								这张卡没有界面组件或页面脚本。
 							</div>
 						)}
 					</div>
 				</div>
 
 				<div className="cs-split-detail">
-					{curUiItem && templateRes ? (
+					{cur && codeRes ? (
 						<>
-							<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center" }}>
+							<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
 								<div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-strong)" }}>
-									{curUiItem.label}
+									{cur.item.label || "未命名"}
 								</div>
-								<div style={{ display: "flex", gap: 8 }}>
+								<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+									<button
+										type="button"
+										className={`cs-toggle-btn ${cur.item.enabled ? "is-on" : ""}`}
+										disabled={busy}
+										onClick={() => void setMeta(cur.item.key, cur.kind === "ui" ? { disabled: cur.item.enabled } : { enabled: !cur.item.enabled }, cur.item.enabled ? "已停用" : "已启用")}
+									>
+										{cur.item.enabled ? "已启用" : "已停用"}
+									</button>
+									<button type="button" className="cs-btn-ghost" disabled={busy} onClick={() => void removeItem(cur.item.key, Boolean(cur.item.removed))}>
+										{cur.item.removed ? "撤销删除" : "删除"}
+									</button>
 									<button type="button" className="cs-btn-ghost" onClick={handlePreview} disabled={busy}>
 										实时运行预览
 									</button>
 								</div>
 							</div>
 
+							<div style={{ display: "grid", gridTemplateColumns: cur.kind === "ui" ? "1fr 1fr" : "1fr", gap: 12 }}>
+								<div className="cs-field">
+									<label className="cs-label">名称</label>
+									<input
+										type="text"
+										className="cs-input"
+										key={`name-${cur.item.key}-${cur.item.label}`}
+										defaultValue={cur.item.label}
+										onBlur={(e) => { if (e.target.value !== cur.item.label) void setMeta(cur.item.key, cur.kind === "ui" ? { scriptName: e.target.value } : { name: e.target.value }, "名称已更新"); }}
+									/>
+								</div>
+								{cur.kind === "ui" && patternRes && (
+									<div className="cs-field">
+										<label className="cs-label">挂载标签 / 匹配正则</label>
+										<input
+											type="text"
+											className="cs-input"
+											value={curPattern}
+											onFocus={() => ensureDraft(patternRes)}
+											onChange={(e) => setDrafts((d) => ({ ...d, [patternRes.id]: e.target.value }))}
+											placeholder="<StatusBar/>"
+										/>
+									</div>
+								)}
+							</div>
+
 							<div className="cs-field">
 								<div style={{ display: "flex", justifyContent: "space-between", alignItems: "baseline", marginBottom: 6 }}>
-									<label className="cs-label">HTML / CSS 渲染模板源码</label>
+									<label className="cs-label">{cur.kind === "ui" ? "HTML / CSS 渲染模板源码" : "页面脚本源码"}</label>
 									<span style={{ fontSize: 11, color: "var(--text-faint)" }}>
-										{curTemplateCode.length} 字节 · {curTemplateCode.split("\n").length} 行
+										{curCode.length} 字节 · {curCode.split("\n").length} 行
 									</span>
 								</div>
 								<textarea
 									className="cs-textarea cs-textarea-code"
 									style={{ flex: 1, minHeight: 360 }}
-									value={curTemplateCode}
-									onFocus={() => ensureDraft(templateRes)}
-									onChange={(e) => setDrafts((d) => ({ ...d, [templateRes.id]: e.target.value }))}
-									placeholder="<div>状态栏 HTML 模板</div>"
+									value={curCode}
+									onFocus={() => ensureDraft(codeRes)}
+									onChange={(e) => setDrafts((d) => ({ ...d, [codeRes.id]: e.target.value }))}
+									placeholder={cur.kind === "ui" ? "<div>状态栏 HTML 模板</div>" : "// 页面脚本"}
 								/>
 							</div>
 
-							<div style={{ display: "flex", justifyContent: "flex-end" }}>
+							<div style={{ display: "flex", justifyContent: "flex-end", gap: 10 }}>
 								<button
 									type="button"
 									className="cs-btn-primary"
-									disabled={busy}
-									onClick={() => saveResource(templateRes, drafts[templateRes.id] ?? "")}
+									disabled={busy || (drafts[codeRes.id] === undefined && (!patternRes || drafts[patternRes.id] === undefined))}
+									onClick={async () => {
+										if (patternRes && drafts[patternRes.id] !== undefined) await saveResource(patternRes, drafts[patternRes.id]);
+										if (drafts[codeRes.id] !== undefined) await saveResource(codeRes, drafts[codeRes.id]);
+									}}
 								>
-									保存模板代码
+									保存源码
 								</button>
 							</div>
 						</>
 					) : (
 						<div style={{ color: "var(--text-faint)", padding: 40, textAlign: "center" }}>
-							请从左侧选择状态栏或界面组件。
+							请从左侧选择界面组件或页面脚本。
 						</div>
 					)}
 				</div>
@@ -1079,89 +1270,119 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 07 消息前端与显示正则（可查看并修改 find 与 replace 模板）
 	const renderSection07 = () => {
-		const regexList = rawCard?.extensions?.regex_scripts || [];
-		const regexItems = outline?.sections.find((s) => s.id === "prompt-regex")?.items || [];
+		// 文本正则 ＝ 送模侧/裁剪/纯文本替换（prompt-regex）＋ 梨园不消费的其他 placement（other）。界面正则在 06。
+		const all = outline?.sections.flatMap((s) => s.items) || [];
+		const regexItems = all.filter((i) => i.path && i.path[i.path.length - 2] === "regex_scripts" && i.section !== "ui");
 		const curItem = regexItems[selectedRegexIdx];
 		const patternRes = status?.resources.find((r) => curItem?.resources[0] === r.id);
 		const templateRes = status?.resources.find((r) => curItem?.resources[1] === r.id);
-
-		const curFind = patternRes ? getFieldValue(patternRes.id, "") : (regexList[selectedRegexIdx]?.findRegex || "");
-		const curReplace = templateRes ? getFieldValue(templateRes.id, "") : (regexList[selectedRegexIdx]?.replaceString || "");
+		const curFind = patternRes ? getFieldValue(patternRes.id, "") : "";
+		const curReplace = templateRes ? getFieldValue(templateRes.id, "") : "";
+		const placement = String(curItem?.facts.placement ?? "");
 
 		return (
 			<div className="cs-split-pane">
 				<div className="cs-split-list">
 					<div className="cs-split-list-header">
-						<span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-strong)" }}>
-							正则规则清单 ({regexList.length})
-						</span>
+						<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 8 }}>
+							<span style={{ fontSize: 12.5, fontWeight: 700, color: "var(--text-strong)" }}>
+								文本正则 ({regexItems.length})
+							</span>
+							<button type="button" className="cs-btn-ghost" style={{ padding: "3px 10px" }} disabled={busy}
+								onClick={() => void addItem("regex", { scriptName: "新正则", placement: [2], markdownOnly: false, promptOnly: true }, () => setSelectedRegexIdx(regexItems.length))}>
+								＋ 新增正则
+							</button>
+						</div>
 					</div>
 					<div className="cs-split-list-items">
-						{regexList.map((r, idx) => {
-							const isAct = idx === selectedRegexIdx;
-							return (
-								<div
-									key={idx}
-									className={`cs-split-item ${isAct ? "is-active" : ""}`}
-									onClick={() => {
-										setSelectedRegexIdx(idx);
-										const item = regexItems[idx];
-										if (item) {
-											const p = status?.resources.find((res) => item.resources[0] === res.id);
-											const t = status?.resources.find((res) => item.resources[1] === res.id);
-											if (p) ensureDraft(p);
-											if (t) ensureDraft(t);
-										}
-									}}
-								>
-									<span className="cs-split-item-title">{r.scriptName || `正则 #${idx + 1}`}</span>
-									<div className="cs-split-item-meta">
-										<span>{r.disabled ? "停用" : "生效"}</span>
-										<span>{r.markdownOnly ? "仅显示" : "送模"}</span>
-									</div>
+						{regexItems.map((item, idx) => (
+							<div
+								key={item.key}
+								className={`cs-split-item ${idx === selectedRegexIdx ? "is-active" : ""}`}
+								style={item.removed ? { opacity: 0.5, textDecoration: "line-through" } : undefined}
+								onClick={() => {
+									setSelectedRegexIdx(idx);
+									for (const id of item.resources) {
+										const res = status?.resources.find((r) => r.id === id);
+										if (res) ensureDraft(res);
+									}
+								}}
+							>
+								<div className="cs-split-item-row">
+									<span className="cs-split-item-title">{item.label || "未命名正则"}</span>
+									{item.addition && <span className="cs-badge cs-badge-green">新增</span>}
+									{item.removed && <span className="cs-badge cs-badge-gray">待删</span>}
 								</div>
-							);
-						})}
+								<div className="cs-split-item-meta">
+									<span>{item.enabled ? "生效" : "停用"}</span>
+									<span>{item.facts.promptOnly ? "送模" : item.facts.markdownOnly ? "仅显示" : "两侧"}</span>
+									{item.section === "other" && <span style={{ color: "var(--text-faint)" }}>placement {String(item.facts.placement)} · 梨园未消费</span>}
+								</div>
+							</div>
+						))}
+						{regexItems.length === 0 && (
+							<div style={{ color: "var(--text-faint)", padding: 16, fontSize: 12 }}>这张卡没有文本正则。</div>
+						)}
 					</div>
 				</div>
 
 				<div className="cs-split-detail">
-					{regexList[selectedRegexIdx] ? (
+					{curItem ? (
 						<>
-							<div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-strong)" }}>
-								{regexList[selectedRegexIdx].scriptName || `正则 #${selectedRegexIdx + 1}`}
+							<div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", flexWrap: "wrap", gap: 8 }}>
+								<div style={{ fontSize: 15, fontWeight: 700, color: "var(--text-strong)" }}>{curItem.label || "未命名正则"}</div>
+								<div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
+									<button type="button" className={`cs-toggle-btn ${curItem.enabled ? "is-on" : ""}`} disabled={busy}
+										onClick={() => void setMeta(curItem.key, { disabled: curItem.enabled }, curItem.enabled ? "已停用" : "已启用")}>
+										{curItem.enabled ? "已启用" : "已停用"}
+									</button>
+									<button type="button" className={`cs-toggle-btn ${curItem.facts.promptOnly ? "is-on" : ""}`} disabled={busy}
+										onClick={() => void setMeta(curItem.key, { promptOnly: !curItem.facts.promptOnly }, "送模侧开关已更新")}>
+										送模侧
+									</button>
+									<button type="button" className={`cs-toggle-btn ${curItem.facts.markdownOnly ? "is-on" : ""}`} disabled={busy}
+										onClick={() => void setMeta(curItem.key, { markdownOnly: !curItem.facts.markdownOnly }, "显示侧开关已更新")}>
+										显示侧
+									</button>
+									<button type="button" className="cs-btn-ghost" disabled={busy} onClick={() => void removeItem(curItem.key, Boolean(curItem.removed))}>
+										{curItem.removed ? "撤销删除" : "删除"}
+									</button>
+								</div>
+							</div>
+							<div style={{ display: "grid", gridTemplateColumns: "2fr 1fr", gap: 12 }}>
+								<div className="cs-field">
+									<label className="cs-label">名称</label>
+									<input type="text" className="cs-input" key={`rname-${curItem.key}-${curItem.label}`} defaultValue={curItem.label}
+										onBlur={(e) => { if (e.target.value !== curItem.label) void setMeta(curItem.key, { scriptName: e.target.value }, "名称已更新"); }} />
+								</div>
+								<div className="cs-field">
+									<label className="cs-label">placement（酒馆枚举，逗号分隔）</label>
+									<input type="text" className="cs-input" key={`pl-${curItem.key}-${placement}`} defaultValue={placement}
+										onBlur={(e) => {
+											const next = e.target.value.split(/[,，\s]+/).filter(Boolean).map(Number).filter((n) => Number.isInteger(n));
+											if (next.join(",") !== placement) void setMeta(curItem.key, { placement: next }, "placement 已更新");
+										}} />
+								</div>
 							</div>
 							<div className="cs-field">
 								<label className="cs-label">匹配表达式 (Find Regex)</label>
-								<textarea
-									className="cs-textarea cs-textarea-code"
-									rows={3}
-									value={curFind}
-									onChange={(e) => {
-										if (patternRes) setDrafts((d) => ({ ...d, [patternRes.id]: e.target.value }));
-									}}
-								/>
+								<textarea className="cs-textarea cs-textarea-code" rows={3} value={curFind}
+									onChange={(e) => { if (patternRes) setDrafts((d) => ({ ...d, [patternRes.id]: e.target.value })); }} />
 							</div>
 							<div className="cs-field" style={{ flex: 1 }}>
 								<label className="cs-label">替换内容 / 模板 (Replace String)</label>
-								<textarea
-									className="cs-textarea cs-textarea-code"
-									style={{ minHeight: 220 }}
-									value={curReplace}
-									onChange={(e) => {
-										if (templateRes) setDrafts((d) => ({ ...d, [templateRes.id]: e.target.value }));
-									}}
-								/>
+								<textarea className="cs-textarea cs-textarea-code" style={{ minHeight: 220 }} value={curReplace}
+									onChange={(e) => { if (templateRes) setDrafts((d) => ({ ...d, [templateRes.id]: e.target.value })); }} />
 							</div>
 							<div style={{ display: "flex", justifyContent: "flex-end" }}>
 								<button
 									type="button"
 									className="cs-btn-primary"
-									disabled={busy}
+									disabled={busy || ((!patternRes || drafts[patternRes.id] === undefined) && (!templateRes || drafts[templateRes.id] === undefined))}
 									onClick={async () => {
 										if (patternRes && drafts[patternRes.id] !== undefined) await saveResource(patternRes, drafts[patternRes.id]);
 										if (templateRes && drafts[templateRes.id] !== undefined) await saveResource(templateRes, drafts[templateRes.id]);
-										setNotice("正则规则已保存！");
+										setNotice("正则规则已保存");
 									}}
 								>
 									保存此正则规则
@@ -1169,9 +1390,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 							</div>
 						</>
 					) : (
-						<div style={{ color: "var(--text-faint)", padding: 40, textAlign: "center" }}>
-							请选择要编辑的正则表达式。
-						</div>
+						<div style={{ color: "var(--text-faint)", padding: 40, textAlign: "center" }}>请选择要编辑的正则表达式。</div>
 					)}
 				</div>
 			</div>
@@ -1240,7 +1459,10 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 09 检查与导出
 	const renderSection09 = () => {
-		const changedList = status?.resources.filter((r) => r.changed) || [];
+		const changedList = status?.resources.filter((r) => r.changed && !r.removed) || [];
+		const ch = status?.changes;
+		const structural = ch ? [ch.added ? `新增 ${ch.added}` : "", ch.removed ? `删除 ${ch.removed}` : "", ch.meta ? `元数据 ${ch.meta}` : "", ch.cover ? "封面" : ""].filter(Boolean) : [];
+		const pendingTotal = changedList.length + (ch ? ch.added + ch.removed + ch.meta + (ch.cover ? 1 : 0) : 0);
 		const depItems = outline?.sections.find((s) => s.id === "deps")?.items || [];
 
 		return (
@@ -1278,11 +1500,29 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 				<div className="cs-card">
 					<div className="cs-card-title">
-						<span className="cs-arrow-gold">&gt;</span> 待应用变更 ({changedList.length})
+						<span className="cs-arrow-gold">&gt;</span> 待应用变更 ({pendingTotal})
 					</div>
+					{status?.conflict && (
+						<div className="cs-badge cs-badge-gold" style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 12px", marginBottom: 8 }}>
+							<span>原卡已被其他入口改动，创作稿基于旧版本。</span>
+							<button type="button" className="cs-btn-ghost" disabled={busy} onClick={() => void runOp(async () => {
+								const r = await operation<{ conflicts?: string[]; dropped: string[] }>({ action: "rebase" });
+								setNotice(r.conflicts?.length ? `已重新同步，${r.conflicts.length} 项需人工核对` : "已重新同步到当前原卡");
+							})}>重新同步</button>
+						</div>
+					)}
+					{status?.conflicts?.length ? (
+						<div style={{ fontSize: 12, color: "var(--accent-strong)", marginBottom: 8 }}>
+							需人工核对（两边都改过）：{status.conflicts.map((id) => status.resources.find((r) => r.id === id)?.name ?? id).join("、")}
+						</div>
+					) : null}
+					{structural.length > 0 && (
+						<div style={{ fontSize: 12, color: "var(--text-soft)", marginBottom: 8 }}>结构改动：{structural.join(" · ")}</div>
+					)}
+					{ch?.stale ? <div style={{ fontSize: 12, color: "var(--accent-strong)", marginBottom: 8 }}>{ch.stale} 项结构改动与当前基线对不上，请重新同步或放弃。</div> : null}
 					{changedList.length === 0 ? (
 						<div style={{ fontSize: 12, color: "var(--text-faint)" }}>
-							当前无待应用的草稿改动。
+							{pendingTotal ? "没有正文改动。" : "当前无待应用的草稿改动。"}
 						</div>
 					) : (
 						<div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
@@ -1334,12 +1574,17 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 						<button
 							type="button"
 							className="cs-btn-primary"
-							disabled={busy || changedList.length === 0}
+							disabled={busy || pendingTotal === 0 || Boolean(status?.conflict)}
 							onClick={handleApply}
 						>
-							应用到当前角色卡 ({changedList.length} 项变更)
+							应用到当前角色卡 ({pendingTotal} 项变更)
 						</button>
-						{status?.canUndo && (
+						{pendingTotal > 0 && (
+							<button type="button" className="cs-btn-ghost" disabled={busy} onClick={() => void runOp(async () => { await operation({ action: "discard" }); setDrafts({}); setNotice("已放弃全部未应用改动"); })}>
+								放弃全部改动
+							</button>
+						)}
+						{status?.canUndo && pendingTotal === 0 && (
 							<button type="button" className="cs-btn-ghost" disabled={busy} onClick={handleUndo}>
 								撤回上次应用
 							</button>
@@ -1586,6 +1831,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 						src={preview.url}
 						style={{ flex: 1, width: "100%", border: "none", background: "#fff" }}
 					/>
+					<PreviewEventList events={previewEvents} />
 				</div>
 			)}
 		</div>

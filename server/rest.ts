@@ -138,7 +138,8 @@ import {
 	translateReport,
 } from "../src/user-rules.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
-import { cardProjectOperation, inspectCardProject, previewCardProject } from "../src/card-authoring.ts";
+import { cardProjectOperation, inspectCardProject, previewCardProject, readCardCover } from "../src/card-authoring.ts";
+import type { CardPreviewReport } from "./card-preview.ts";
 import { readDeclaration, removeDeclaration, writeDeclarationFromDetection } from "../src/lorebook-declare.ts";
 import { constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
 import {
@@ -240,6 +241,10 @@ export interface RestHost {
 	 * 用于切身份、改 user 设定、挂载世界书等——ST 式即时生效。
 	 */
 	softRefreshConfig(): Promise<void>;
+	/** 页面回报 agent 预览结果；未决请求不存在时返回 false */
+	settleCardPreview(report: CardPreviewReport): boolean;
+	/** 与写卡工具同一条预览通道（REST 侧供面板与验证用） */
+	runCardPreview(args: Record<string, unknown>): Promise<unknown>;
 	/** config.card 已写盘后调用：切到该卡最近会话，无则新建 */
 	switchToCard(): Promise<"switched" | "created">;
 	/** 经会话通道执行斜杠命令（/import 等，扩展的 notify 会以 wire notify 推送） */
@@ -3076,6 +3081,25 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				sendJson(res, 200, inspectCardProject(host.cwd, path));
 				return true;
 			}
+			// 待换封面的图像（工坊预览用）；没有待换封面时 404
+			case "GET /api/card/authoring/cover": {
+				const path = currentCardPath(host.cwd, loadConfig(host.cwd));
+				const cover = readCardCover(host.cwd, path);
+				if (!cover) { sendJson(res, 404, { error: "没有待换封面" }); return true; }
+				res.writeHead(200, { "Content-Type": "image/png", "Cache-Control": "no-store" });
+				res.end(cover);
+				return true;
+			}
+			// 页面回报 agent 预览：事件列表 + 是否就绪
+			case "POST /api/card/authoring/preview-report": {
+				const body = JSON.parse(await readBody(req)) as Partial<CardPreviewReport>;
+				if (typeof body.id !== "string" || !Array.isArray(body.events)) throw new Error("预览回报格式不对");
+				const events = body.events.filter((e): e is CardPreviewReport["events"][number] =>
+					!!e && typeof e === "object" && typeof (e as { level?: unknown }).level === "string" && typeof (e as { message?: unknown }).message === "string")
+					.slice(0, 200).map((e) => ({ level: e.level, source: typeof e.source === "string" ? e.source : "预览", message: e.message.slice(0, 8000) }));
+				sendJson(res, 200, { accepted: host.settleCardPreview({ id: body.id, ready: body.ready === true, events }) });
+				return true;
+			}
 			case "POST /api/card/authoring":
 			case "POST /api/card/authoring/preview": {
 				const body = JSON.parse(await readBody(req)) as Record<string, unknown>;
@@ -3087,7 +3111,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				} else {
 					const applying = body.action === "apply" || body.action === "undo";
 					if (applying && refuseWhileStreaming()) return true;
-					const result = cardProjectOperation(host.cwd, path, body);
+					const result = body.action === "preview" ? await host.runCardPreview(body) : cardProjectOperation(host.cwd, path, body);
 					if (applying) await host.softRefreshConfig();
 					sendJson(res, 200, result);
 				}

@@ -35,6 +35,7 @@ import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { FloatWindow } from "./components/FloatWindow.tsx";
+import { PreviewRunner, type CardPreviewRequestFrame } from "./components/PreviewRunner.tsx";
 import { CardStudio } from "./components/CardStudio.tsx";
 import { WelcomePanel } from "./components/HomePage.tsx";
 import { StatusPanel } from "./components/StatusPanel.tsx";
@@ -285,6 +286,8 @@ export default function App() {
 	const [bellOpen, setBellOpen] = useState(false);
 	// 决策门禁（Phase 4 柱 1）：当前挂起的选择卡（live 交互；应答后收敛，留痕由重放消息渲染）
 	const [activeChoice, setActiveChoice] = useState<{ id: string; question: string; options: string[]; placeholder?: string } | null>(null);
+	/** agent 请求页面渲染创作稿（card_preview 帧）：可见地跑一次并回报 */
+	const [previewRequest, setPreviewRequest] = useState<CardPreviewRequestFrame | null>(null);
 	// agent 自建面板（柱 2）：server 推送的活跃面板全量（页签序）；入口在面板坞，展开到左栏
 	const [agentPanels, setAgentPanels] = useState<RpPanel[]>([]);
 	// 助手（右栏独立会话，2026-07-14 拆分）：消息/流式/模型全由 assistant_* 帧驱动
@@ -1026,6 +1029,9 @@ export default function App() {
 				case "choice_resolved":
 					// 该询问已决（本端/他端应答或超时）：收起 live 卡；留痕由工具结果重放消息承载
 					setActiveChoice((c) => (c && c.id === frame.id ? null : c));
+					break;
+				case "card_preview":
+					setPreviewRequest({ id: frame.id, data: frame.data, message: frame.message, variables: frame.variables, wait: frame.wait });
 					break;
 				case "assistant_hello":
 					setAsstMsgs(frame.messages);
@@ -2628,6 +2634,7 @@ export default function App() {
 				)}
 			</div>
 			</div>
+			<PreviewRunner request={previewRequest} onClose={() => setPreviewRequest(null)} />
 			{floatPanel &&
 				(() => {
 					// agent 自建面板与内置面板共用同一个壳，只是标题/图标/刷新与内容各自不同

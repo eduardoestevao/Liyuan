@@ -46,7 +46,8 @@ import { authorScriptManifest, extractAuthorScripts } from "../src/authorScripts
 import { buildGreeting } from "../src/greeting.ts";
 import { StageEngine, type AssistantMsgLike, type StageModelLike, type StageStreamFn } from "../src/stage/engine.ts";
 import { displayConversationBranch, storyBranch, messageMode, isConversationMode } from "../src/conversation-mode.ts";
-import { cardProjectOperation } from "../src/card-authoring.ts";
+import { cardProjectOperation, previewCardProject } from "../src/card-authoring.ts";
+import { buildCardPreviewRequest, CardPreviewHub } from "./card-preview.ts";
 import { stateFromBranch, type BranchEntryLike } from "../src/stage/assemble.ts";
 import {
 	activePanels,
@@ -60,6 +61,7 @@ import {
 	dir,
 	migrateLegacyLayout,
 	preferLiyuanAgentHome,
+	seedBuiltinSkills,
 	seedStageSystemPrompt,
 	resolveConfigPath,
 	takeAgentMergeLog,
@@ -175,6 +177,7 @@ const cwd = process.cwd();
 // 扮演骨架播种（刀1，docs/PLAN-AGENT-SLOTS.md §七）：首次启动把随包的
 // assets/SYSTEM.md 落到 <agentDir>/SYSTEM.md；已存在不覆盖——改了就是用户的。
 seedStageSystemPrompt(cwd, agentHome);
+seedBuiltinSkills(cwd);
 const HOST = process.env.HOST ?? "0.0.0.0";
 const PORT = Number(process.env.PORT ?? 7620);
 const newSessionFlag = process.argv.includes("--new");
@@ -310,6 +313,12 @@ const broadcast = (frame: ServerFrame) => {
 		if (ws.readyState === ws.OPEN) ws.send(data);
 	}
 };
+/** agent 预览：广播请求并返回在线页面数（0 ＝ 没人能渲染） */
+const cardPreviews = new CardPreviewHub((request) => {
+	const frame = { type: "card_preview" as const, ...request };
+	broadcast(frame);
+	return [...clients].filter((ws) => ws.readyState === ws.OPEN).length;
+});
 
 // ---------- 在线更新（主页 chip → 弹窗 → toast 进度；替换由启动脚本完成） ----------
 
@@ -1401,6 +1410,12 @@ const currentModelInfo = (): CurrentModelInfo | null => {
 const restHost: RestHost = {
 	cwd,
 	isStreaming: () => session.isStreaming,
+	settleCardPreview: (report) => cardPreviews.settle(report),
+	runCardPreview: (args) => {
+		const config = loadConfig(cwd);
+		const data = previewCardProject(cwd, currentCardPath(cwd, config), config.userName);
+		return cardPreviews.run(buildCardPreviewRequest(cardPreviews.nextId(), data, args));
+	},
 	listModels: () => ({
 		current: currentModelInfo(),
 		models: session.modelRuntime.getAvailableSnapshot().map((m) => ({
@@ -2638,7 +2653,12 @@ stage = new StageEngine({
 		void restHost.softRefreshConfig();
 	},
 	authoring: {
-		project: async (args) => cardProjectOperation(cwd, currentCardPath(cwd, loadConfig(cwd)), args),
+		project: async (args) => {
+			const config = loadConfig(cwd);
+			const path = currentCardPath(cwd, config);
+			if (args.action === "preview") return restHost.runCardPreview(args);
+			return cardProjectOperation(cwd, path, args);
+		},
 		updateCard: (patch) => updateCardFields(currentCardPath(cwd, loadConfig(cwd)), patch),
 		createCard: (input) => {
 			const created = createCardFile(cwd, input);
@@ -3148,6 +3168,7 @@ wss.on("connection", (ws, req) => {
 		ws.send(JSON.stringify({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED } } satisfies ServerFrame));
 	// 断线重连 / 新端接入：补发当前挂起的决策询问（未决卡不随 hello 历史走）
 	for (const [id, p] of pendingChoices) ws.send(JSON.stringify(choiceFrame(id, p)));
+	for (const request of cardPreviews.pending()) ws.send(JSON.stringify({ type: "card_preview", ...request }));
 
 	ws.on("message", (data) => {
 		void (async () => {

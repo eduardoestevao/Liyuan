@@ -66,6 +66,8 @@ PNG/JSON 仍是导出物与互操作格式，`创作/` 工程仍是真源；板�
 
 ## 五、当前状态
 
+- **2026-09-11 续篇**：结构操作、验证通道与写卡手册见 [PLAN-CARD-AUTHORING-2.md](PLAN-CARD-AUTHORING-2.md)。
+
 - **2026-09-09 已提交 `3d6b837`（feat: 角色卡工坊——主会话写卡模式、资源工程与全屏编辑平台）**，涵盖此前未提交的写卡模式、资源第一切片与本轮工坊全部改动；未 push、tag、release 或部署，7620 需重启后端＋刷新页面才生效。
 - **2026-09-09 用户定案：角色卡编辑平台到此封存不动。** 下一阶段**大改前端**，在新前端里把工坊接回去，再继续更新功能。工坊入口是 App.tsx 顶栏的编辑图标（`studioOpen` state ＋ `<CardStudio>` 全屏层，z-index 500）；大改前端时保持该挂载方式或按新架构迁移，功能通道（`/api/card/authoring` 的 outline/inspect/read/write/check/apply/undo/assign 与 preview）不动即可无缝接回。
 

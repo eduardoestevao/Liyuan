@@ -11,8 +11,10 @@ export interface CardResource {
 	length: number;
 	hash: string;
 	changed: boolean;
-	/** 复制产生的新增草稿：base 快照里没有，应用前一直算变更 */
+	/** 结构账本里的新增项：基线快照里没有，应用前一直算变更 */
 	addition?: boolean;
+	/** 已标记删除：应用时剔除；源文件仍在，可 restore */
+	removed?: boolean;
 }
 export interface CardProjectStatus {
 	prepared: boolean;
@@ -22,6 +24,10 @@ export interface CardProjectStatus {
 	conflict: boolean;
 	canUndo: boolean;
 	resources: CardResource[];
+	/** 结构账本概况 */
+	changes: { added: number; removed: number; meta: number; cover: boolean; stale: number };
+	/** 重新同步后仍需人工核对的资源 ID */
+	conflicts?: string[];
 }
 export interface CardProjectBuild {
 	hash: string;
@@ -30,6 +36,12 @@ export interface CardProjectBuild {
 	errors: Array<{ resource: string; message: string }>;
 	checkedScripts: string[];
 	checkedPatterns: string[];
+	/** 结构账本：新增/待删的路径键、元数据覆盖的路径键、是否换封面、与基线对不上的项 */
+	added: string[];
+	removed: string[];
+	meta: string[];
+	cover: boolean;
+	stale: string[];
 }
 export interface CardProjectPreview {
 	build: CardProjectBuild;
@@ -57,6 +69,11 @@ export interface CardOutlineItem {
 	label: string;
 	/** 可编辑的资源 ID（无字符串槽位的项为空） */
 	resources: string[];
+	/** 该项拥有的 JSON 节点路径；remove / restore / meta 按它寻址 */
+	path?: string[];
+	/** 结构账本里的新增项 / 已标记删除 */
+	addition?: boolean;
+	removed?: boolean;
 	size: number;
 	enabled: boolean;
 	/** 只放 spec 结构事实，不放正文 */

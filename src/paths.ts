@@ -350,6 +350,31 @@ export function seedStageSystemPrompt(cwd: string, agentDir: string): void {
 }
 
 /**
+ * 发行的内置 skill（assets/skills/<name>/SKILL.md）播种到全局技能根 skills/<name>/：
+ * 目标目录不存在才播种；存在就是用户的，不覆盖不合并（与 SYSTEM.md 同一规则）。
+ */
+export function seedBuiltinSkills(cwd: string): string[] {
+	const shipped = join(cwd, "assets", "skills");
+	const seeded: string[] = [];
+	if (!existsSync(shipped)) return seeded;
+	try {
+		for (const entry of readdirSync(shipped, { withFileTypes: true })) {
+			if (!entry.isDirectory()) continue;
+			const from = join(shipped, entry.name, "SKILL.md");
+			const targetDir = join(cwd, "skills", entry.name);
+			if (!existsSync(from) || existsSync(targetDir)) continue;
+			mkdirSync(targetDir, { recursive: true });
+			copyFileSync(from, join(targetDir, "SKILL.md"));
+			seeded.push(entry.name);
+			lastAgentMergeLog.push(`已播种内置 skill ${entry.name} → ${targetDir}`);
+		}
+	} catch (err) {
+		console.error(`[liyuan] 播种内置 skill 失败：${err instanceof Error ? err.message : String(err)}`);
+	}
+	return seeded;
+}
+
+/**
  * 把 ~/.pi/agent 中缺失或更新的文件并入 ~/.liyuan/agent。
  * - models/auth/settings：目标不存在则拷贝
  * - sessions/**：目标不存在，或源 mtime 更新 → 拷贝（绝不覆盖更新的目标）

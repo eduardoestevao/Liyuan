@@ -16,6 +16,7 @@ import {
 } from "../src/postprocess.ts";
 import { hasDepthLimits } from "../src/cardfront.ts";
 import type { AuthorScript } from "../src/authorScripts.ts";
+import type { CardProjectPreview } from "../src/card-authoring-types.ts";
 import { isBackstageText } from "../src/stance.ts";
 import { messageMode } from "../src/conversation-mode.ts";
 import { applyDraftOps, type DraftMsgLike } from "../src/draft.ts";
@@ -295,6 +296,8 @@ export type ServerFrame =
 	| { type: "choice"; id: string; question: string; options: string[]; placeholder?: string }
 	/** 询问已决（本端应答成功 / 他端先答 / 超时/中止）：前端把未决卡收敛成留痕态 */
 	| { type: "choice_resolved"; id: string; answer?: string; stopped?: boolean }
+	/** agent 请求页面渲染当前创作稿并回报（POST /api/card/authoring/preview-report） */
+	| { type: "card_preview"; id: string; data: CardProjectPreview; message: string; variables: Record<string, unknown>; wait: number }
 	/** 助手（右栏独立会话）：全量对齐（连接、面板打开、新对话、换模型后） */
 	| {
 			type: "assistant_hello";

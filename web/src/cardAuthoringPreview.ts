@@ -22,6 +22,11 @@ function diagnostics(doc: string, variables: Record<string, unknown>, source: st
 		// 预览 UI 存储留在沙箱内；chat/message 写入仍由正式垫片拒绝。
 		"window.__liyuanAuthorVarsRead=function(t){return parent.__liyuanPreviewUi[t]||{};};",
 		"window.__liyuanAuthorVarsWrite=function(t,p,mode){var v=mode==='replace'?{}:window.__liyuanAuthorVarsRead(t);return parent.__liyuanPreviewUi[t]=Object.assign({},v,p);};",
+		// DOM 摘要：agent 看不见屏幕，只能读这份（可见文本、元素数、标签分布、坏图、高度）。载入后报一次，父页请求快照时再报。
+		"function __liyuanSummary(){var b=document.body;if(!b)return null;var els=b.getElementsByTagName('*'),tags={};for(var i=0;i<els.length;i++){var t=els[i].tagName.toLowerCase();tags[t]=(tags[t]||0)+1;}var imgs=b.getElementsByTagName('img'),broken=0;for(var j=0;j<imgs.length;j++){if(imgs[j].complete&&imgs[j].naturalWidth===0)broken++;}var text=(b.innerText||'').replace(/[ \\t]+\\n/g,'\\n').replace(/\\n{3,}/g,'\\n\\n');return JSON.stringify({text:text.slice(0,3000),textLength:text.length,elements:els.length,tags:tags,images:imgs.length,brokenImages:broken,height:document.documentElement.scrollHeight});}",
+		"function __liyuanSnapshot(){var s=__liyuanSummary();if(s)report('dom',s);}",
+		"addEventListener('load',function(){setTimeout(__liyuanSnapshot,800);});",
+		"addEventListener('message',function(e){if(e.data&&e.data.liyuanPreviewSnapshot)__liyuanSnapshot();});",
 	].join("\n");
 	return doc.replace(/<head([^>]*)>/i, (_m, attrs: string) => "<head" + attrs + "><script>" + code + "</script>");
 }
@@ -54,6 +59,8 @@ export function buildCardAuthoringPreview(
 		"parts.forEach(function(p,i){if(p.kind==='text'){var el=document.createElement('div');el.className='text';el.textContent=p.text;document.getElementById('root').appendChild(el);}else frame(p.doc,p.height,'preview-message-'+i);});",
 		"addEventListener('message',function(e){var f=frames.find(function(f){return f.contentWindow===e.source;});if(!f)return;var d=e.data||{};if(typeof d.liyuanFrameHeight==='number')f.style.height=Math.min(12000,Math.max(80,d.liyuanFrameHeight))+'px';if(d.liyuanVariablesReady)f.contentWindow.postMessage({liyuanVariables:" + json({ stat_data: variables }) + "},'*');});",
 		data.front.scripts.length ? "var host=frame(" + json(hostDoc) + ",0,'preview-script-host');host.style.visibility='hidden';" : "",
+		// 父页请求快照：转给每个帧，外层自己报纯文本段
+		"addEventListener('message',function(e){if(e.source===parent&&e.data&&e.data.liyuanPreviewSnapshot){frames.forEach(function(f){try{f.contentWindow.postMessage({liyuanPreviewSnapshot:true},'*');}catch(x){}});report('dom','预览',JSON.stringify({text:(document.getElementById('root').innerText||'').slice(0,3000),frames:frames.length}));}});",
 		"report('ready','预览','已加载');",
 	].join("\n");
 	// connect-src 限制也由 srcdoc 子帧继承，预览不能调用正式 REST/WS 改剧情。

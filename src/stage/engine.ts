@@ -822,7 +822,8 @@ export class StageEngine {
 		// 回合工作区 = 正文工件的落点；字数目标在此提取一次（数据，供末端注入）。
 		// 读侧依赖先建：统一层按注入情况决定哪些世界书工具上清单（M-D2）。
 		// skill 全部走标准按需档：名字+描述上 skill_read 清单，读不读归模型（8/23 定案）。
-		const skillList = materials.skillFiles.map((f) => ({ name: f.name, description: f.description }));
+		// 写卡手册（frontmatter mode: authoring）不上 skill_read 清单：它是 card_project 的说明书，由该工具的 guide 操作按需读
+		const skillList = materials.skillFiles.filter((f) => f.mode !== "authoring").map((f) => ({ name: f.name, description: f.description }));
 		const readDeps = this.#toolDeps();
 		// MCP 外设（8/06 重接）：hub 里本会话已连接的工具并入清单。
 		// 空数组＝没启用/没连上，与「未注入 mcp 依赖」同效——都不上清单。
