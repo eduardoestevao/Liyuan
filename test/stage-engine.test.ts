@@ -805,7 +805,7 @@ test("写卡模式：中途停止保留已流出的维护记录，重开续演�
 	try {
 		const ends: any[] = []; let streamed = "";
 		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")), events: {
-			onDelta: (kind, text) => { if (kind === "text") { streamed += text; if (streamed.length >= 16) engine.abort(); } },
+			onDelta: (kind, text) => { if (kind === "text") { streamed += text; if (streamed.includes("STOP_AUTHOR_REPORT")) engine.abort(); } },
 			onTurnEnd: info => ends.push(info),
 		} });
 		const initialStory = rebuildHistory(sm.getBranch()).history;

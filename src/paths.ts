@@ -357,14 +357,21 @@ export function seedBuiltinSkills(cwd: string): string[] {
 	const shipped = join(cwd, "assets", "skills");
 	const seeded: string[] = [];
 	if (!existsSync(shipped)) return seeded;
+	// 整包复制（含 references/ 等子目录）：skill 可能是文件包，不是单个 SKILL.md
+	const copyTree = (from: string, to: string) => {
+		mkdirSync(to, { recursive: true });
+		for (const entry of readdirSync(from, { withFileTypes: true })) {
+			if (entry.isDirectory()) copyTree(join(from, entry.name), join(to, entry.name));
+			else if (entry.isFile()) copyFileSync(join(from, entry.name), join(to, entry.name));
+		}
+	};
 	try {
 		for (const entry of readdirSync(shipped, { withFileTypes: true })) {
 			if (!entry.isDirectory()) continue;
-			const from = join(shipped, entry.name, "SKILL.md");
+			if (!existsSync(join(shipped, entry.name, "SKILL.md"))) continue;
 			const targetDir = join(cwd, "skills", entry.name);
-			if (!existsSync(from) || existsSync(targetDir)) continue;
-			mkdirSync(targetDir, { recursive: true });
-			copyFileSync(from, join(targetDir, "SKILL.md"));
+			if (existsSync(targetDir)) continue;
+			copyTree(join(shipped, entry.name), targetDir);
 			seeded.push(entry.name);
 			lastAgentMergeLog.push(`已播种内置 skill ${entry.name} → ${targetDir}`);
 		}

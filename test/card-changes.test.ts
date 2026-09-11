@@ -277,6 +277,10 @@ test("写卡手册：guide 读全局技能根的 SKILL.md 正文，缺失时读�
 	const shipped = cardProjectOperation(process.cwd(), card, { action: "guide" }) as { text: string };
 	assert.ok(shipped.text.includes("# 写卡工作手册"), "发行版手册可读");
 	assert.ok(!shipped.text.startsWith("---"), "不含 frontmatter");
+	const ref = cardProjectOperation(process.cwd(), card, { action: "guide", file: "references/mvu.md" }) as { text: string };
+	assert.ok(ref.text.includes("# MVU 变量分册"), "分册可按 file 读");
+	assert.throws(() => cardProjectOperation(process.cwd(), card, { action: "guide", file: "../secret" }), /包内相对路径/);
+	assert.match((cardProjectOperation(process.cwd(), card, { action: "guide", file: "references/nope.md" }) as { text: string }).text, /没有找到/);
 	mkdirSync(join(cwd, "skills", "card-authoring"), { recursive: true });
 	writeFileSync(join(cwd, "skills", "card-authoring", "SKILL.md"), "---\nname: card-authoring\ndescription: 用户改过\nmode: authoring\n---\n用户的手册");
 	assert.equal((cardProjectOperation(cwd, card, { action: "guide" }) as { text: string }).text, "用户的手册");
@@ -284,10 +288,12 @@ test("写卡手册：guide 读全局技能根的 SKILL.md 正文，缺失时读�
 	assert.deepEqual(seeded, [], "已存在的不覆盖");
 	const fresh = mkdtempSync(join(tmpdir(), "liyuan-seed-"));
 	t.after(() => rmSync(fresh, { recursive: true, force: true }));
-	mkdirSync(join(fresh, "assets", "skills", "demo"), { recursive: true });
+	mkdirSync(join(fresh, "assets", "skills", "demo", "references"), { recursive: true });
 	writeFileSync(join(fresh, "assets", "skills", "demo", "SKILL.md"), "---\nname: demo\ndescription: d\nmode: authoring\n---\n正文");
+	writeFileSync(join(fresh, "assets", "skills", "demo", "references", "x.md"), "分册正文");
 	assert.deepEqual(seedBuiltinSkills(fresh), ["demo"]);
 	assert.ok(existsSync(join(fresh, "skills", "demo", "SKILL.md")));
+	assert.equal(readFileSync(join(fresh, "skills", "demo", "references", "x.md"), "utf8"), "分册正文", "整包含子目录复制");
 	writeFileSync(join(fresh, "liyuan.config.json"), JSON.stringify({ card: "" }));
 	const files = scanSkillFiles(fresh);
 	assert.equal(files[0]?.mode, "authoring");

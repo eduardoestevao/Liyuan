@@ -419,7 +419,7 @@ export const cardProject: ToolSpec<CardDeps> = {
 	surfaces: ["authoring", "assistant"],
 	label: "卡创作工程",
 	description: () =>
-		"当前卡的唯一修改通道：创作工程。guide 读写卡手册（卡的构成、各操作的用法、预览能看到什么）；outline 按板块列目录（默认概览，传 section 读一个板块，full 读全部；每项有 key、path、facts）；inspect 列资源清单；" +
+		"当前卡的唯一修改通道：创作工程。guide 读写卡手册（卡的构成、各操作的用法；file 读 references/ 分册：worldbook / greetings / mvu / ui-regex / scripts / preview / liyuan-runtime / export，动到哪个板块读哪份）；outline 按板块列目录（默认概览，传 section 读一个板块，full 读全部；每项有 key、path、facts）；inspect 列资源清单；" +
 		"prepare 展开到创作目录；read 按资源 ID 读原文（raw 读基线原包，draft 读含未应用改动的草稿）；write 保存正文稿；" +
 		"add 新增一项（kind：lore / greeting / regex / script，fields 给元数据，lore 与 script 可带 content）；remove / restore 按目录项 key 标记删除或撤销；" +
 		"meta 按 key 改元数据（条目：comment / keys / secondary_keys / constant / enabled / selective / insertion_order / position / depth / role / probability；" +
@@ -430,6 +430,7 @@ export const cardProject: ToolSpec<CardDeps> = {
 		type: "object",
 		properties: {
 			action: { type: "string", enum: ["guide", "outline", "inspect", "prepare", "read", "write", "add", "remove", "restore", "meta", "assign", "check", "preview", "apply", "undo", "discard", "rebase"] },
+			file: { type: "string", description: "guide 可选：手册包内相对路径（如 references/mvu.md），省略读总册" },
 			resource: { type: "string", description: "清单中的资源 ID；read 可用 raw / draft" },
 			section: { type: "string", description: "板块 ID：settings / greetings / lore-knowledge / lore-constant / rules / mvu / ui / prompt-regex / scripts / ejs / deps / other" },
 			full: { type: "boolean", description: "outline 时返回全部板块的全部项" },

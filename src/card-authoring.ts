@@ -584,11 +584,20 @@ export function previewCardProject(cwd: string, cardPath: string, userName: stri
 		variables: findInitVar(card.book) ?? findSchemaDefaults(front.scripts) ?? {} };
 }
 
-/** 写卡手册：全局技能根里的 card-authoring（用户可改），缺失时读发行版。只取正文，不含 frontmatter。 */
-export function readAuthoringGuide(cwd: string): string {
-	for (const file of [join(cwd, "skills", "card-authoring", "SKILL.md"), join(cwd, "assets", "skills", "card-authoring", "SKILL.md")]) {
-		if (!existsSync(file)) continue;
-		const raw = readFileSync(file, "utf8");
+/**
+ * 写卡手册：全局技能根里的 card-authoring（用户可改），缺失时读发行版。
+ * file 是包内相对路径（如 references/mvu.md，省略读 SKILL.md）；SKILL.md 去掉 frontmatter，参考文件原样。
+ */
+export function readAuthoringGuide(cwd: string, file?: string): string {
+	if (file !== undefined && (isAbsolute(file) || file.includes("\\") || file.includes(":") || file.split("/").some(p => p === ".." || p === "." || p === ""))) {
+		throw new Error("手册文件必须是包内相对路径，例如 references/mvu.md");
+	}
+	const rel = file ?? "SKILL.md";
+	for (const root of [join(cwd, "skills", "card-authoring"), join(cwd, "assets", "skills", "card-authoring")]) {
+		const path = resolve(root, rel);
+		if (!inside(resolve(root), path) || !existsSync(path)) continue;
+		const raw = readFileSync(path, "utf8");
+		if (rel !== "SKILL.md") return raw;
 		const lines = raw.split(/\r?\n/);
 		if (lines[0]?.trim() === "---") {
 			const end = lines.findIndex((l, i) => i > 0 && l.trim() === "---");
@@ -596,7 +605,7 @@ export function readAuthoringGuide(cwd: string): string {
 		}
 		return raw.trim();
 	}
-	return "没有找到写卡手册。";
+	return file ? `没有找到手册文件：${rel}` : "没有找到写卡手册。";
 }
 
 /** REST 与助手共用操作，避免两套读写语义。源码可直接用原生 read/edit/write 修改。 */
@@ -635,7 +644,7 @@ export function cardProjectOperation(cwd: string, cardPath: string, args: Record
 		case "cover": return setCardCover(cwd, cardPath, args.data === null || args.data === undefined ? null : requiredString("data"));
 		case "rebase": return rebaseCardProject(cwd, cardPath);
 		case "discard": return discardCardProject(cwd, cardPath);
-		case "guide": return { text: readAuthoringGuide(cwd) };
+		case "guide": return { text: readAuthoringGuide(cwd, typeof args.file === "string" && args.file ? args.file : undefined) };
 		case "read": {
 			const result = readCardResource(cwd, cardPath, requiredString("resource"));
 			if (args.offset === undefined && args.limit === undefined) return result;
