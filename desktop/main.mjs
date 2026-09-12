@@ -345,6 +345,7 @@ function createWindow() {
 		minHeight: 600,
 		backgroundColor: "#141312",
 		title: "梨园",
+		autoHideMenuBar: true, // 菜单栏默认隐藏（Alt 呼出）——2026-09-12 用户反馈
 	});
 	win.loadURL(SPLASH);
 	win.on("closed", () => {

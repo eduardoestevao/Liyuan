@@ -213,6 +213,8 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 };
 
 function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null; lastSection: PanelId | null } {
+	// 首启默认展开左栏卡库（2026-09-12 用户反馈：左栏收着时首屏只剩孤零零一个输入框，难看）
+	const DEFAULT_LEFT: PanelId = "roles";
 	try {
 		const raw = JSON.parse(localStorage.getItem("liyuan.panels") ?? "{}") as Record<string, unknown>;
 		const pick = (v: unknown, group: PanelId[]) => (group.includes(v as PanelId) ? (v as PanelId) : null);
@@ -223,9 +225,10 @@ function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null; lastSe
 		 * 桌面抽屉浮在左留白上，不挡聊天，沿用原来的还原行为。
 		 */
 		const mobile = typeof matchMedia !== "undefined" && matchMedia("(max-width: 999px)").matches;
-		return { left: mobile ? null : lastSection, right: pick(raw.right, RIGHT_OPENABLE), lastSection };
+		return { left: mobile ? null : (lastSection ?? DEFAULT_LEFT), right: pick(raw.right, RIGHT_OPENABLE), lastSection };
 	} catch {
-		return { left: null, right: null, lastSection: null };
+		const mobile = typeof matchMedia !== "undefined" && matchMedia("(max-width: 999px)").matches;
+		return { left: mobile ? null : DEFAULT_LEFT, right: null, lastSection: null };
 	}
 }
 

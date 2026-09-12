@@ -591,7 +591,7 @@ export function CardPanel({
 
 	const [query, setQuery] = useState("");
 	const [sort, setSort] = useState<CardSort>(() => (localStorage.getItem("liyuan.cards.sort") as CardSort) || "recent");
-	const [view, setView] = useState<CardView>(() => (localStorage.getItem("liyuan.cards.view") as CardView) || "grid");
+	const [view, setView] = useState<CardView>(() => (localStorage.getItem("liyuan.cards.view") as CardView) || "list");
 	const [tagFilter, setTagFilter] = useState<string | null>(null);
 	const fileRef = useRef<HTMLInputElement>(null);
 	const [importing, setImporting] = useState(false);
