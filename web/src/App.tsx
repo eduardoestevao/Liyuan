@@ -1937,7 +1937,7 @@ export default function App() {
 			</header>
 
 				<div className="layout">
-					<main className={`center ${welcome && sessions !== null && sessions.length === 0 ? "center-home-empty" : ""} ${studioOpen ? "center-studio-split" : ""}`}>
+					<main className={`center ${welcome && sessions !== null && !sessions.some((s) => s.preview) ? "center-home-empty" : ""} ${studioOpen ? "center-studio-split" : ""}`}>
 					<div className={`stage-wrap ${rightPanel ? "split-active" : ""}`}>
 					<div className="stage-col stage-col-left">
 						{(rightPanel || studioOpen) && (

@@ -692,6 +692,12 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	justify-content: center;
 	padding-bottom: 5vh;
 }
+.center.center-home-empty .stage-wrap {
+	/* 不占满整列：让 welcome＋composer 作为一块被 .center 的
+	   justify-content:center 垂直居中——「上下合在一起」的空态 */
+	flex: 0 0 auto;
+	overflow: visible;
+}
 .center.center-home-empty .list {
 	flex: 0 0 auto;
 	overflow: visible;
