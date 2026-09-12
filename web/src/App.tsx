@@ -1815,32 +1815,41 @@ export default function App() {
 				<header className="topbar">
 				{/* 左一键：开合左抽屉（PLAN-FRONTEND-V2 §四） */}
 				<div className="tb-side tb-side-left">
-					<button
-						type="button"
-						className={`tb-btn ${leftPanel ? "active" : ""}`}
-						onClick={toggleDrawer}
-						aria-label="板块"
-						aria-expanded={!!leftPanel}
-						data-tip="板块"
-					>
-						<IconPanelLeft size={18} />
-					</button>
-				</div>
+						<button
+							type="button"
+							className={`tb-btn ${leftPanel ? "active" : ""}`}
+							onClick={toggleDrawer}
+							aria-label="板块"
+							aria-expanded={!!leftPanel}
+							data-tip="板块"
+							title="板块"
+						>
+							<IconPanelLeft size={18} />
+						</button>
+						<button
+							type="button"
+							className="tb-btn"
+							onClick={() => {
+								ws.send({ type: "new" });
+								dismissWelcome();
+							}}
+							disabled={conn !== "open"}
+							aria-label="新建对话"
+							data-tip="新建"
+							title="新建对话"
+						>
+							<IconNewChat size={18} />
+						</button>
+					</div>
 				{/*
 				  * 中：会话名 + 一行状态。卡名（原右 gutter）、扮演/工作（原输入框上方那条）、
 				  * 忙闲与连接态（原右 gutter）三样合并到这里，右 gutter 整个退场。
 				  */}
 				<div className="tb-title">
-					<span className="tb-title-main" title={sessionTitle}>
-						{sessionTitle}
+					<span className="tb-title-main" title={currentSession?.name ? `${charName || "新对话"} · ${currentSession.name}` : (charName || "新对话")}>
+						{charName || "新对话"}
 					</span>
 					<span className="tb-title-sub">
-						<span className="tb-sub-card" title={charName}>
-							{charName}
-						</span>
-						<span className="tb-sub-sep" aria-hidden="true">
-							·
-						</span>
 						<div className="tb-sub-mode" role="radiogroup" aria-label="对话模式" title="扮演：演剧情；工作：改卡、写前端/脚本、任何要动代码与文件的任务">
 							{(["roleplay", "authoring"] as const).map((m) => (
 								<button
@@ -1856,12 +1865,16 @@ export default function App() {
 								</button>
 							))}
 						</div>
-						<span className="tb-sub-sep" aria-hidden="true">
-							·
-						</span>
-						<span className={`tb-sub-state tb-sub-state-${conn === "open" ? (busy ? "busy" : "idle") : conn}`}>
-							{conn === "open" ? (busy ? "生成中" : "空闲") : conn === "connecting" ? "连接中" : "已断开"}
-						</span>
+						{(!coarse || busy || conn !== "open") && (
+							<>
+								<span className="tb-sub-sep" aria-hidden="true">
+									·
+								</span>
+								<span className={`tb-sub-state tb-sub-state-${conn === "open" ? (busy ? "busy" : "idle") : conn}`}>
+									{conn === "open" ? (busy ? "生成中" : "空闲") : conn === "connecting" ? "连接中" : "已断开"}
+								</span>
+							</>
+						)}
 						{warnings.length > 0 && (
 							<button
 								type="button"
@@ -1911,29 +1924,17 @@ export default function App() {
 						>
 							<IconEdit size={18} />
 						</button>
-					<button
-						type="button"
-						className="tb-btn"
-						onClick={() => {
-							ws.send({ type: "new" });
-							dismissWelcome();
-						}}
-						disabled={conn !== "open"}
-						aria-label="新建对话"
-						data-tip="新建"
-					>
-						<IconNewChat size={18} />
-					</button>
-					<button
-						type="button"
-						className={`tb-btn ${rightPanel === "sessions" ? "active" : ""}`}
-						onClick={() => togglePanel("sessions")}
-						aria-label="会话树"
-						data-tip="会话树"
-					>
-						<IconSessions size={18} />
-					</button>
-				</div>
+						<button
+							type="button"
+							className={`tb-btn ${rightPanel === "sessions" ? "active" : ""}`}
+							onClick={() => togglePanel("sessions")}
+							aria-label="会话树"
+							data-tip="会话树"
+							title="会话树"
+						>
+							<IconSessions size={18} />
+						</button>
+					</div>
 			</header>
 
 				<div className="layout">
@@ -2149,7 +2150,7 @@ export default function App() {
 						</div>
 					</div>
 
-					{!atBottom && (
+					{!welcome && !atBottom && (
 						<button className="jump-bottom" onClick={jumpToBottom} title="回到最新" aria-label="回到最新">
 							<IconChevronDown size={17} />
 						</button>
@@ -2198,7 +2199,8 @@ export default function App() {
 						}}
 					>
 						{/* 生效世界状态：输入框上方，与输入同宽一排 */}
-						<div className="composer-shell status-above">
+						{!welcome && (
+							<div className="composer-shell status-above">
 							{conversationMode === "roleplay" && (
 								<StatusStrip
 									state={worldState}
@@ -2208,6 +2210,7 @@ export default function App() {
 								/>
 							)}
 						</div>
+						)}
 						{/* 扮演/工作的开关已上移到顶栏副标题（PLAN-FRONTEND-V2 §四），此处不再重复一条 */}
 						{(pending.length > 0 || uploading) && (
 							<div className="composer-shell attach-row">
@@ -2424,9 +2427,11 @@ export default function App() {
 							)}
 						</div>
 						{/* 会话用量：输入框下方，右缘与输入框齐平 */}
-						<div className="composer-shell session-stats-wrap">
+						{!welcome && (
+							<div className="composer-shell session-stats-wrap">
 							<SessionStatsBar stats={stats} />
 						</div>
+						)}
 					</footer>
 				</main>
 				{studioOpen && (
@@ -2486,7 +2491,7 @@ export default function App() {
 			  * 梨园自己的悬浮球：常驻的面板启动器（世界线 / 登场名录 / agent 自建面板）。
 			  * 顶栏与底栏的老入口都留着——它是多一条路，不是替换掉肌肉记忆。
 			  */}
-			{!studioOpen && (
+			{!studioOpen && !welcome && (
 				<PanelOrb
 					entries={[
 					{

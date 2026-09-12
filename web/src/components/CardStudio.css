@@ -165,6 +165,16 @@
 	color: var(--accent);
 	background: var(--surface-dim);
 }
+.cs-nav-toggle-btn {
+	display: none;
+}
+.cs-nav-close-btn {
+	display: none;
+}
+.cs-sidebar-backdrop {
+	display: none;
+}
+
 
 /* 标准梨园操作按钮 */
 .cs-btn-primary {
@@ -790,6 +800,123 @@
 
 /* 响应式适配 */
 @media (max-width: 900px) {
+	/* 移动端顶栏紧凑排布与卡名空间保护 */
+	.cs-nav-toggle-btn {
+		display: inline-flex;
+		align-items: center;
+		gap: 4px;
+		padding: 2px 7px;
+		font-size: 11px;
+		font-weight: 500;
+		color: var(--accent);
+		background: var(--accent-wash);
+		border: 1px solid color-mix(in srgb, var(--accent) 30%, transparent);
+		border-radius: 6px;
+		cursor: pointer;
+		flex: none;
+		line-height: 1.4;
+		transition: all 0.14s ease;
+	}
+	.cs-nav-toggle-btn:hover {
+		background: var(--accent-wash-strong);
+	}
+	.cs-nav-toggle-sec {
+		display: inline-block;
+		padding: 0 4px;
+		font-size: 10px;
+		font-weight: 700;
+		background: var(--surface);
+		border-radius: 4px;
+		color: var(--accent-strong);
+	}
+	.cs-header-title {
+		display: none !important;
+	}
+	.cs-header-card-name {
+		max-width: 7em !important;
+	}
+	.cs-header-badge-count {
+		display: none !important;
+	}
+	.cs-header {
+		padding: 0 10px;
+		gap: 6px;
+	}
+	.cs-header-right {
+		gap: 3px;
+	}
+	.cs-btn-micro {
+		padding: 2px 6px;
+		font-size: 11px;
+	}
+
+	/* 侧栏转为全高滑出抽屉，不再强行侵占编辑区横向宽度 */
+	.cs-sidebar-left {
+		position: fixed !important;
+		top: 38px !important;
+		left: 0 !important;
+		bottom: 0 !important;
+		width: min(280px, 82vw) !important;
+		z-index: 151 !important;
+		box-shadow: 6px 0 24px rgb(0 0 0 / 18%) !important;
+		transform: translateX(-100%) !important;
+		transition: transform 0.22s cubic-bezier(0.16, 1, 0.3, 1) !important;
+		border-right: 1px solid var(--hairline) !important;
+		background: var(--surface) !important;
+	}
+	.cs-sidebar-left.is-open-mobile {
+		transform: translateX(0) !important;
+	}
+	.cs-nav-close-btn {
+		display: grid !important;
+		place-items: center;
+		width: 26px;
+		height: 26px;
+		border-radius: 6px;
+		color: var(--text-soft);
+	}
+	.cs-sidebar-backdrop {
+		display: block !important;
+		position: fixed !important;
+		inset: 0 !important;
+		top: 38px !important;
+		background: rgb(0 0 0 / 40%) !important;
+		z-index: 150 !important;
+		backdrop-filter: blur(2px) !important;
+		animation: cs-fade-in 0.15s ease;
+	}
+
+	/* 编辑主区域在移动端 100% 满宽，恢复正常打字与阅读视距 */
+	.cs-main {
+		width: 100% !important;
+		max-width: 100% !important;
+		flex: 1 1 100% !important;
+	}
+	.cs-content-wrap {
+		padding: 12px 14px 28px !important;
+		max-width: 100% !important;
+	}
+	.cs-card {
+		padding: 14px 14px 18px !important;
+		margin-bottom: 14px !important;
+	}
+	.cs-sec-title-row {
+		flex-wrap: wrap;
+		gap: 6px;
+	}
+	.cs-sec-desc-inline {
+		display: block;
+		width: 100%;
+		margin-left: 0;
+		margin-top: 2px;
+	}
+	.cs-textarea {
+		font-size: 13.5px;
+	}
+	.cs-textarea-code {
+		font-size: 13px;
+	}
+
 	.cs-grid-2col {
 		grid-template-columns: 1fr;
 	}
@@ -806,13 +933,14 @@
 		min-height: auto;
 	}
 	.cs-split-list {
-		height: 340px;
+		height: 300px;
 		border-right: none;
 		border-bottom: 1px solid var(--hairline);
 	}
 	.cs-split-detail {
 		height: auto;
 		overflow-y: visible;
+		padding: 14px 14px 20px;
 	}
 }
 

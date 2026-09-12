@@ -10,7 +10,7 @@ import type {
 } from "../../../src/card-authoring-types.ts";
 import { apiGet, apiGetCacheClear, apiPost, type CardResponse } from "../api.ts";
 import { buildCardAuthoringPreview, CARD_PREVIEW_SANDBOX, cardPreviewUrl } from "../cardAuthoringPreview.ts";
-import { IconClose, IconEdit } from "./icons.tsx";
+import { IconClose, IconEdit, IconList } from "./icons.tsx";
 import { PreviewEventList, type PreviewEvent } from "./PreviewRunner.tsx";
 import "./CardStudio.css";
 
@@ -126,6 +126,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 	// 状态栏与正则选择
 	const [selectedUiIdx, setSelectedUiIdx] = useState<number>(0);
 	const [selectedRegexIdx, setSelectedRegexIdx] = useState<number>(0);
+	const [mobileNavOpen, setMobileNavOpen] = useState(false);
 
 	// 本地封面文件预览 URL
 	const [customCoverUrl, setCustomCoverUrl] = useState<string | null>(null);
@@ -1616,6 +1617,17 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			{/* 顶栏 */}
 			<header className="cs-header">
 					<div className="cs-header-left">
+						<button
+							type="button"
+							className="cs-nav-toggle-btn"
+							onClick={() => setMobileNavOpen((v) => !v)}
+							aria-label={mobileNavOpen ? "收起创作大纲" : "展开创作大纲"}
+							title="创作大纲"
+						>
+							<IconList size={13} />
+							<span>大纲</span>
+							<span className="cs-nav-toggle-sec">{curSectionMeta.num}</span>
+						</button>
 						<span className="cs-header-title">
 							<IconEdit size={14} />
 							<span>角色卡工坊</span>
@@ -1687,11 +1699,27 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 			{/* 主容器：左目录 + 中工作区（宽度彻底舒展） */}
 			<div className="cs-container">
+				{mobileNavOpen && (
+					<div
+						className="cs-sidebar-backdrop"
+						onClick={() => setMobileNavOpen(false)}
+						aria-hidden="true"
+					/>
+				)}
 				{/* 左栏：创作目录 */}
-				<aside className="cs-sidebar-left">
+				<aside className={`cs-sidebar-left ${mobileNavOpen ? "is-open-mobile" : ""}`}>
 					<div className="cs-nav-header">
 						<span className="cs-nav-title">创作大纲</span>
 						<span className="cs-nav-count">10 板块</span>
+						<button
+							type="button"
+							className="icon-btn cs-nav-close-btn"
+							onClick={() => setMobileNavOpen(false)}
+							aria-label="关闭大纲"
+							title="关闭大纲"
+						>
+							<IconClose size={14} />
+						</button>
 					</div>
 
 					<div className="cs-nav-list">
@@ -1743,7 +1771,10 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 									key={sec.code}
 									type="button"
 									className={`cs-nav-item ${isAct ? "is-active" : ""}`}
-									onClick={() => setActiveSec(sec.code)}
+									onClick={() => {
+											setActiveSec(sec.code);
+											setMobileNavOpen(false);
+										}}
 								>
 									<span className="cs-nav-item-name">
 										{sec.num} {sec.title}

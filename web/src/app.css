@@ -281,13 +281,13 @@ svg {
 	z-index: 20;
 }
 
-/* 左右两侧等宽，标题才真居中；右侧容纳三钮（工坊 / 新建 / 会话树） */
+/* 左右两侧等宽，标题才真居中；各容纳两钮（左：板块/新建；右：工坊/会话树） */
 .tb-side {
 	display: flex;
 	align-items: center;
 	gap: 4px;
 	flex: none;
-	width: 104px;
+	width: 80px;
 }
 .tb-side-right {
 	justify-content: flex-end;
@@ -3708,40 +3708,97 @@ input.panel-search.num {
 		position: relative;
 	}
 
-	.stage-wrap.split-active .list {
+	/* 移动端：右侧栏展开时绝不左右 5:5 挤压，左栏保持 100% 满宽，右栏作为全屏抽屉浮层覆盖 */
+	.stage-wrap.split-active .stage-col-left {
+		flex: 1 1 100% !important;
+		width: 100% !important;
+		max-width: 100% !important;
+		border-right: none !important;
+	}
+	.stage-wrap.split-active .stage-col-left .list {
 		flex: 1 1 auto;
 		width: 100%;
 		max-width: 100%;
+		padding: 14px 16px 24px;
 	}
-	.stage-side {
+	/* 移动端左栏顶部无需重复展示「剧情推演」标头 */
+	.stage-col-left .stage-col-head {
+		display: none !important;
+	}
+	/* 右侧栏（会话树/状态栏等）：移动端从顶栏下方滑出铺满整屏，与左抽屉保持一致层级与手感 */
+	.stage-col-right {
 		position: fixed !important;
 		inset: 0 !important;
 		top: calc(var(--topbar-h, 48px) + env(safe-area-inset-top, 0px)) !important;
 		width: 100% !important;
 		max-width: none !important;
-		z-index: 58 !important;
-		padding: 0 !important;
-		border-radius: 0 !important;
-	}
-	.stage-side-inner {
-		border-radius: 0 !important;
+		height: calc(100dvh - var(--topbar-h, 48px) - env(safe-area-inset-top, 0px)) !important;
 		border: none !important;
+		border-radius: 0 !important;
+		box-shadow: none !important;
+		z-index: 58 !important;
+		background: var(--surface) !important;
+		animation: mobile-drawer-in 0.22s ease-out;
+	}
+	.stage-col-right .stage-col-head {
+		height: 42px;
+		padding: 0 16px;
+	}
+	.stage-col-right .stage-col-body {
+		padding: 14px 16px 24px;
 	}
 
-	/* 顶栏：三键（左抽屉 / 标题 / 新建·会话树）——热区放大，tip 交给 aria-label */
+	/* 顶栏：自适应布局，避免窄屏下图标溢出与挤压 */
 	.topbar {
 		padding: 4px 6px;
 		padding-top: calc(4px + env(safe-area-inset-top));
 		height: calc(var(--topbar-h, 48px) + env(safe-area-inset-top, 0px));
-		gap: 4px;
+		gap: 2px;
 	}
 	.tb-side {
-		width: calc(40px * 2 + 3px);
+		width: auto !important;
+		flex: 0 0 auto !important;
+		gap: 2px !important;
+	}
+	.tb-side-left {
+		justify-content: flex-start;
+	}
+	.tb-side-right {
+		justify-content: flex-end;
 	}
 	.tb-btn {
-		width: 40px;
-		height: 40px;
-		border-radius: 11px;
+		width: 36px !important;
+		height: 36px !important;
+		border-radius: 9px !important;
+	}
+	.tb-title {
+		flex: 1 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		padding: 0 4px;
+	}
+	.tb-title-main {
+		font-size: 14px;
+		max-width: 100%;
+	}
+	.tb-title-sub {
+		font-size: 10.5px;
+		gap: 3px;
+		max-width: 100%;
+		overflow: hidden;
+	}
+	.tb-sub-card {
+		max-width: 6em !important;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.tb-sub-mode {
+		padding: 1px;
+	}
+	.tb-sub-mode-opt {
+		padding: 1px 6px !important;
+		font-size: 10px !important;
 	}
 	/* 移动端关掉 hover 气泡 tip（用 aria-label） */
 	.tb-btn[data-tip]::after {
