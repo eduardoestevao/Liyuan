@@ -127,7 +127,7 @@ export function UpdateModal({
 						{update.error}
 					</div>
 				)}
-				{failed && !update.dockerDeploy && (
+				{failed && !update.dockerDeploy && !update.desktopDeploy && (
 					<label className="upd-mirror-row">
 						<span>下载镜像</span>
 						<input
@@ -140,7 +140,13 @@ export function UpdateModal({
 				)}
 				<div className="upd-foot">
 					<span className="upd-meta">
-						{update.dockerDeploy ? (
+						{update.desktopDeploy ? (
+							<>
+								桌面版请从发布页下载新版安装包，直接安装即可。
+								<br />
+								角色卡 / 会话 / 配置在数据目录里，重装不丢
+							</>
+						) : update.dockerDeploy ? (
 							<>
 								这是 Docker 部署，容器内无法自动升级。请在宿主机执行：
 								<br />
@@ -163,7 +169,7 @@ export function UpdateModal({
 								查看发布页
 							</a>
 						)}
-						{update.dockerDeploy ? (
+						{update.desktopDeploy || update.dockerDeploy ? (
 							<button type="button" className="drawer-btn upd-primary" onClick={onClose}>
 								知道了
 							</button>

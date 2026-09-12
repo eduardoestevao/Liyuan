@@ -212,6 +212,8 @@ export interface UpdateWire {
 	supervised?: boolean;
 	/** Docker 部署：升级靠宿主机 git pull + rebuild，容器内不下载 zip（覆盖只写可写层、重建即丢） */
 	dockerDeploy?: boolean;
+	/** 桌面版：升级走安装包，UI 只指路 GitHub Releases、不提供应用内下载 */
+	desktopDeploy?: boolean;
 }
 
 /** Server → Client 帧 */

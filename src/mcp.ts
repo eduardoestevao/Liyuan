@@ -303,6 +303,8 @@ export function builtinMcpServers(): McpCatalogEntry[] {
 		const v = process.env[k];
 		if (v) env[k] = v;
 	}
+	// Electron 宿主：execPath 是应用二进制不是 node，不带此标记会 spawn 出第二个应用窗口
+	if (process.versions?.electron) env.ELECTRON_RUN_AS_NODE = "1";
 	return [
 		{
 			id: BUILTIN_VISION_ID,

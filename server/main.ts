@@ -11,7 +11,7 @@
  *   --new 开新会话；默认续接最近会话。同一会话勿同时开 TUI（无文件锁）。
  */
 
-import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readFileSync, readSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
+import { appendFileSync, closeSync, existsSync, mkdirSync, openSync, readdirSync, readFileSync, readSync, statSync, unlinkSync, watch, writeFileSync } from "node:fs";
 import { createServer, type IncomingMessage, type ServerResponse } from "node:http";
 import { randomBytes } from "node:crypto";
 import { networkInterfaces } from "node:os";
@@ -171,6 +171,9 @@ import {
 import { mcpEnabledFromBranch } from "../src/stage/mcp-stage.ts";
 
 const cwd = process.cwd();
+// 桌面版（docs/PLAN-DESKTOP.md §四）：cwd＝数据根（用户可见、可写），产品根只读、
+// 经 LIYUAN_PRODUCT_ROOT 告知；源码包两者同一，行为不变。
+const productRoot = process.env.LIYUAN_PRODUCT_ROOT ?? cwd;
 // 扮演骨架播种（刀1，docs/PLAN-AGENT-SLOTS.md §七）：首次启动把随包的
 // assets/SYSTEM.md 落到 <agentDir>/SYSTEM.md；已存在不覆盖——改了就是用户的。
 seedStageSystemPrompt(cwd, agentHome);
@@ -267,6 +270,18 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 		// 扮演基座——那是给改梨园代码的 agent 看的，不是剧情素材。只滤应用根这一层；
 		// 卡目录及用户自建的 AGENTS.md（刀3 的正主）照常继承。
 		resourceLoaderOptions: {
+			// 桌面版：cwd＝数据根，pi 按 cwd/.liyuan/extensions 扫不到产品扩展——经 pi 现成的
+			// 显式路径通道指到产品根（roleplay.ts 的 ../../src 相对引用只在那一侧成立）。
+			// 通道只认单个文件（目录语义是「包根」），照 stage 规则枚举 *.ts。
+			...(productRoot !== cwd
+				? {
+						additionalExtensionPaths: existsSync(join(productRoot, ".liyuan", "extensions"))
+							? readdirSync(join(productRoot, ".liyuan", "extensions"))
+									.filter((f) => f.endsWith(".ts"))
+									.map((f) => join(productRoot, ".liyuan", "extensions", f))
+							: [],
+					}
+				: {}),
 			agentsFilesOverride: (base) => ({
 				agentsFiles: base.agentsFiles.filter((f) => {
 					const rel = relative(cwd, f.path);
@@ -320,11 +335,15 @@ const cardPreviews = new CardPreviewHub((request) => {
 // ---------- 在线更新（主页 chip → 弹窗 → toast 进度；替换由启动脚本完成） ----------
 
 const APP_VERSION: string = (() => {
-	try {
-		return (JSON.parse(readFileSync(join(cwd, "package.json"), "utf8")) as { version?: string }).version ?? "0.0.0";
-	} catch {
-		return "0.0.0";
+	// 桌面版：数据根没有 package.json，版本取自产品根（源码包两根合一，先命中 cwd）
+	for (const root of [cwd, productRoot]) {
+		try {
+			return (JSON.parse(readFileSync(join(root, "package.json"), "utf8")) as { version?: string }).version ?? "0.0.0";
+		} catch {
+			/* 换下一个根 */
+		}
 	}
+	return "0.0.0";
 })();
 
 let updateState: UpdateWire = { phase: "none", currentVersion: APP_VERSION };
@@ -334,15 +353,17 @@ let updateBusy = false;
 const UPDATE_SUPERVISED = process.env.LIYUAN_SUPERVISED === "1";
 /** Docker 部署：升级靠宿主机 git pull + rebuild，容器内不下载 zip（覆盖只写可写层、重建即丢） */
 const IS_DOCKER = existsSync("/.dockerenv") || process.env.LIYUAN_DOCKER === "1";
+/** 桌面版：升级走安装包，应用内 zip 更新没有启动脚本接盘（docs/PLAN-DESKTOP.md §四） */
+const IS_DESKTOP = process.env.LIYUAN_DESKTOP === "1";
 const pushUpdate = () =>
-	broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED, dockerDeploy: IS_DOCKER } });
+	broadcast({ type: "update", update: { ...updateState, supervised: UPDATE_SUPERVISED, dockerDeploy: IS_DOCKER, desktopDeploy: IS_DESKTOP } });
 
 /** 启动后静默检查一次；失败不提示（manual 时才把 error 带给 UI） */
 const runUpdateCheck = async (manual: boolean): Promise<void> => {
 	// 已有暂存包：直接就绪态（跨重启持久；旧暂存版本低于当前版则丢弃）
 	const pending = readPendingUpdate(cwd);
 	if (pending) {
-		if (IS_DOCKER || pending.version === APP_VERSION || pending.version < APP_VERSION) {
+		if (IS_DOCKER || IS_DESKTOP || pending.version === APP_VERSION || pending.version < APP_VERSION) {
 			discardPendingUpdate(cwd);
 		} else {
 			updateState = {
@@ -384,6 +405,7 @@ const runUpdateCheck = async (manual: boolean): Promise<void> => {
 /** 下载并暂存（进度限流 500ms 一帧）；完成后 ready，失败回 available 带 error */
 const startUpdateDownload = async (mirror?: string): Promise<void> => {
 	if (IS_DOCKER) throw new Error("Docker 部署请到宿主机执行 git pull && docker compose up -d --build");
+	if (IS_DESKTOP) throw new Error("桌面版请到 GitHub Releases 下载新版安装包");
 	if (updateBusy) throw new Error("已在下载中");
 	if (!updateCheck?.hasUpdate || !updateCheck.asset) throw new Error("没有可下载的更新");
 	updateBusy = true;
@@ -1934,7 +1956,8 @@ try {
 
 // ---------- HTTP：REST /api/* + 托管 web/dist（存在时）+ 健康检查 ----------
 
-const distDir = join(cwd, "web", "dist");
+// 桌面版：前端产物随包在产品根（数据根没有 web/）；源码包两根合一，cwd 优先
+const distDir = existsSync(join(cwd, "web", "dist")) ? join(cwd, "web", "dist") : join(productRoot, "web", "dist");
 const MIME: Record<string, string> = {
 	".html": "text/html; charset=utf-8",
 	".js": "text/javascript; charset=utf-8",

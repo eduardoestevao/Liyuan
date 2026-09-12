@@ -263,8 +263,10 @@ export function writeCardResource(cwd: string, cardPath: string, id: string, tex
 /** 语法检查不执行作者代码。HTML 内脚本的实际错误由预览报告。 */
 function scriptSyntaxError(code: string, file: string): string | null {
 	try { new Script(code, { filename: file }); return null; } catch { /* 再按 ES module 语法检查 */ }
+	// Electron 宿主：execPath 是应用二进制，要带 RUN_AS_NODE 才能当纯 node 用（src/mcp.ts 同款）
 	const result = spawnSync(process.execPath, ["--check", "--input-type=module"], {
 		input: code, encoding: "utf8", timeout: 10_000, maxBuffer: 128_000, windowsHide: true,
+		env: process.versions?.electron ? { ...process.env, ELECTRON_RUN_AS_NODE: "1" } : process.env,
 	});
 	return result.status === 0 ? null : (result.error?.message || result.stderr || "JavaScript 语法检查失败").trim();
 }

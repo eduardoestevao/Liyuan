@@ -1,0 +1,108 @@
+# 梨园桌面版三平台构建（docs/PLAN-DESKTOP.md）
+# - workflow_dispatch 手动触发；打 v* tag 自动触发
+# - windows → zip（便携）+ nsis（exe 安装包）；macos → dmg（arm64+x64）；ubuntu → AppImage
+# - ubuntu 顺带 AppImage 冒烟（xvfb 起真窗口 + healthz 探活）
+# - 产物上传 artifacts；挂到 GitHub Release 沿用既有手工发版流程
+name: desktop
+
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+jobs:
+  build:
+    name: desktop (${{ matrix.name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: windows
+            os: windows-latest
+            targets: --win zip nsis
+          - name: macos
+            os: macos-latest
+            targets: --mac dmg
+          - name: linux
+            os: ubuntu-latest
+            targets: --linux AppImage
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: desktop/package-lock.json
+
+      # 前端产物虽随仓库提交，仍现场重建一次，保证桌面包里的 web/dist 与代码同源
+      - name: Build frontend
+        run: |
+          npm --prefix web ci
+          npm run web:build
+
+      - name: Stage product tree
+        run: node scripts/stage-desktop.mjs
+
+      - name: Install desktop deps
+        run: npm --prefix desktop ci
+
+      - name: electron-builder
+        working-directory: desktop
+        run: npx electron-builder ${{ matrix.targets }}
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: desktop-${{ matrix.name }}
+          path: |
+            desktop/dist/*.zip
+            desktop/dist/*.exe
+            desktop/dist/*.dmg
+            desktop/dist/*.AppImage
+          if-no-files-found: error
+
+  # AppImage 冒烟：干净数据根 + env 指定端口，起真窗口（xvfb）探活
+  smoke-linux:
+    name: desktop smoke (AppImage)
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: Download AppImage
+        uses: actions/download-artifact@v4
+        with:
+          name: desktop-linux
+          path: dist
+
+      - name: Install display deps
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2
+
+      - name: Run and probe healthz
+        run: |
+          chmod +x dist/Liyuan-*-linux-desktop.AppImage
+          export LIYUAN_DESKTOP_DATA_ROOT="$HOME/liyuan-smoke-data"
+          export PORT=7650
+          xvfb-run -a dist/Liyuan-*-linux-desktop.AppImage --appimage-extract-and-run &
+          APP_PID=$!
+          for i in $(seq 1 90); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7650/healthz || true)
+            [ "$code" = "200" ] && break
+            if ! kill -0 $APP_PID 2>/dev/null && [ "$code" != "200" ]; then
+              echo "app exited before healthy"; cat "$HOME/liyuan-smoke-data/.liyuan-cache/desktop.log" 2>/dev/null; exit 1
+            fi
+            sleep 2
+          done
+          if [ "$code" != "200" ]; then
+            echo "healthz never became 200"
+            cat "$HOME/liyuan-smoke-data/.liyuan-cache/desktop.log" 2>/dev/null || true
+            pkill -f AppImage || true
+            exit 1
+          fi
+          echo "healthz 200 ✓"
+          test -f "$HOME/liyuan-smoke-data/liyuan.config.json" || { echo "数据根未播种"; exit 1; }
+          test -f "$HOME/liyuan-smoke-data/.liyuan-cache/desktop.log" || { echo "无 desktop.log"; exit 1; }
+          echo "smoke ok"
+          pkill -f AppImage || true

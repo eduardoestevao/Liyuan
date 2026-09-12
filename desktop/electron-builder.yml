@@ -1,0 +1,37 @@
+# 梨园桌面版打包配置（docs/PLAN-DESKTOP.md）
+# 产品代码由 scripts/stage-desktop.mjs 先装入 desktop/app/，再跑 electron-builder。
+# 本包无 dependencies：运行时依赖全在 app/node_modules（stage 内 npm ci --omit=dev 装好）。
+appId: app.rpagent.liyuan
+productName: Liyuan
+asar: false # server 子进程经 ELECTRON_RUN_AS_NODE 跑，asar 的 fs 补丁对它不生效，代码必须落普通文件
+directories:
+  app: app # 应用目录＝stage 产物（其 package.json 即应用清单，stage 会补 main/author）
+  output: dist
+  buildResources: buildResources
+win:
+  # zip＝便携版（用户要的两件之一），nsis＝exe 安装包
+  target:
+    - target: zip
+      arch: [x64]
+    - target: nsis
+      arch: [x64]
+  artifactName: Liyuan-${version}-win-desktop-portable.${ext}
+nsis:
+  oneClick: false
+  perMachine: false # per-user 安装，无需管理员
+  allowToChangeInstallationDirectory: true
+  artifactName: Liyuan-${version}-win-desktop-setup.${ext}
+  shortcutName: 梨园 Liyuan
+mac:
+  target:
+    - target: dmg
+      arch: [x64, arm64]
+  category: public.app-category.entertainment
+  artifactName: Liyuan-${version}-mac-desktop-${arch}.${ext}
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Utility
+  maintainer: weidu12123
+  artifactName: Liyuan-${version}-linux-desktop.${ext}

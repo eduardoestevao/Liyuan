@@ -12,7 +12,12 @@
 		"pack:release": "powershell -NoProfile -File scripts/pack-release.ps1 -Target all",
 		"pack:release:windows": "powershell -NoProfile -File scripts/pack-release.ps1 -Target windows",
 		"pack:release:linux": "powershell -NoProfile -File scripts/pack-release.ps1 -Target linux",
-		"pack:release:macos": "powershell -NoProfile -File scripts/pack-release.ps1 -Target macos"
+		"pack:release:macos": "powershell -NoProfile -File scripts/pack-release.ps1 -Target macos",
+		"desktop:stage": "node scripts/stage-desktop.mjs",
+		"desktop:dev": "npm --prefix desktop run dev",
+		"desktop:build:win": "npm --prefix desktop run build:win",
+		"desktop:build:mac": "npm --prefix desktop run build:mac",
+		"desktop:build:linux": "npm --prefix desktop run build:linux"
 	},
 	"license": "PolyForm-Noncommercial-1.0.0",
 	"type": "module",
