@@ -65,6 +65,8 @@ export function WelcomePanel({
 	}, []);
 
 	const list = useMemo(() => sessions ?? [], [sessions]);
+	/** 真聊过的会话（有 user/assistant 对话预览）。配置了卡就会自动开一个只含开场白的空壳会话进列表（main.ts 会话兜底），它没有 preview——首页空态靠这个判据成立 */
+	const hasHistory = list.some((s) => s.preview);
 	const shown = list.slice(0, COLLAPSED);
 		const ready = conn === "open";
 	const current = list.find((s) => s.current) ?? list[0] ?? null;
@@ -122,7 +124,7 @@ export function WelcomePanel({
 						disabled={!ready}
 						onClick={() => (current ? onOpen(current.path) : onNew())}
 					>
-						{current ? "继续当前对话" : "开始对话"}
+						{hasHistory ? "继续当前对话" : "开始对话"}
 					</button>
 					<button type="button" className="welcome-cta welcome-cta-ghost" disabled={!ready} onClick={onNew}>
 						新建会话
@@ -131,7 +133,7 @@ export function WelcomePanel({
 			</header>
 
 			{/* ── 统一会话大卡片：有会话记录时展示，无会话时完全留白让输入框居中 ── */}
-			{ready && shown.length > 0 && (
+			{ready && hasHistory && (
 				<section className="welcome-recent-card" aria-label="最近会话">
 					<div className="welcome-recent-head">
 						<div className="welcome-recent-title-group">
