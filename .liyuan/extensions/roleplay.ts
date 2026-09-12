@@ -1361,8 +1361,8 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 		return "";
 	};
 
-	pi.on("tool_call", (event, ctx) => {
-		const input = activeStage?.toolCall(event.toolName, event.input) ?? {
+	pi.on("tool_call", async (event, ctx) => {
+		const input = (await activeStage?.toolCall(event.toolName, event.input)) ?? {
 			toolName: event.toolName,
 			lastUserText: lastUserText(ctx as never),
 			creationMode: rpMode ? config.creationMode : "silent",

@@ -476,6 +476,7 @@ export function chatAssistantDir(cwd: string, sessionDir: string | undefined): s
  * 跟卡走的字段（2026-09-05 用户定案的 10 项里去掉 `card` 自己——
  * 「当前打开哪张卡」是全局单值，不是某张卡的属性）。
  * 其余 9 项留在产品根的 `liyuan.config.json`。
+ * 2026-09-12 追加沙箱两项：卡外永久授权是这张卡的声明（docs/PLAN-SANDBOX.md），只由沙箱读写。
  */
 export const CARD_LEVEL_KEYS = [
 	"lorebooks",
@@ -487,6 +488,8 @@ export const CARD_LEVEL_KEYS = [
 	"disabledLore",
 	"cardSkinOff",
 	"preset",
+	"sandboxAllow",
+	"sandboxBash",
 ] as const satisfies ReadonlyArray<keyof RpConfig>;
 
 export type CardLevelKey = (typeof CARD_LEVEL_KEYS)[number];

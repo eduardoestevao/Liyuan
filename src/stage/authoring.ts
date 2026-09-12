@@ -1,4 +1,5 @@
 import { readFileSync } from "node:fs";
+import { NATIVE_TOOL_ACCESS } from "../sandbox.ts";
 import { cardTools, type CardDeps } from "../tools/card.ts";
 import type { ToolContext } from "../tools/registry.ts";
 import type { StageTool } from "./tools.ts";
@@ -9,7 +10,8 @@ export const CONVERSATION_MODE_TOOL: StageTool = {
 	parameters: { type: "object", properties: { mode: { type: "string", enum: ["roleplay", "authoring"] } }, required: ["mode"] },
 };
 
-export const AUTHORING_NATIVE_TOOLS = ["read", "bash", "edit", "write", "grep", "find", "ls"];
+/** 工作模式开放的 pi 原生工具＝沙箱认得的那几个（docs/PLAN-SANDBOX.md）；一份清单两处用 */
+export const AUTHORING_NATIVE_TOOLS: string[] = Object.keys(NATIVE_TOOL_ACCESS);
 const available = (name: string, deps: CardDeps) => {
 	if (name === "card_project") return !!deps.project;
 	if (name === "card_create") return !!deps.createCard;

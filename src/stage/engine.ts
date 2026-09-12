@@ -16,6 +16,7 @@ import { PreviousDraftEditor } from "./previous-draft.ts";
 import { projectToolContext } from "./context.ts";
 import { authoringHistory, authoringRequestIds, contextText, conversationMode, CONVERSATION_MODE_TYPE, CONVERSATION_PROCESS_TYPE, isConversationMode, roleplayHistory, type ConversationMode, type ContextMessage } from "../conversation-mode.ts";
 import { authoringTools, authoringSystemPrompt, runAuthoringTool, AUTHORING_NATIVE_TOOLS, CONVERSATION_MODE_TOOL } from "./authoring.ts";
+import { createSandboxGate, sandboxGrantsFromBranch, SANDBOX_GRANT_TYPE } from "../sandbox.ts";
 import type { CardDeps } from "../tools/card.ts";
 import type { GateInput } from "../tools/gate.ts";
 import { extractDraftRules } from "../draft.ts";
@@ -1242,6 +1243,17 @@ export class StageEngine {
 			return { aborted, entryId };
 		};
 
+		// 工作模式沙箱（docs/PLAN-SANDBOX.md）：原生文件工具以卡目录为界，卡外停在 tool_call 钩子里等用户批准。
+		// 允许集按本拍的卡算一次；授权现读——本会话的在树上，永久的在 卡.json。
+		const sandboxGate = createSandboxGate({
+			cwd, config,
+			sessionGrants: () => sandboxGrantsFromBranch(sm.getBranch() as BranchEntryLike[]),
+			rememberSession: (grant) => { sm.appendCustomEntry(SANDBOX_GRANT_TYPE, grant); sm.flush(); },
+			ask: this.#deps.askUser ? (question, options) => this.#deps.askUser!(question, options, this.#abort?.signal) : undefined,
+			onStop: () => { userStopped = true; void session.abort(); },
+			log: (line) => blog("sandbox", line),
+		});
+
 		const hooks: StageHooks = {
 			get mode() { return mode; },
 			get systemPrompt() { return authoringTurn ? workPrompt : systemPrompt; },
@@ -1339,10 +1351,11 @@ export class StageEngine {
 				// discarded; each mode rebuilds its own view of that same tree.
 				return { persist: false };
 			},
-			toolCall: (name, input) => {
+			toolCall: async (name, input) => {
 				blog("tool_call", `${name}: ${JSON.stringify(input)}`);
-				const blockReason = !hooks.toolNames.includes(name) ? "此工具在当前会话模式不可用。" :
+				let blockReason = !hooks.toolNames.includes(name) ? "此工具在当前会话模式不可用。" :
 					name === CONVERSATION_MODE_TOOL.name || authoringTurn ? undefined : workspaceToolBlock(ws, name, tools.find((t) => t.name === name)?.mode);
+				if (!blockReason && nativeNames.includes(name)) blockReason = await sandboxGate(name, input);
 				return { toolName: name, lastUserText, creationMode: loadStageConfig(cwd).creationMode, ...(blockReason ? { blockReason } : {}) };
 			},
 			toolResult: (name, content) => {

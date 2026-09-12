@@ -172,6 +172,13 @@ export interface RpConfig {
 	 * 优先于遗留预设文件里的 samplers（转译后 config.preset 已清空）。
 	 */
 	samplers?: Record<string, number>;
+	/**
+	 * 工作模式沙箱的永久授权（跟卡走，见 docs/PLAN-SANDBOX.md）：卡目录之外允许原生文件工具
+	 * 触碰的目录/文件（工程根内存相对路径，根外存绝对路径）。会话级授权不在这里，在会话树条目里。
+	 */
+	sandboxAllow?: string[];
+	/** 工作模式沙箱：本卡永久允许 bash（bash 无法限制在卡目录内，批了就是批了整台机器的 shell） */
+	sandboxBash?: boolean;
 }
 
 export const DEFAULT_CONFIG: RpConfig = {

@@ -23,7 +23,8 @@ export interface StageHooks {
 	providerPayload(payload: unknown, model?: StageModelLike): unknown;
 	update(event: StageStreamEvent): void;
 	messageEnd(message: { role: string; [key: string]: unknown }): { persist: false } | undefined;
-	toolCall(name: string, input: Record<string, unknown>): GateInput & { blockReason?: string };
+	/** 可 await：工作模式沙箱在此停下来等用户批准卡外访问（docs/PLAN-SANDBOX.md） */
+	toolCall(name: string, input: Record<string, unknown>): (GateInput & { blockReason?: string }) | Promise<GateInput & { blockReason?: string }>;
 	toolResult(name: string, content: Array<{ type: string; text?: string }>): void;
 	turnEnd(withdrawTools: () => void): void;
 	end(): Promise<void>;

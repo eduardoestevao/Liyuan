@@ -63,6 +63,21 @@ export const DIRS = {
 	memory: ".liyuan-memory",
 } as const;
 
+/**
+ * 全局共享的库（相对项目根）：世界书库、预设库、全局技能根、办事笔记。
+ * 卡级只存指针指向它们（见下方两层布局注释）；工作模式沙箱把它们当只读根（docs/PLAN-SANDBOX.md）。
+ */
+export const SHARED_LIBRARY_DIRS = ["assets/lorebooks", "assets/presets", "skills", DIRS.skills] as const;
+
+/**
+ * `target` 是否落在 `root` 之内（含 root 本身）。两边都应是已 resolve 的绝对路径；
+ * 符号链接不在此处理，调用方按需先取 realpath。Windows 下 relative 不分大小写、跨盘符返回绝对路径。
+ */
+export function insidePath(root: string, target: string): boolean {
+	const rel = relative(root, target);
+	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + (process.platform === "win32" ? "\\" : "/")));
+}
+
 const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 	state: ".rp-state",
 	artifacts: ".rp-artifacts",

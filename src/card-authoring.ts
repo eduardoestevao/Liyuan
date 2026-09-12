@@ -10,7 +10,7 @@ import { spawnSync } from "node:child_process";
 import { Script } from "node:vm";
 import { normalizeCard, readCardRawBuffer, readCardRawJson, writeCardJsonToPng } from "./card.ts";
 import { resolveCardSpace } from "./cardspace.ts";
-import { CARD_AUTHORING_DIR, dir } from "./paths.ts";
+import { CARD_AUTHORING_DIR, dir, insidePath as inside } from "./paths.ts";
 import { buildCardFrontSnapshot } from "./cardfront.ts";
 import { findInitVar, findSchemaDefaults } from "./mvu.ts";
 import { buildCardOutline, isCardSectionId, type CardSectionDeclarations } from "./card-outline.ts";
@@ -36,11 +36,6 @@ const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0
 export const cardSourceHash = (v: string | Buffer): string => createHash("sha256").update(v).digest("hex");
 const manifestFile = (root: string) => join(root, "manifest.json");
 const changesFile = (root: string) => join(root, "changes.json");
-
-function inside(root: string, target: string): boolean {
-	const rel = relative(root, target);
-	return rel === "" || (!isAbsolute(rel) && rel !== ".." && !rel.startsWith(".." + (process.platform === "win32" ? "\\" : "/")));
-}
 
 /** 也校验实际路径：工程目录、资源文件中的符号链接不能把写入带出作品目录。 */
 function guardedPath(root: string, rel: string): string {

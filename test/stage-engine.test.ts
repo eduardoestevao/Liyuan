@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test, afterEach } from "node:test";
@@ -16,6 +16,7 @@ import { applyDraftRevisions } from "../src/stage/draft-projection.ts";
 import { DraftStore, draftDirectory } from "../src/stage/draft-store.ts";
 import { authoringHistory, conversationMode, CONVERSATION_PROCESS_TYPE, storyBranch } from "../src/conversation-mode.ts";
 import { cardProjectOperation } from "../src/card-authoring.ts";
+import { loadCardConfig } from "../src/cardspace.ts";
 import { loadCardFile } from "../src/card.ts";
 import { listReplyVariants } from "../src/swipe.ts";
 
@@ -696,6 +697,60 @@ test("写卡模式：同一原生循环自动切入、改资源并应用；切�
 		assert.match(rebuildHistory(sm.getBranch()).history.at(-1)!.text, /推开山门/);
 		assert.match(JSON.stringify(authoringHistory(sm.getBranch())), /AUTHOR_REQUEST_SENTINEL.*NATIVE_EDIT_SENTINEL/s, "封闭后完整记录仍在共享会话");
 		assertSessionAligned(session);
+	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
+});
+
+test("工作模式沙箱：卡内静默；卡外读先拒后批、同单位不再问；bash 永久授权落 卡.json；本会话授权在树上跨拍有效", async () => {
+	const cwd = realpathSync(mkdtempSync(join(tmpdir(), "liyuan-eng-sandbox-")));
+	const cardDir = join(cwd, "cards", "云澜");
+	mkdirSync(cardDir, { recursive: true });
+	writeFileSync(join(cardDir, "云澜.json"), JSON.stringify({ data: { name: "云澜", description: "{{user}}的师姐", first_mes: "你来了。" } }));
+	writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "cards/云澜/云澜.json", userName: "沈舟" }));
+	mkdirSync(join(cwd, ".liyuan"), { recursive: true });
+	mkdirSync(join(cwd, "web", "src"), { recursive: true });
+	writeFileSync(join(cwd, "web", "src", "a.ts"), "OUTSIDE_A_SENTINEL");
+	writeFileSync(join(cwd, "web", "src", "b.ts"), "OUTSIDE_B_SENTINEL");
+	const sm = SessionManager.create(cwd, join(cwd, "sessions"));
+	const reg = registerFauxProvider({ models: [{ id: "faux-rp" }] });
+	const calls = (...items: any[]) => fauxAssistantMessage(items, { stopReason: "toolUse" });
+	const asked: Array<{ question: string; options: string[] }> = [];
+	const answers: string[] = [];
+	const lastToolResult = (ctx: any) => ctx.messages.filter((m: any) => m.role === "toolResult").at(-1)?.content?.[0]?.text ?? "";
+	try {
+		const engine = await makePiEngine({ ...piDeps(cwd, sm, reg.getModel("faux-rp")),
+			askUser: async (question, options) => { asked.push({ question, options }); return answers.shift(); },
+		}, false, true);
+		engine.setMode("authoring");
+		answers.push("拒绝", "本会话允许", "永久允许 bash（本卡）");
+		reg.setResponses([
+			() => calls(fauxToolCall("write", { path: join(cardDir, "创作", "note.txt"), content: "INSIDE_SENTINEL" })),
+			() => { assert.equal(asked.length, 0, "卡内写入不问"); return calls(fauxToolCall("read", { path: join(cwd, "web", "src", "a.ts") })); },
+			(ctx) => {
+				assert.equal(asked.length, 1);
+				assert.match(lastToolResult(ctx), /用户拒绝了本次读取/);
+				assert.doesNotMatch(lastToolResult(ctx), /OUTSIDE_A_SENTINEL/, "被拒的读取不执行");
+				return calls(fauxToolCall("read", { path: join(cwd, "web", "src", "a.ts") }));
+			},
+			(ctx) => { assert.equal(asked.length, 2); assert.match(lastToolResult(ctx), /OUTSIDE_A_SENTINEL/); return calls(fauxToolCall("read", { path: join(cwd, "web", "src", "b.ts") })); },
+			(ctx) => { assert.equal(asked.length, 2, "同单位不再问"); assert.match(lastToolResult(ctx), /OUTSIDE_B_SENTINEL/); return calls(fauxToolCall("bash", { command: "echo SANDBOX_BASH_OK" })); },
+			(ctx) => { assert.equal(asked.length, 3); assert.match(lastToolResult(ctx), /SANDBOX_BASH_OK/); return calls(fauxToolCall("bash", { command: "echo SANDBOX_BASH_AGAIN" })); },
+			(ctx) => { assert.equal(asked.length, 3, "永久授权不再问"); assert.match(lastToolResult(ctx), /SANDBOX_BASH_AGAIN/); return fauxAssistantMessage("维护完成。"); },
+		]);
+		await engine.performTurn("整理一下前端。");
+		assert.equal(readFileSync(join(cardDir, "创作", "note.txt"), "utf8"), "INSIDE_SENTINEL");
+		assert.match(asked[0]!.question, /请求读取：.*a\.ts[\s\S]*范围：web/);
+		assert.deepEqual(asked[0]!.options, ["允许一次", "本会话允许", "永久允许（本卡）", "拒绝"]);
+		assert.match(asked[2]!.question, /bash 不受卡目录限制[\s\S]*echo SANDBOX_BASH_OK/);
+		assert.equal(loadCardConfig(cardDir).sandboxBash, true);
+		assert.equal(loadCardConfig(cardDir).sandboxAllow, undefined, "本会话授权不落 卡.json");
+		assert.ok(sm.getBranch().some((e: any) => e.type === "custom" && e.customType === "liyuan-sandbox" && e.data?.dir === join(cwd, "web")), "本会话授权在会话树上");
+
+		reg.setResponses([
+			() => calls(fauxToolCall("read", { path: join(cwd, "web", "src", "b.ts") })),
+			(ctx) => { assert.equal(asked.length, 3, "树上的授权下一拍仍有效"); assert.match(lastToolResult(ctx), /OUTSIDE_B_SENTINEL/); return calls(fauxToolCall("bash", { command: "echo SANDBOX_BASH_THIRD" })); },
+			(ctx) => { assert.equal(asked.length, 3); assert.match(lastToolResult(ctx), /SANDBOX_BASH_THIRD/); return fauxAssistantMessage("再次完成。"); },
+		]);
+		await engine.performTurn("再看一眼。");
 	} finally { reg.unregister(); rmSync(cwd, { recursive: true, force: true }); }
 });
 

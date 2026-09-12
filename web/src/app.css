@@ -2014,6 +2014,9 @@ html[data-theme="dark"] .msg-md-code {
 	color: var(--text-strong);
 	margin-bottom: 12px;
 	line-height: 1.6;
+	/* 沙箱申请把路径/命令放在第二行，命令要原样呈现 */
+	white-space: pre-wrap;
+	overflow-wrap: anywhere;
 }
 .choice-options {
 	display: flex;
