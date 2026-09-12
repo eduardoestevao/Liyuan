@@ -78,7 +78,8 @@ jobs:
       - name: Install display deps
         run: |
           sudo apt-get update
-          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2
+          # noble 把 libasound2 改名 libasound2t64（64 位 time_t 迁移），旧名已无安装候选
+          sudo apt-get install -y xvfb libnss3 libatk-bridge2.0-0 libgtk-3-0 libgbm1 libasound2t64
 
       - name: Run and probe healthz
         run: |
