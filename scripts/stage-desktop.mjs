@@ -129,13 +129,14 @@ log(`产品树装入 ${appDir}（${total} 个文件）`);
 // ---------- 依赖：app 内自包含 node_modules ----------
 
 log("npm ci --omit=dev（stage 内自包含；需要网络）…");
-// Node ≥24 禁止无 shell 直跑 .cmd（npm 在 Windows 是 npm.cmd）；参数是静态串无注入面
+// 单串命令必须走 shell：win32 上 npm 是 .cmd（Node ≥24 禁止无 shell 直跑），
+// POSIX 上无 shell 时整串会被当成一个可执行文件名（ENOENT）——两边都要 shell；参数是静态串无注入面
 const ci = spawnSync("npm ci --omit=dev", {
 	cwd: appDir,
 	stdio: "inherit",
-	shell: process.platform === "win32",
+	shell: true,
 });
-if (ci.status !== 0) die("npm ci 失败");
+if (ci.status !== 0 || ci.error) die(`npm ci 失败${ci.error ? `：${ci.error.message}` : ""}`);
 
 // file: 依赖是符号链接 → 替换为实体拷贝（目标必须落在 app/packages 内）
 const scope = path.join(appDir, "node_modules", "@liyuan");
