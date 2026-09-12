@@ -270,22 +270,19 @@ export function resolvePresetPath(cwd: string, configured?: string): string {
 /**
  * 将用户级 agent 目录指到 ~/.liyuan/agent。
  * 须在 createAgentSession / getAgentDir 之前调用。
- * fork 后环境变量为 LIYUAN_CODING_AGENT_DIR；同时写 PI_* 兼容旧代码路径。
+ * 只认 LIYUAN_CODING_AGENT_DIR；PI_CODING_AGENT_DIR 仅写出给 vendored pi 内部代码读
+ * （packages/coding-agent/src/config.ts）——不再当输入：上游 pi 用户若给自己配过该
+ * 变量，旧逻辑会把梨园 agentHome 指进用户的 pi 目录，models.json 随之被整体覆写
+ * （2026-09-12 用户定案切除此耦合）。
  *
  * pi→liyuan 改名后遗症：历史上会话可能只在 ~/.pi/agent，或两边各有一份。
  * 启动时把旧树里「缺失 / 更新」的文件并入 ~/.liyuan/agent（不删旧树、不覆盖更新的新文件）。
  */
 export function preferLiyuanAgentHome(): string {
 	const target = join(homedir(), ".liyuan", "agent");
-	if (!process.env.LIYUAN_CODING_AGENT_DIR && !process.env.PI_CODING_AGENT_DIR) {
-		process.env.LIYUAN_CODING_AGENT_DIR = target;
-		process.env.PI_CODING_AGENT_DIR = target;
-	} else if (process.env.LIYUAN_CODING_AGENT_DIR && !process.env.PI_CODING_AGENT_DIR) {
-		process.env.PI_CODING_AGENT_DIR = process.env.LIYUAN_CODING_AGENT_DIR;
-	} else if (process.env.PI_CODING_AGENT_DIR && !process.env.LIYUAN_CODING_AGENT_DIR) {
-		process.env.LIYUAN_CODING_AGENT_DIR = process.env.PI_CODING_AGENT_DIR;
-	}
-	const resolved = process.env.LIYUAN_CODING_AGENT_DIR || process.env.PI_CODING_AGENT_DIR || target;
+	const resolved = process.env.LIYUAN_CODING_AGENT_DIR || target;
+	process.env.LIYUAN_CODING_AGENT_DIR = resolved;
+	process.env.PI_CODING_AGENT_DIR = resolved;
 	try {
 		mkdirSync(resolved, { recursive: true });
 		const legacy = join(homedir(), ".pi", "agent");

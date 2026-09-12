@@ -23,13 +23,9 @@ import type { PresetDoc } from "./preset-doc.ts";
 /** 用户规矩文件名（两级同名，对齐 pi 的 APPEND_SYSTEM.md 习惯） */
 export const USER_RULES_FILE = "APPEND_SYSTEM.md";
 
-/** agentDir：与 paths.ts preferLiyuanAgentHome 同一约定（启动时写 env） */
+/** agentDir：与 paths.ts preferLiyuanAgentHome 同一约定（启动时写 env；只认 LIYUAN_*，PI_* 不当输入） */
 export function rulesAgentDir(): string {
-	return (
-		process.env.LIYUAN_CODING_AGENT_DIR ||
-		process.env.PI_CODING_AGENT_DIR ||
-		join(homedir(), ".liyuan", "agent")
-	);
+	return process.env.LIYUAN_CODING_AGENT_DIR || join(homedir(), ".liyuan", "agent");
 }
 
 export function globalRulesPath(): string {
