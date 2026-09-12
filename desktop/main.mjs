@@ -56,6 +56,27 @@ async function pickDataRoot() {
 	return filePaths[0];
 }
 
+/** 首启（无指针）：带说明的一步——默认位置一键开始，换位置才进文件夹选择 */
+async function firstRunDataRoot() {
+	const docs = app.getPath("documents") || app.getPath("home");
+	const def = path.join(docs, "Liyuan");
+	const choice = dialog.showMessageBoxSync({
+		type: "question",
+		title: "欢迎使用梨园",
+		message: "角色卡、会话、记忆与配置将保存在「数据目录」",
+		detail: `默认位置：${def}\n\n数据目录可整体拷贝迁移，重装梨园不影响数据。\n以后可在「文件」菜单更改位置。`,
+		buttons: ["就用默认位置", "选择其他位置", "退出"],
+		defaultId: 0,
+		cancelId: 2,
+	});
+	if (choice === 2) return null;
+	if (choice === 0) {
+		saveDataRoot(def);
+		return def;
+	}
+	return await pickDataRoot();
+}
+
 async function resolveDataRoot() {
 	if (process.env.LIYUAN_DESKTOP_DATA_ROOT) return process.env.LIYUAN_DESKTOP_DATA_ROOT;
 	if (dev) return productRoot;
@@ -74,7 +95,7 @@ async function resolveDataRoot() {
 		});
 		return choice === 0 ? await pickDataRoot() : null;
 	}
-	return await pickDataRoot();
+	return await firstRunDataRoot();
 }
 
 // ---------- 播种（PLAN-DESKTOP §四：覆盖同步＝产品持有的种子源；缺失才种＝用户持有） ----------
@@ -271,6 +292,36 @@ async function restart() {
 	if (win) win.loadURL(serverUrl());
 }
 
+/**
+ * 更改数据目录：重指指针＋按新根重启服务。原目录数据不自动搬移——
+ * 数据根是透明目录，需要保留就整体拷贝到新位置再切换（与「卡空间物理迁移」同一哲学）。
+ */
+async function changeDataRoot() {
+	const choice = dialog.showMessageBoxSync({
+		type: "question",
+		title: "更改数据目录",
+		message: "把角色卡、会话与记忆的存放位置换到新目录。",
+		detail: "原目录的数据不会自动搬移——需要保留就把原目录整体拷贝到新位置后再切换。\n新目录缺什么会自动补种默认资产。",
+		buttons: ["继续…", "取消"],
+		defaultId: 0,
+		cancelId: 1,
+	});
+	if (choice !== 0) return;
+	const picked = await pickDataRoot();
+	if (!picked) return;
+	dataRootResolved = picked;
+	seedDataRoot(picked);
+	try {
+		await restart();
+	} catch (err) {
+		dialog.showErrorBox(
+			"梨园",
+			`切换数据目录后服务重启失败：${err instanceof Error ? err.message : String(err)}\n\n日志：${logPath()}`,
+		);
+		app.quit();
+	}
+}
+
 const serverUrl = () => `http://127.0.0.1:${serverPort}/`;
 
 // ---------- 窗口与菜单 ----------
@@ -318,6 +369,7 @@ function buildMenu() {
 			label: "文件",
 			submenu: [
 				{ label: "打开数据目录", click: () => void shell.openPath(dataRootResolved) },
+				{ label: "更改数据目录…", click: () => void changeDataRoot() },
 				{ type: "separator" },
 				{ label: "退出", role: "quit" },
 			],
@@ -357,6 +409,7 @@ function buildMenu() {
 
 async function bootstrap() {
 	await app.whenReady();
+	createWindow(); // 先有窗（启动页在场），再谈数据目录——首启对话有上下文，不裸弹
 	const dataRoot = await resolveDataRoot();
 	if (!dataRoot) {
 		app.quit();
@@ -365,7 +418,6 @@ async function bootstrap() {
 	dataRootResolved = dataRoot;
 	seedDataRoot(dataRoot);
 	buildMenu();
-	createWindow();
 	try {
 		serverPort = await pickPort();
 		spawnServer(dataRoot);
