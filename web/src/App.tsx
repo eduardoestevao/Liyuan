@@ -31,7 +31,6 @@ import { ArtifactPanel } from "./components/ArtifactPanel.tsx";
 import { DraftPanel } from "./components/DraftPanel.tsx";
 import { workspaceSegments } from "./draft-view.ts";
 import type { DraftView } from "./wire.ts";
-import { AssistantPanel } from "./components/AssistantPanel.tsx";
 import { BrandLogo } from "./components/BrandLogo.tsx";
 import { ConnectPanel } from "./components/ConnectPanel.tsx";
 import { FloatWindow } from "./components/FloatWindow.tsx";
@@ -46,7 +45,6 @@ import { syncCardRuntimeVariables } from "./cardRuntimeFrames.ts";
 import { setAtHome, shouldShowHomeOnBoot, touchVisit } from "./visit.ts";
 import {
 	IconApi,
-	IconAssistant,
 	IconAttach,
 	IconPlus,
 	IconBell,
@@ -108,8 +106,6 @@ import { UploadsPanel } from "./components/UploadsPanel.tsx";
 import { StoreModal, WorldlinePanel } from "./components/WorldlinePanel.tsx";
 import { useWire, type ConnState } from "./ws.ts";
 import type {
-	AssistantModelInfo,
-	AssistantMsg,
 	AuthorScript,
 	RpPanel,
 	ServerFrame,
@@ -159,7 +155,6 @@ type PanelId =
 	| "lorebook"
 	| "roster"
 	| "uploads"
-	| "assistant"
 	| "status";
 
 /** agent 自建面板的右栏选择 id（柱 2）：`agent:` + 面板名，页签随 panels 帧动态长出 */
@@ -175,8 +170,8 @@ const agentId = (name: string): AgentPanelId => `agent:${name}`;
 const DRAWER_SECTIONS: PanelId[] = ["roles", "connect", "preset", "lorebook", "powers", "uploads"];
 /** 抽屉可开全集＝轨位 + 轨底的设置 */
 const DRAWER_PANELS: PanelId[] = [...DRAWER_SECTIONS, "settings"];
-/** 右栏可开面板：状态栏 / 世界线 / 登场名录 / 会话树 / 助手 / agent 面板（桌面端平立分栏，会话左移） */
-const RIGHT_OPENABLE: PanelId[] = ["sessions", "assistant", "status", "worldline", "roster"];
+/** 右栏可开面板：状态栏 / 世界线 / 登场名录 / 会话树 / agent 面板（桌面端平立分栏，会话左移） */
+const RIGHT_OPENABLE: PanelId[] = ["sessions", "status", "worldline", "roster"];
 
 /**
  * 悬浮窗形态：保留为兜底，但在桌面端所有右侧面板统一走平立分栏，彻底消灭遮挡式弹窗。
@@ -199,7 +194,6 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	lorebook: "世界书",
 	roster: "登场名录",
 	uploads: "资料",
-	assistant: "助手",
 	status: "状态栏",
 };
 
@@ -215,7 +209,6 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 	lorebook: IconLorebook,
 	roster: IconRoster,
 	uploads: IconUploads,
-	assistant: IconAssistant,
 	status: IconStatus,
 };
 
@@ -290,21 +283,6 @@ export default function App() {
 	const [previewRequest, setPreviewRequest] = useState<CardPreviewRequestFrame | null>(null);
 	// agent 自建面板（柱 2）：server 推送的活跃面板全量（页签序）；入口在面板坞，展开到左栏
 	const [agentPanels, setAgentPanels] = useState<RpPanel[]>([]);
-	// 助手（右栏独立会话，2026-07-14 拆分）：消息/流式/模型全由 assistant_* 帧驱动
-	const [asstMsgs, setAsstMsgs] = useState<AssistantMsg[] | null>(null);
-	const [asstBusy, setAsstBusy] = useState(false);
-	const [asstStreamText, setAsstStreamText] = useState("");
-	const [asstStreamThinking, setAsstStreamThinking] = useState("");
-	const [asstThinkingLive, setAsstThinkingLive] = useState(false);
-	const [asstToolNote, setAsstToolNote] = useState<string | null>(null);
-	/** 助手本轮过程步骤（实时清单渲染用；与 asstActsRef 同内容） */
-	const [asstLiveActs, setAsstLiveActs] = useState<WireActivity[]>([]);
-	const [asstModel, setAsstModel] = useState<AssistantModelInfo | null>(null);
-	const [asstFollow, setAsstFollow] = useState(true);
-	/** 助手历史（按当前角色卡过滤） */
-	const [asstSessions, setAsstSessions] = useState<import("./wire.ts").AssistantSessionInfo[] | null>(null);
-	/** 面板关着时收到助手回复：发送钮旁的小圆点提示 */
-	const [asstUnread, setAsstUnread] = useState(false);
 	// 面板系统
 	const initialPanels = useMemo(loadPanelPrefs, []);
 	const [leftPanel, setLeftPanel] = useState<PanelId | AgentPanelId | null>(initialPanels.left);
@@ -434,11 +412,6 @@ export default function App() {
 	const sessionIdRef = useRef("");
 	/** 用户已按停止：忽略迟到 delta，避免 UI 解锁后还在刷字 */
 	const abortingRef = useRef(false);
-	// 助手流式缓冲与本轮工具活动（与剧情侧同构，各自独立）
-	const asstStreamRef = useRef("");
-	const asstStreamThinkingRef = useRef("");
-	const asstActsRef = useRef<WireActivity[]>([]);
-	const asstAbortingRef = useRef(false);
 	const rightPanelRef = useRef<PanelId | AgentPanelId | null>(initialPanels.right);
 	// onFrame 闭包内读最新面板/左栏选择（useCallback 依赖冻结，走 ref 防陈旧）
 	const agentPanelsRef = useRef<RpPanel[]>([]);
@@ -486,8 +459,6 @@ export default function App() {
 
 	useEffect(() => {
 		rightPanelRef.current = rightPanel;
-		// 打开助手面板即消掉未读点
-		if (rightPanel === "assistant") setAsstUnread(false);
 	}, [rightPanel]);
 
 	/**
@@ -573,13 +544,6 @@ export default function App() {
 	};
 	const resetSegs = () => {
 		setSegs([]);
-	};
-
-	const clearAsstStream = () => {
-		asstStreamRef.current = "";
-		asstStreamThinkingRef.current = "";
-		setAsstStreamText("");
-		setAsstStreamThinking("");
 	};
 
 	/** 本轮过程步骤追加：ref 供定稿时附着到消息，state 供生成中的实时清单渲染（codex 式全程可见） */
@@ -1032,102 +996,6 @@ export default function App() {
 					break;
 				case "card_preview":
 					setPreviewRequest({ id: frame.id, data: frame.data, message: frame.message, variables: frame.variables, wait: frame.wait });
-					break;
-				case "assistant_hello":
-					setAsstMsgs(frame.messages);
-					setAsstBusy(frame.busy);
-					setAsstModel(frame.model);
-					setAsstFollow(frame.follow);
-					setAsstThinkingLive(false);
-					setAsstToolNote(null);
-					asstActsRef.current = [];
-					setAsstLiveActs([]);
-					clearAsstStream();
-					// 换会话后重拉助手历史列表
-					sendRef.current({ type: "assistant_sessions" });
-					break;
-				case "assistant_sessions":
-					setAsstSessions(frame.list);
-					break;
-				case "assistant_message": {
-					const msg = frame.message;
-					if (msg.role === "assistant") {
-						clearAsstStream();
-						const acts = asstActsRef.current;
-						asstActsRef.current = [];
-						setAsstLiveActs([]);
-						const incoming: AssistantMsg = acts.length ? { ...msg, activities: acts } : msg;
-						setAsstMsgs((ms) => [...(ms ?? []), incoming]);
-						// 最终回复（非中间步骤）且面板没开着：点亮未读点
-						if (!msg.mid && rightPanelRef.current !== "assistant") setAsstUnread(true);
-					} else {
-						setAsstMsgs((ms) => [...(ms ?? []), msg]);
-					}
-					break;
-				}
-				case "assistant_delta":
-					if (asstAbortingRef.current) break;
-					if (frame.kind === "text") {
-						setAsstThinkingLive(false);
-						asstStreamRef.current += frame.delta;
-						setAsstStreamText(asstStreamRef.current);
-					} else {
-						setAsstThinkingLive(true);
-						asstStreamThinkingRef.current += frame.delta;
-						setAsstStreamThinking(asstStreamThinkingRef.current);
-					}
-					break;
-				case "assistant_state":
-					if (frame.state === "start") {
-						asstAbortingRef.current = false;
-						setAsstBusy(true);
-						asstActsRef.current = [];
-						setAsstLiveActs([]);
-					} else {
-						// 同剧情侧：abort 乐观 end 后保持冻结，避免迟到 delta 复活
-						const wasAborting = asstAbortingRef.current;
-						if (!wasAborting) asstAbortingRef.current = false;
-						setAsstBusy(false);
-						setAsstThinkingLive(false);
-						setAsstToolNote(null);
-						// 中断遗留的半截回复/思维链：并入消息列表（不丢字）
-						const text = asstStreamRef.current;
-						const thinking = asstStreamThinkingRef.current.trim();
-						const acts = asstActsRef.current;
-						if (text.trim() || thinking) {
-							asstActsRef.current = [];
-							setAsstLiveActs([]);
-							clearAsstStream();
-							setAsstMsgs((ms) => [
-								...(ms ?? []),
-								{
-									role: "assistant",
-									text: text.trim() ? text : "（正文未流出，见思维链）",
-									...(thinking ? { thinking } : {}),
-									...(acts.length ? { activities: acts } : {}),
-								},
-							]);
-						} else {
-							clearAsstStream();
-							setAsstLiveActs([]);
-						}
-					}
-					break;
-				case "assistant_activity":
-					if (frame.activity.kind === "tool_start" && (asstStreamRef.current || asstStreamThinkingRef.current)) {
-						clearAsstStream();
-					}
-					asstActsRef.current = [...asstActsRef.current, frame.activity];
-					setAsstLiveActs(asstActsRef.current);
-					setAsstToolNote(
-						frame.activity.kind === "tool_start"
-							? frame.activity.detail?.trim()
-								? frame.activity.detail.trim().length > 80
-									? `${frame.activity.detail.trim().slice(0, 80)}…`
-									: frame.activity.detail.trim()
-								: `${toolLabel(frame.activity.name)}…`
-							: null,
-					);
 					break;
 				case "update": {
 					const prevErr = updateErrRef.current;
@@ -1638,7 +1506,7 @@ export default function App() {
 			case "connect":
 				return <ConnectPanel toast={pushToast} />;
 			case "preset":
-				return <PresetPanel toast={pushToast} onAssistantPrompt={(text) => ws.send({ type: "assistant_prompt", text })} />;
+				return <PresetPanel toast={pushToast} />;
 			case "powers":
 				return (
 					<>
@@ -1689,56 +1557,6 @@ export default function App() {
 							);
 							pushToast("info", `已附到待发送：${u.name}`);
 						}}
-					/>
-				);
-			case "assistant":
-				return (
-					<AssistantPanel
-						msgs={asstMsgs}
-						busy={asstBusy}
-						streamText={asstStreamText}
-						streamThinking={asstStreamThinking}
-						thinkingLive={asstThinkingLive}
-						toolNote={asstToolNote}
-						liveActs={asstLiveActs}
-						model={asstModel}
-						follow={asstFollow}
-						sessions={asstSessions}
-						onSend={(text) => ws.send({ type: "assistant_prompt", text })}
-						onAbort={() => {
-							// 强制停止：本地立刻解锁助手输入并冻结流式（保持 asstAbortingRef 直到下次 start）
-							asstAbortingRef.current = true;
-							setAsstBusy(false);
-							setAsstThinkingLive(false);
-							setAsstToolNote(null);
-							if (asstStreamRef.current.trim() || asstStreamThinkingRef.current.trim()) {
-								const text = asstStreamRef.current;
-								const thinking = asstStreamThinkingRef.current.trim();
-								const acts = asstActsRef.current;
-								asstActsRef.current = [];
-								setAsstLiveActs([]);
-								clearAsstStream();
-								setAsstMsgs((ms) => [
-									...(ms ?? []),
-									{
-										role: "assistant" as const,
-										text: text.trim() ? text : "（正文未流出，见思维链）",
-										...(thinking ? { thinking } : {}),
-										...(acts.length ? { activities: acts } : {}),
-									},
-								]);
-							} else {
-								clearAsstStream();
-							}
-							ws.send({ type: "assistant_abort" });
-						}}
-						onNew={() => ws.send({ type: "assistant_new" })}
-						onRefreshSessions={() => ws.send({ type: "assistant_sessions" })}
-						onOpenSession={(path) => ws.send({ type: "assistant_open", path })}
-						onDeleteSession={(path) => ws.send({ type: "assistant_delete", path })}
-						onPickModel={(sel) =>
-							ws.send(sel ? { type: "assistant_model", provider: sel.provider, id: sel.id } : { type: "assistant_model" })
-						}
 					/>
 				);
 		}
@@ -2601,26 +2419,6 @@ export default function App() {
 									<IconSend size={17} />
 								</button>
 							)}
-							{/* 助手入口（2026-07-14 拆分）：发送箭头右侧，点开右栏助手对话 */}
-							<button
-								type="button"
-								className={`dock-btn asst-btn ${rightPanel === "assistant" ? "active" : ""}`}
-								onClick={() => {
-									if (rightPanel === "assistant") {
-										openRight(null);
-										return;
-									}
-									setAsstUnread(false);
-									openRight("assistant");
-									ws.send({ type: "assistant_sync" });
-									ws.send({ type: "assistant_sessions" });
-								}}
-								title="助手"
-								aria-label="打开助手面板"
-							>
-								<IconAssistant size={18} />
-								{asstUnread && <span className="asst-dot" aria-hidden="true" />}
-							</button>
 						</div>
 						{/* 会话用量：输入框下方，右缘与输入框齐平 */}
 						<div className="composer-shell session-stats-wrap">

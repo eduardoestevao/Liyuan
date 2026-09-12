@@ -224,7 +224,7 @@ test("卡级配置：逐字段赢者独占，卡级盖全局；没写的继承",
 
 test("卡级字段清单：card 留在全局（「当前打开哪张卡」不是某张卡的属性）", () => {
 	assert.ok(!(CARD_LEVEL_KEYS as readonly string[]).includes("card"));
-	for (const k of ["language", "scanDepth", "maxLoreInjections", "backendControl", "compactEveryNTurns", "assistantModel", "sideModel", "creationMode", "importStripTags"]) {
+	for (const k of ["language", "scanDepth", "maxLoreInjections", "backendControl", "compactEveryNTurns", "sideModel", "creationMode", "importStripTags"]) {
 		assert.ok(!(CARD_LEVEL_KEYS as readonly string[]).includes(k), `${k} 应留在全局`);
 	}
 	assert.equal(new Set(CARD_LEVEL_KEYS).size, CARD_LEVEL_KEYS.length, "清单不许有重复");

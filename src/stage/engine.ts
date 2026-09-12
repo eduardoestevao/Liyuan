@@ -86,7 +86,6 @@ import {
 	runMediaStageTool,
 	type MediaStageResult,
 } from "./media-stage.ts";
-import { runAssistantStageTool } from "./assistant-stage.ts";
 import type { MemoryChunkLike, MemoryDocument, MemorySearchResult } from "../tools/memory.ts";
 import type { WorldlineViewLite } from "../tools/worldline.ts";
 import { defaultSaveName } from "../worldline.ts";
@@ -1577,8 +1576,6 @@ export class StageEngine {
 			if (name === "panel_write" || name === "panel_close") ws.panelWrites++;
 			result = name === "previous_draft_read" || name === "previous_draft_edit"
 				? o.previousDraft.run(ws, o.wsDeps, name, args)
-				: name === "assistant_run"
-				? ((await runAssistantStageTool(name, args, signal)) ?? { text: `未知工具「${name}」。`, isError: true })
 				: o.mcpNames.has(name)
 					? ((await runMcpStageTool(this.#deps.mcp!, name, args, signal)) ?? { text: `未知工具「${name}」。`, isError: true })
 					: o.mediaNames.has(name)

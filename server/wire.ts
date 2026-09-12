@@ -186,30 +186,6 @@ export interface WireActivity {
 }
 
 /**
- * 右栏「助手」消息（独立会话，2026-07-14 职责拆分）。
- * 与剧情 WireMsg 分开：助手没有叙事通道语义，只有对话与过程。
- */
-export interface AssistantMsg {
-	role: "user" | "assistant";
-	text: string;
-	/** 模型思维链（折叠展示） */
-	thinking?: string;
-	/** 中间步骤（带工具调用的计划旁白）：面板折进「过程」，只露最终回复 */
-	mid?: boolean;
-	/** 本条消息期间的工具活动（live 时由前端积累；历史重放不带） */
-	activities?: WireActivity[];
-	/** 助手交付的媒体（show_media 工具）：在助手对话里内联展示，不进剧情流 */
-	media?: { src: string; kind: "image" | "audio" | "video"; caption?: string };
-}
-
-/** 助手当前模型信息（模型选择器数据） */
-export interface AssistantModelInfo {
-	provider: string;
-	id: string;
-	name: string;
-}
-
-/**
  * 在线更新状态（主页 chip / 弹窗 / 进度气泡共用一份状态）。
  * phase 流转：none → available →(下载)→ downloading → ready；失败回 available 带 error。
  * ready 跨重启持久（暂存包在 .liyuan-cache/update/，启动脚本应用后自然回 none）。
@@ -298,41 +274,9 @@ export type ServerFrame =
 	| { type: "choice_resolved"; id: string; answer?: string; stopped?: boolean }
 	/** agent 请求页面渲染当前创作稿并回报（POST /api/card/authoring/preview-report） */
 	| { type: "card_preview"; id: string; data: CardProjectPreview; message: string; variables: Record<string, unknown>; wait: number }
-	/** 助手（右栏独立会话）：全量对齐（连接、面板打开、新对话、换模型后） */
-	| {
-			type: "assistant_hello";
-			messages: AssistantMsg[];
-			busy: boolean;
-			/** 当前助手模型（null=尚无可用模型） */
-			model: AssistantModelInfo | null;
-			/** true=未单独指定，跟随剧情模型 */
-			follow: boolean;
-			/** 当前助手会话路径（便于历史列表高亮） */
-			sessionPath?: string;
-	  }
-	/** 助手历史列表（已按当前角色卡过滤） */
-	| { type: "assistant_sessions"; list: AssistantSessionInfo[] }
-	| { type: "assistant_message"; message: AssistantMsg }
-	| { type: "assistant_delta"; kind: "text" | "thinking"; delta: string }
-	| { type: "assistant_state"; state: "start" | "end" }
-	| { type: "assistant_activity"; activity: WireActivity }
 	/** 在线更新状态变化（发现新版/下载进度/就绪）：全量状态推送 */
 	| { type: "update"; update: UpdateWire }
 	| { type: "error"; text: string };
-
-/** 助手会话列表条目（绑定角色卡，与剧情会话列表同构裁剪） */
-export interface AssistantSessionInfo {
-	path: string;
-	id: string;
-	name?: string;
-	firstMessage: string;
-	modified: number;
-	messageCount: number;
-	current: boolean;
-	preview?: string;
-	cardName?: string;
-	card?: string;
-}
 
 /** Client → Server 帧 */
 export type ClientFrame =
@@ -358,16 +302,6 @@ export type ClientFrame =
 	| { type: "open"; path: string }
 	/** 剧情决策应答：value=选项原文或自由输入；stop=停止本回合（笔还给用户） */
 	| { type: "choice_reply"; id: string; value?: string; stop?: boolean }
-	/** 助手（右栏独立会话）：发话 / 停止 / 新对话 / 请求全量 / 选模型（provider+id 均缺省 = 跟随剧情模型） */
-	| { type: "assistant_prompt"; text: string }
-	| { type: "assistant_abort" }
-	| { type: "assistant_new" }
-	| { type: "assistant_sync" }
-	| { type: "assistant_model"; provider?: string; id?: string }
-	/** 助手历史：拉列表 / 打开 / 删除（均按当前角色卡过滤） */
-	| { type: "assistant_sessions" }
-	| { type: "assistant_open"; path: string }
-	| { type: "assistant_delete"; path: string }
 	| { type: "new"; name?: string }
 	/** 两层布局：在指定子项目里再开一个会话（「第二个窗口继续聊」） */
 	| { type: "chat_new_session"; chatId: string };
@@ -800,56 +734,6 @@ export function toWireHistory(
 		if (w) out.push(w);
 	}
 	return foldTurnNarratives(out);
-}
-
-/**
- * 助手会话历史 → AssistantMsg 列表（assistant_hello 用）。
- * 只保留 user / assistant 对话面 + show_media 的媒体交付；注入 custom、空轮丢弃；
- * 带 toolCall 的中间轮标 mid（面板折进「过程」）。
- */
-export function toAssistantHistory(messages: unknown[]): AssistantMsg[] {
-	const out: AssistantMsg[] = [];
-	for (const m of messages) {
-		if (!m || typeof m !== "object") continue;
-		const msg = m as MsgLike;
-		const text = textOf(msg.content).trim();
-		if (msg.role === "user") {
-			if (text) out.push({ role: "user", text });
-			continue;
-		}
-		if (msg.role === "assistant") {
-			const thinking = thinkingOf(msg.content).trim();
-			if (!text && !thinking) continue;
-			out.push({
-				role: "assistant",
-				text: text || "（本轮只有思考与工具调用）",
-				...(thinking ? { thinking } : {}),
-				...(hasToolCall(msg.content) ? { mid: true } : {}),
-			});
-			continue;
-		}
-		if (msg.role === "toolResult") {
-			const media = assistantMediaOfToolResult(msg);
-			if (media) out.push(media);
-		}
-	}
-	return out;
-}
-
-/** show_media 工具结果 → 助手媒体消息；非该工具或结构不符返回 null */
-export function assistantMediaOfToolResult(msg: MsgLike): AssistantMsg | null {
-	if (msg.toolName !== "show_media" || msg.isError === true) return null;
-	const md =
-		msg.details && typeof msg.details === "object"
-			? (msg.details as { asstMedia?: { src?: unknown; kind?: unknown; caption?: unknown } }).asstMedia
-			: undefined;
-	if (!md || typeof md.src !== "string") return null;
-	const kind = md.kind === "audio" || md.kind === "video" ? md.kind : "image";
-	return {
-		role: "assistant",
-		text: typeof md.caption === "string" ? md.caption : "",
-		media: { src: md.src, kind, ...(typeof md.caption === "string" ? { caption: md.caption } : {}) },
-	};
 }
 
 /**

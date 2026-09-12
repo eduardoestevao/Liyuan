@@ -19,8 +19,7 @@ test("lorebook_search / ask_director / panel_write", () => {
 	assert.match(formatToolStartDetail("panel_write", { name: "关系图", kind: "svg" }), /关系图/);
 });
 
-test("assistant_run / world_state_update", () => {
-	assert.match(formatToolStartDetail("assistant_run", { task: "生成一张夜景图" }), /委托助手/);
+test("world_state_update", () => {
 	assert.match(formatToolStartDetail("world_state_update", { patch: { time: "戌时", location: "御书房" } }), /记账：time、location/);
 });
 

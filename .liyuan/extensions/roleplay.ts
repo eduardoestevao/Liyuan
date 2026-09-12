@@ -53,7 +53,6 @@ import {
 	writePanel,
 	type PanelMap,
 } from "../../src/panels.ts";
-import { runAssistantTask } from "../../src/assistant-gateway.ts";
 import { normalizeRpPreset, type RpPreset } from "../../src/preset.ts";
 import { applyProjectedSamplers } from "../../src/samplers.ts";
 import { registerStoryPanelSync, registerStoryStateSync } from "../../src/story-sync.ts";
@@ -107,7 +106,7 @@ import {
 // 剧情工具（world_state_update 于 F3 还给主演——场记已兜底，主演亲手记账更及时，PLAN-PHASE3 §6.3；
 // lorebook_write：新造设定固化为正典，写入补充设定集 .liyuan-lore/，用户原始世界书永远只读；
 // show_image / show_audio / show_video：媒体通道交付；panel_*：agent 自建面板（PLAN-PHASE4 柱 2）。
-// skill_save 已迁往右栏「助手」（2026-07-14 拆分）：沉淀归助手，使用权（read 笔记照调）仍在剧情侧）
+// skill_save 不在剧情侧（2026-07-14 拆分）：沉淀是工程活，归工作模式；使用权（read 笔记照调）仍在剧情侧）
 const RP_TOOLS = [
 	"lorebook_search",
 	"world_state_get",
@@ -121,8 +120,6 @@ const RP_TOOLS = [
 	"panel_write",
 	"panel_read",
 	"panel_close",
-	/** 系统/运维事务委托右栏助手（主入口合流） */
-	"assistant_run",
 ];
 
 /** 决策门禁工具（PLAN-PHASE4 柱 1）：仅 creationMode==="ask" 时进活跃集，停笔向用户询问剧情决策 */
@@ -924,7 +921,7 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 			},
 		});
 
-		// 技能沉淀（skill_save）已迁至右栏「助手」（2026-07-14 拆分）：摸索与沉淀是工程活，
+		// 技能沉淀（skill_save）不在剧情侧（2026-07-14 拆分）：摸索与沉淀是工程活，归工作模式，
 		// 不再打断剧情模型；技能清单仍进剧情 system prompt（使用权保留，见 director 技能库节）。
 
 		// ---------- Agent 自建面板（PLAN-PHASE4 柱 2）：agent 持有的前端展示面 ----------
@@ -1012,61 +1009,6 @@ export default function roleplayExtension(pi: ExtensionAPI) {
 				panels = r.panels;
 				persistPanels();
 				return { content: [{ type: "text", text: `面板「${params.name.trim()}」已收起（内容保留，同名 panel_write 可重开）。` }] };
-			},
-		});
-
-		// 系统事务委托：右栏助手作为剧情 agent 的工具（主框统一入口，语义判断而非 // 硬改道）
-		registerRpTool({
-			name: "assistant_run",
-			label: "委托助手",
-			description:
-				"Delegate a SYSTEM / ops / authoring task to the side Assistant (right panel). Use when the user wants APIs, image generation via external services, config/preset/model changes, diagnostics, skill notes, or other non-narrative work. Do NOT use for in-story creation (new character personality, scene direction, dialogue, IC choices)—handle those yourself with roleplay or ask_director. Pass a clear task description (user intent + needed context). Parentheses or // in user text are NOT a routing signal—judge by meaning. After a pure ops task, prefer ending the turn once the tool returns (set continue_story only if the user also asked to advance the scene).",
-			parameters: Type.Object({
-				task: Type.String({
-					description: "What the assistant should do, in plain language (include user intent and any paths/API names).",
-				}),
-				mode: Type.Optional(
-					Type.Union([Type.Literal("ops"), Type.Literal("author"), Type.Literal("diagnose"), Type.Literal("auto")], {
-						description: "ops=API/media/bash; author=panels/lore/state; diagnose=debug config; auto=default",
-					}),
-				),
-				continue_story: Type.Optional(
-					Type.Boolean({
-						description:
-							"true = you still need another narrative generation after the assistant finishes (mixed request). false/omit = this turn can end after the tool (pure ops).",
-					}),
-				),
-			}),
-			async execute(_id, params, signal) {
-				const r = await runAssistantTask({
-					task: params.task,
-					mode: params.mode ?? "auto",
-					signal,
-				});
-				const continueStory = params.continue_story === true;
-				const head = r.abandoned
-					? "助手委托已放弃。"
-					: r.ok
-						? r.viaReturnTool
-							? "助手已正式交回结果。"
-							: "助手回合结束（未走 return_answer，以下为摘录）。"
-						: "助手委托未成功。";
-				const hint = continueStory
-					? "（你要求继续剧情：可根据结果续写。）"
-					: "（纯系统事务：结果已交回；本轮可结束。）";
-				return {
-					content: [{ type: "text", text: `${head}\n${r.summary}\n${hint}` }],
-					details: {
-						assistantRun: {
-							ok: r.ok,
-							abandoned: r.abandoned,
-							viaReturnTool: r.viaReturnTool,
-							continueStory,
-						},
-					},
-					// 纯办事：terminate → 不再强制第二轮 LLM
-					...(continueStory || (!r.ok && !r.abandoned) ? {} : { terminate: true }),
-				};
 			},
 		});
 

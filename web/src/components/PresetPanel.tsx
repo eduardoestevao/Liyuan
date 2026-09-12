@@ -380,11 +380,8 @@ function RulesEditor({
 
 export function PresetPanel({
 	toast,
-	onAssistantPrompt,
 }: {
 	toast: (level: "info" | "warning" | "error", text: string) => void;
-	/** 发话给右栏助手（刀3 生成路径：把投影全文交给助手整理成卡档案） */
-	onAssistantPrompt?: (text: string) => void;
 }) {
 	const files = usePanelData(() => apiGet<PresetsResponse>("/api/presets"), { cacheKey: "/api/presets" });
 	const rules = usePanelData(() => apiGet<RulesResponse>("/api/rules"), { cacheKey: "/api/rules" });
@@ -441,7 +438,7 @@ export function PresetPanel({
 			agents.reload();
 		});
 
-	/** 卡档案（刀3）：保存 / 删除回投影 / 让助手生成 */
+	/** 卡档案（刀3）：保存 / 删除回投影 */
 	const saveAgents = useCallback(
 		async (content: string) => {
 			const r = await apiPut<CardAgentsSaveResponse>("/api/card-agents", { content });
@@ -457,27 +454,6 @@ export function PresetPanel({
 			toast("info", "已删除卡档案——回到自动投影");
 			agents.reload();
 		});
-
-	/** 生成路径：把卡自己的内容投影作为用户消息交给助手整理（世界书由镜像同步持有，不在素材里） */
-	const generateAgents = () => {
-		if (!agents.data || !onAssistantPrompt) return;
-		const d = agents.data;
-		const instruction = [
-			`给「${d.cardName}」这张卡建立 AGENTS.md（卡档案），写到 ${d.path}。`,
-			"",
-			"下面是这张卡自己的常驻内容投影（卡字段 + 作者指令）。世界书不在其中——挂载书的常驻条目由梨园自动镜像进档案，不要抄进来。整理成卡档案时：",
-			"- 保留全部事实设定与人物信息，保留状态栏等输出版式要求——那是卡作者要的格式；状态栏的标签包裹（如 <normal_status>）必须原样保留，前端据此渲染。",
-			"- 结构清楚即可（markdown 小节），写事实不写元指令；这是给扮演 agent 读的常驻说明。",
-			"",
-			"===== 投影 =====",
-			d.unfilteredProjection,
-			"===== 投影结束 =====",
-			"",
-			`用文件工具把整理结果写到 ${d.path}，写完简要报告你做了哪些取舍。`,
-		].join("\n");
-		onAssistantPrompt(instruction);
-		toast("info", "已把卡内容投影发给助手整理——在右栏「助手」里看它工作");
-	};
 
 	// ---------------- 遗留态：未迁移的活动预设（块级编辑，与旧面板一致） ----------------
 
@@ -715,11 +691,6 @@ export function PresetPanel({
 							<div className="preset-chan-head">
 								<h4>卡档案{agents.data.active === "file" ? "（生效中）" : "（未建立）"}</h4>
 								<div className="preset-block-acts">
-									{agents.data.active === "projection" && onAssistantPrompt && (
-										<button className="act" disabled={busy} onClick={generateAgents}>
-											让助手生成
-										</button>
-									)}
 									<button className="act" disabled={busy} onClick={() => setShowDiff((v) => !v)}>
 										{showDiff ? "收起对照" : "对照投影"}
 									</button>

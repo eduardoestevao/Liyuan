@@ -96,10 +96,6 @@ export function formatToolStartDetail(toolName: string, args: unknown): string {
 			const t = str(a.text) || str(a.content);
 			return t ? `配音：${firstLine(t, 48)}` : "合成语音";
 		}
-		case "assistant_run": {
-			const task = str(a.task) || str(a.prompt) || str(a.message);
-			return task ? `委托助手：${firstLine(task, 70)}` : "委托右栏助手";
-		}
 		case "read": {
 			const p = str(a.path) || str(a.file) || str(a.target);
 			return p ? `查阅 ${clip(p, 56)}` : "读取文件";

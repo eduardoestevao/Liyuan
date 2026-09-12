@@ -23,9 +23,10 @@
 - `docs/PLAN-RP-AGENT-NEXT.md` — 当前路线、已提交基线与下一窗口交接（优先读）
 - `docs/CARD-AUTHORING-SLICE1.md` — 写卡第一切片的实际能力、验证与下一步边界
 - `docs/CARD-AUTHORING-MODE.md` — 主会话写卡模式、共享记录的可见性与隔离续演验证
+- `docs/PLAN-SANDBOX.md` — 工作模式沙箱：原生文件工具以卡目录为界、卡外走选择卡申请（`src/sandbox.ts`）；**右栏助手已于 2026-09-12 删除**（该文第六节）
 - `docs/PLAN-ROUND-FLOW.md` — 分轮演出流程（最终形态 + 落地记录）
 - `docs/READING-THINKING.md` — 读思考记录的**正确方法**（先读这个再碰会话文件）
 - `docs/DRAFT-prompt-rp-agent.md` — 「怎么演这一拍」演出指导草稿（B 版）
 - `src/stage/` — 台上引擎（assemble 提示词 / engine 回合循环 / workspace 稿纸 /
   tools 工具 schema）
-- 测试：`node --test test/*.test.ts`（2026-09-12 最近验证：801 项，797 通过，4 项既有实卡环境失败）
+- 测试：`node --test test/*.test.ts`（2026-09-12 最近验证：800 项，796 通过，4 项既有实卡环境失败）

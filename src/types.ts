@@ -153,11 +153,6 @@ export interface RpConfig {
 	 */
 	compactEveryNTurns?: number;
 	/**
-	 * 右栏「助手」的独立模型（2026-07-14 拆分决策）：缺省=跟随剧情模型。
-	 * 剧情尺度大时可在助手面板单独指定宽容系模型（拒答风险与剧情模型解耦）。
-	 */
-	assistantModel?: { provider: string; id: string };
-	/**
 	 * 旁路模型（场记记账 / 长局压缩）：指向连接配置里的一条**模型条目**——
 	 * `entry` 是条目名（`AgentModelEntry.label`，没起名就是它的 id），不是模型 id：
 	 * 同一个模型可以有多条条目、各带各的思考档，光有 id 分不出是哪条。

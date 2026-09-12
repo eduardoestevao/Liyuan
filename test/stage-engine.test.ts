@@ -634,7 +634,7 @@ test("写卡模式：同一原生循环自动切入、改资源并应用；切�
 			(ctx) => {
 				assert.ok(!JSON.stringify(ctx.messages).includes("RAW:"), "扮演隐藏往拍工具结果");
 				assert.ok(ctx.tools.some((t: any) => t.name === "conversation_mode"));
-				assert.ok(!ctx.tools.some((t: any) => t.name === "card_project" || t.name === "write" || t.name === "assistant_run"));
+				assert.ok(!ctx.tools.some((t: any) => t.name === "card_project" || t.name === "write"));
 				return calls(fauxToolCall("conversation_mode", { mode: "authoring" }));
 			},
 			(ctx) => {

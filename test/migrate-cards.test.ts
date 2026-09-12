@@ -130,7 +130,7 @@ test("迁移：卡进文件夹、旧会话各成一个子项目、随身数据�
 	}
 });
 
-test("迁移：助手会话按 storyId 归入子项目，config.card 改指新引用", () => {
+test("迁移：config.card / personas / 收藏改指新引用；旧助手目录原地不动", () => {
 	const { cwd, sessionDir } = mkProject();
 	try {
 		writeCard(join(cwd, "assets", "cards", "a.json"), "甲卡");
@@ -146,16 +146,9 @@ test("迁移：助手会话按 storyId 归入子项目，config.card 改指新�
 		mkdirSync(join(cwd, ".liyuan-cache"), { recursive: true });
 		writeFileSync(join(cwd, ".liyuan-cache", "card-favs.json"), JSON.stringify(["assets/cards/a.json", "assets/cards/别的.png"]));
 
-		// 助手会话：rp-card 带 storyId=01a07272-aaaa（对应上面那个剧情会话）
+		// 已退役的右栏助手（2026-09-12 删除）留下的旧目录：迁移不认识它，一字不动
 		mkdirSync(join(cwd, ".liyuan-assistant"), { recursive: true });
-		const asst = [
-			'{"type":"session","version":3,"id":"x","cwd":"E:/proj"}',
-			'{"type":"custom","customType":"rp-card","data":{"card":"assets/cards/a.json","name":"甲卡","storyId":"01a07272-aaaa"},"id":"e1","parentId":null,"timestamp":"2026-07-18T00:00:00.000Z"}',
-		].join("\n") + "\n";
-		writeFileSync(join(cwd, ".liyuan-assistant", "2026-07-18T15-10-12-939Z_019f75c7.jsonl"), asst);
-		// storyId 对不上任何剧情会话的：原地不动
-		const orphan = asst.replace("01a07272-aaaa", "01a99999-zzzz");
-		writeFileSync(join(cwd, ".liyuan-assistant", "2026-08-31T02-14-20-905Z_01a05598.jsonl"), orphan);
+		writeFileSync(join(cwd, ".liyuan-assistant", "2026-07-18T15-10-12-939Z_019f75c7.jsonl"), '{"type":"session","version":3,"id":"x","cwd":"E:/proj"}\n');
 
 		applyCardMigration(cwd, planCardMigration(cwd, sessionDir));
 
@@ -168,9 +161,8 @@ test("迁移：助手会话按 storyId 归入子项目，config.card 改指新�
 		// 收藏改指新引用，别的条目不动
 		const favs = JSON.parse(readFileSync(join(cwd, ".liyuan-cache", "card-favs.json"), "utf8")) as string[];
 		assert.deepEqual(favs, ["cards/甲卡/a.json", "assets/cards/别的.png"]);
-		// 助手会话：对得上的进子项目，对不上的原地不动
-		assert.ok(existsSync(join(chatDirOf(cardDirOf(cwd, "甲卡"), "20260905-164136-01a0"), "助手会话", "2026-07-18T15-10-12-939Z_019f75c7.jsonl")));
-		assert.ok(existsSync(join(cwd, ".liyuan-assistant", "2026-08-31T02-14-20-905Z_01a05598.jsonl")), "认不出的助手会话原地不动");
+		assert.ok(existsSync(join(cwd, ".liyuan-assistant", "2026-07-18T15-10-12-939Z_019f75c7.jsonl")), "旧助手目录原地不动");
+		assert.ok(!existsSync(join(chatDirOf(cardDirOf(cwd, "甲卡"), "20260905-164136-01a0"), "助手会话")), "子项目里不再生出助手目录");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 		rmSync(sessionDir, { recursive: true, force: true });

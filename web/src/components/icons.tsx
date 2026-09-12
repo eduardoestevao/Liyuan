@@ -64,16 +64,6 @@ export const IconApi = (p: IconProps) => (
 	</Icon>
 );
 
-/** 助手（右栏系统助手）：耳麦——找人办事/支援的意象 */
-export const IconAssistant = (p: IconProps) => (
-	<Icon {...p}>
-		<path d="M4 14v-3a8 8 0 0 1 16 0v3" />
-		<rect x="3" y="14" width="4" height="6" rx="1.6" />
-		<rect x="17" y="14" width="4" height="6" rx="1.6" />
-		<path d="M19 20v.4a2.6 2.6 0 0 1-2.6 2.6H13" />
-	</Icon>
-);
-
 export const IconModel = (p: IconProps) => (
 	<Icon {...p}>
 		<rect x="4" y="4" width="16" height="16" rx="2" />

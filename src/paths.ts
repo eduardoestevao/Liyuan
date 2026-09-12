@@ -50,8 +50,6 @@ export function sameCardPath(a: string | undefined, b: string | undefined, proje
 export const DIRS = {
 	state: ".liyuan-state",
 	artifacts: ".liyuan-artifacts",
-	/** 右栏「助手」的独立会话树（绝不进剧情会话列表/世界线） */
-	assistant: ".liyuan-assistant",
 	cache: ".liyuan-cache",
 	lore: ".liyuan-lore",
 	media: ".liyuan-media",
@@ -81,7 +79,6 @@ export function insidePath(root: string, target: string): boolean {
 const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 	state: ".rp-state",
 	artifacts: ".rp-artifacts",
-	assistant: ".rp-assistant", // 从未存在过（2026-07 新增目录），迁移恒空转
 	cache: ".rp-cache",
 	lore: ".rp-lore",
 	media: ".rp-media",
@@ -106,7 +103,7 @@ const LEGACY_DIRS: Record<keyof typeof DIRS, string> = {
 //     对话/<对话id>/                   ← 子项目：一个独立的对话
 //       对话.json                     ← 子项目元数据（名字/建于何时）
 //       会话/*.jsonl                   ← pi 的 sessionDir：本子项目的多个会话
-//       世界状态.json  世界线.json  面板.json  向量记忆/  助手会话/
+//       世界状态.json  世界线.json  面板.json  向量记忆/
 //
 // `assets/cards/` 退成**导入暂存区**；世界书库（assets/lorebooks）与预设库仍全局共享，
 // 卡级只存「挂哪几本 / 用哪份预设」的指针。
@@ -144,8 +141,6 @@ export const CHAT_WORLDLINE_FILE = "世界线.json";
 export const CHAT_PANELS_FILE = "面板.json";
 /** 子项目内：向量记忆（旧 .liyuan-memory/scopes/<cardHash>__<sessionId>/） */
 export const CHAT_MEMORY_DIR = "向量记忆";
-/** 子项目内：右栏助手的会话（旧全局 .liyuan-assistant/ + sameCardPath 事后过滤） */
-export const CHAT_ASSISTANT_DIR = "助手会话";
 
 /** 文件名安全化：卡名可能含 `\/:*?"<>|`，落盘前统一换 `_`（唯一实现，别再各写一份） */
 export function nameSafe(name: string): string {

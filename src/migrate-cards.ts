@@ -29,10 +29,8 @@ import { copyPathSafe } from "./fs-copy.ts";
 import { loadPersonas, savePersonas } from "./personas.ts";
 import { appendSessionCardRebind, createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
 import { stripBom } from "./jsonio.ts";
-import { readSessionHeadTail } from "./session-scan.ts";
 import {
 	CARD_OVERLAY_FILE,
-	CHAT_ASSISTANT_DIR,
 	CHAT_PANELS_FILE,
 	CHAT_STATE_FILE,
 	CHAT_WORLDLINE_FILE,
@@ -279,58 +277,9 @@ export function applyCardMigration(cwd: string, plan: CardMigrationPlan): string
 	if (moved > 0) log.push(`${moved} 个旧会话各成一个子项目`);
 	for (const k of plan.skipped) log.push(`原地保留 ${basename(k.file)}：${k.why}`);
 
-	// 4) 助手会话按 storyId 跟子项目走（旧全局 .liyuan-assistant/ + sameCardPath 过滤退役）：
-	//    助手会话文件里的 rp-card 记着它对齐的剧情 sessionId，按它归位；认不出的原地不动。
-	migrateAssistantSessions(cwd, plan, log);
-
-	// 5) 改写 config.card / personas byCard / 卡收藏：旧引用 → 新引用
+	// 4) 改写 config.card / personas byCard / 卡收藏：旧引用 → 新引用
 	rewriteCardRefs(cwd, plan, log);
 	return log;
-}
-
-/**
- * 助手会话归位：扫旧 `.liyuan-assistant/`，每份的 rp-card 记着 storyId（它对齐的
- * 剧情会话）；storyId 落在某个已迁移的子项目里 ⇒ 整份搬进该子项目的 `助手会话/`。
- * storyId 对不上任何子项目（剧情会话没迁移/已删）⇒ 原地不动，绝不猜。
- */
-function migrateAssistantSessions(cwd: string, plan: CardMigrationPlan, log: string[]): void {
-	const root = dir(cwd, "assistant");
-	if (!existsSync(root)) return;
-	// storyId → 子项目目录（对得上多份就都归位：一份助手会话只对一个 storyId）
-	const byStory = new Map<string, string>();
-	for (const s of plan.sessions) {
-		if (s.sessionId) byStory.set(s.sessionId, chatDirOf(cardDirOf(cwd, s.folder), s.chatId));
-	}
-	let moved = 0;
-	for (const f of readdirSync(root)) {
-		if (!f.endsWith(".jsonl")) continue;
-		const abs = join(root, f);
-		const story = lastStoryIdOfAssistant(abs);
-		const chatAbs = story ? byStory.get(story) : undefined;
-		if (!chatAbs) continue;
-		if (move(abs, join(chatAbs, CHAT_ASSISTANT_DIR, f), `助手会话 ${f}`, log)) moved += 1;
-	}
-	if (moved > 0) log.push(`${moved} 份助手会话按对齐的剧情会话归入子项目`);
-}
-
-/** 助手会话文件里最后一条 rp-card 的 storyId（没有则 null） */
-function lastStoryIdOfAssistant(file: string): string | null {
-	try {
-		// 头尾窗口读，不整份 load（session-scan 同款纪律）；助手会话通常远小于 64K
-		const text = readSessionHeadTail(file);
-		for (const line of text.split(/\r?\n/).reverse()) {
-			if (!line.includes('"rp-card"')) continue;
-			try {
-				const e = JSON.parse(line) as { customType?: string; data?: { storyId?: unknown } };
-				if (e.customType === "rp-card" && typeof e.data?.storyId === "string" && e.data.storyId) return e.data.storyId;
-			} catch {
-				/* 半行跳过 */
-			}
-		}
-	} catch {
-		/* 读不了就不搬 */
-	}
-	return null;
 }
 
 /**

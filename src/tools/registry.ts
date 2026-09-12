@@ -36,6 +36,11 @@ export type ToolDomain =
  * 6 个 spec（lorebook_search/write、memory_search、panel_*）声明了这个面，
  * 那是**待接的设计意图**（测试里以「三面共用」钉着），不是已经接上的事实——
  * 别照着 surfaces 就以为扩展侧拿得到它们。
+ *
+ * ⚠ `"assistant"` **自 2026-09-12 起也没有消费者**：右栏助手（server/assistant.ts）已删。
+ * 只挂在这个面上的 spec（preset_* / persona_* / stage_skill_* / card_switch / card_update /
+ * card_greetings / worldline_back）暂留为工作模式收编的候选；要它们上台就把 `"authoring"`
+ * 加进 surfaces，不要另起注册。
  */
 export type ToolSurface = "stage" | "authoring" | "assistant" | "extension";
 

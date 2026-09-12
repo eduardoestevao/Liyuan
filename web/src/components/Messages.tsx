@@ -84,7 +84,6 @@ export const TOOL_LABELS: Record<string, string> = {
 	panel_read: "查看面板",
 	panel_close: "收起面板",
 	ask_director: "请你定夺",
-	assistant_run: "委托助手",
 	bash: "执行命令",
 	read: "查阅",
 	write: "写入",

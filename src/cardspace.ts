@@ -25,7 +25,6 @@ import { buildZipBuffer, extractZipFile } from "./ziplite.ts";
 import {
 	CARD_CONFIG_FILE,
 	CARDS_ROOT,
-	CHAT_ASSISTANT_DIR,
 	CHAT_META_FILE,
 	CHAT_PANELS_FILE,
 	CHAT_SESSIONS_DIR,
@@ -462,12 +461,6 @@ export function chatDataPath(
 	const chatDir = chatDirOfSessionDir(sessionDir);
 	if (chatDir) return join(chatDir, CHAT_DATA_FILES[kind]);
 	return join(dir(cwd, LEGACY_DIR_KEYS[kind]), `${sessionId}.json`);
-}
-
-/** 右栏助手的会话目录：跟着子项目走（老布局回落全局 `.liyuan-assistant/`） */
-export function chatAssistantDir(cwd: string, sessionDir: string | undefined): string {
-	const chatDir = chatDirOfSessionDir(sessionDir);
-	return chatDir ? join(chatDir, CHAT_ASSISTANT_DIR) : dir(cwd, "assistant");
 }
 
 // ---------- 卡级配置 ----------
