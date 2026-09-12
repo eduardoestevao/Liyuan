@@ -5,7 +5,7 @@ import type { StageTool } from "./tools.ts";
 
 export const CONVERSATION_MODE_TOOL: StageTool = {
 	name: "conversation_mode", mode: "write",
-	description: "切换本会话的扮演/写卡模式。制作、诊断、修改角色卡、前端、脚本或配套资源时进入 authoring，同一轮随即开放完整操作历史与写卡工具；本次请求和操作不进入剧情。维护完成后切回 roleplay，本次操作结束，等用户下一条剧情输入续演。模式不会另建对话或删除记录。",
+	description: "切换本会话的扮演/工作模式。制作、诊断、维护角色卡、前端、脚本、代码或资源时进入 authoring，同一轮开放完整操作历史与工作工具；本次请求和操作不进入剧情。维护完成后切回 roleplay 续演。模式不另建对话或删除记录。",
 	parameters: { type: "object", properties: { mode: { type: "string", enum: ["roleplay", "authoring"] } }, required: ["mode"] },
 };
 

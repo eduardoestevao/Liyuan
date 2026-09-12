@@ -32,7 +32,7 @@ export interface CardLibItemLike {
 }
 
 export interface CardDeps {
-	/** 卡工程操作：主会话写卡模式与助手共用资源服务。 */
+	/** 卡工程操作：主会话工作模式与助手共用资源服务。 */
 	project?: (args: Record<string, unknown>) => Promise<unknown>;
 	// ---- 读者 ----
 	/** 读取当前装载的卡（字段级）；返回 null = 未装载卡 */

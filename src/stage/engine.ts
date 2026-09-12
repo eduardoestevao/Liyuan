@@ -1399,7 +1399,7 @@ export class StageEngine {
 					if (!modeExit) session.setTurnSystemPrompt(workPrompt);
 					ev.onStreamClear?.();
 					ev.onModeChanged?.(mode);
-					return { content: [{ type: "text", text: modeExit ? "已切回扮演，维护操作结束；下一条用户输入继续剧情。" : "已进入写卡模式；下一次模型调用可见本会话完整操作记录与写卡工具。" }], ...(modeExit ? { terminate: true } : {}) };
+					return { content: [{ type: "text", text: modeExit ? "已切回扮演，维护操作结束；下一条用户输入继续剧情。" : "已进入工作模式；下一次模型调用可见本会话完整操作记录与工作工具。" }], ...(modeExit ? { terminate: true } : {}) };
 				}
 				if (authoringTurn) {
 					if (mcpNames.has(name)) {
@@ -1411,7 +1411,7 @@ export class StageEngine {
 						return { content: [{ type: "text", text: result.text }], isError: result.isError };
 					}
 					const result = await runAuthoringTool(name, input, config.language, cardDeps);
-					return result ? { content: [{ type: "text", text: result.text }], details: result.details, isError: result.isError } : { content: [{ type: "text", text: "当前写卡模式没有此工具。" }], isError: true };
+					return result ? { content: [{ type: "text", text: result.text }], details: result.details, isError: result.isError } : { content: [{ type: "text", text: "当前工作模式没有此工具。" }], isError: true };
 				}
 				if (name === "ask" && roundText.trim() && ws.mode === "write") {
 					runWriteTool(ws, wsDeps, ws.draft ? "draft_append" : "draft_write", { content: roundText, version: ws.version }, "capture");

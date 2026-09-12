@@ -125,7 +125,7 @@ export interface SkillFile {
 	/** frontmatter `disable-model-invocation: true`：对模型隐身（不上 skill_read 清单，也读不到正文）。
 	 *  与办事笔记（src/skills.ts）同一个键、同一个语义；编辑器仍列出它，只有送模那一侧滤掉。 */
 	disableModelInvocation?: boolean;
-	/** frontmatter `mode: authoring`：只上写卡模式的清单，扮演模式不见 */
+	/** frontmatter `mode: authoring`：只上工作模式的清单，扮演模式不见 */
 	mode?: "authoring";
 }
 

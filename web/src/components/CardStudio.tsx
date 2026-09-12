@@ -1757,7 +1757,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 					</aside>
 
 				{/* 中间栏：主工作区 */}
-				<main className="cs-main">
+				<main className={`cs-main ${["02", "06", "07"].includes(activeSec) ? "cs-main-split" : ""}`}>
 					<div className="cs-content-wrap">
 						<div className="cs-sec-header-compact">
 							<div className="cs-sec-title-row">

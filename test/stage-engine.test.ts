@@ -637,7 +637,7 @@ test("写卡模式：同一原生循环自动切入、改资源并应用；切�
 				return calls(fauxToolCall("conversation_mode", { mode: "authoring" }));
 			},
 			(ctx) => {
-				assert.match(ctx.systemPrompt, /当前处于写卡模式/);
+				assert.match(ctx.systemPrompt, /当前处于工作模式/);
 				assert.match(JSON.stringify(ctx.messages), /RAW:/, "写卡重新开放往拍原始工具结果");
 				assert.ok(ctx.tools.some((t: any) => t.name === "write") && ctx.tools.some((t: any) => t.name === "card_project"));
 				assert.ok(!ctx.tools.some((t: any) => t.name === "draft_write" || t.name === "memory_add"));
@@ -708,7 +708,7 @@ test("写卡模式：手动选择、磁盘重开与分支回退恢复可见性�
 		const initialStory = rebuildHistory(sm.getBranch()).history;
 		engine.setMode("authoring");
 		reg.setResponses([(ctx) => {
-			assert.match(ctx.systemPrompt, /当前处于写卡模式/);
+			assert.match(ctx.systemPrompt, /当前处于工作模式/);
 			assert.ok(!ctx.tools.some((t: any) => ["read", "write", "edit", "bash"].includes(t.name)));
 			assert.throws(() => engine.setMode("roleplay"), /当前回复/);
 			return fauxAssistantMessage("REOPEN_REPORT：先讨论布局。");
@@ -771,7 +771,7 @@ test("写卡模式：维护中排队的请求保留提交模式，热重载完�
 		reg.setResponses([
 			fauxAssistantMessage([fauxToolCall("card_project", { action: "prepare" })], { stopReason: "toolUse" }),
 			fauxAssistantMessage([fauxToolCall("conversation_mode", { mode: "roleplay" })], { stopReason: "toolUse" }),
-			(ctx) => { assert.equal(refreshed, true); assert.match(ctx.systemPrompt, /当前处于写卡模式/); return fauxAssistantMessage("排队的改卡要求已收到。"); },
+			(ctx) => { assert.equal(refreshed, true); assert.match(ctx.systemPrompt, /当前处于工作模式/); return fauxAssistantMessage("排队的改卡要求已收到。"); },
 		]);
 		const run = engine.performTurn("修改后回到扮演。");
 		await entered.promise;
