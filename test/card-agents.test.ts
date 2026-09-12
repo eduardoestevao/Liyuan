@@ -1,10 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync, mkdirSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
+import { syncLorebookMirror } from "../server/rest.ts";
 import { buildStageInjection, buildStageSystemPrompt } from "../src/stage/assemble.ts";
 import { defaultState } from "../src/state.ts";
 import { loadStageMaterials } from "../src/stage/materials.ts";
@@ -87,6 +88,76 @@ test("端到端：AGENTS.md 文件存在 ⇒ materials 读到 + marker 材料让
 		const m2 = loadStageMaterials(cwd);
 		assert.ok(m2.cardAgents.includes("档案版。"), "档案读到");
 		assert.equal(m2.markerMaterials.charDescription, undefined, "档案在场时 marker 卡字段让位（不双份）");
+	} finally {
+		delete process.env.LIYUAN_CODING_AGENT_DIR;
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});
+
+test("投影带来源：给 bookOf 时蓝灯小节标题尾缀（世界书·书名），无标题条目补「条目 uid」；不给则原样", () => {
+	const twoBooks = [
+		{ uid: 1, keys: [], secondaryKeys: [], comment: "基础设定：世界观", content: "大乾乱世。", constant: true, enabled: true, selective: false, order: 0 },
+		{ uid: 7, keys: [], secondaryKeys: [], comment: "", content: "无题条目。", constant: true, enabled: true, selective: false, order: 1 },
+		{ uid: 2, keys: ["补充"], secondaryKeys: [], comment: "", content: "补充设定。", constant: true, enabled: true, selective: false, order: 2 },
+	] as never;
+	const bookOf = (e: { content: string }) => (e.content === "补充设定。" ? undefined : "大世界");
+	const text = projectCardToAgents(card, twoBooks, config, { bookOf });
+	assert.ok(text.includes("## 基础设定：世界观（世界书·大世界）\n大乾乱世。"), "来源进标题尾缀");
+	assert.ok(text.includes("## 条目 7（世界书·大世界）\n无题条目。"), "有来源必有标题");
+	assert.ok(text.includes("## 补充\n补充设定。"), "不在挂载书里的条目不标");
+	assert.equal(projectCardToAgents(card, lore, config), projectCardToAgents(card, lore, config, {}), "不给 bookOf 与原样一致");
+});
+
+test("世界书镜像同步（syncLorebookMirror）：挂上就有、卸下就没、新增蓝灯跟着来；用户条目不动；档案不在场不做", () => {
+	const cwd = mkdtempSync(join(tmpdir(), "liyuan-mirror-"));
+	process.env.LIYUAN_CODING_AGENT_DIR = join(cwd, "agentDir");
+	try {
+		mkdirSync(join(cwd, "agentDir"), { recursive: true });
+		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "冷鹰", description: "公房里的院使", first_mes: "你来了。" } }));
+		const book = (entries: unknown[]) => writeFileSync(join(cwd, "大世界.json"), JSON.stringify({ entries }));
+		book([
+			{ uid: 1, key: ["门派"], comment: "门派", content: "门派设定。", constant: true },
+			{ uid: 2, key: ["绿灯"], comment: "绿灯条目", content: "只检索不常驻。", constant: false },
+		]);
+		const cfg = (lorebooks: string[]) =>
+			writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "怀瑾", lorebooks }));
+
+		// 档案不在场：无事可做（台上本就从挂载书现场装配）
+		cfg(["大世界.json"]);
+		assert.equal(syncLorebookMirror(cwd).state, "none");
+		assert.ok(!existsSync(cardAgentsPath(cwd)));
+
+		// 建档案（用户自己的内容）→ 挂上 ⇒ 镜像条目出现，用户内容不动
+		const mine = "# 你扮演的角色：冷鹰\n档案版。\n\n## 武学\n用户自己写的。\n";
+		writeFileSync(cardAgentsPath(cwd), mine, "utf8");
+		const r1 = syncLorebookMirror(cwd);
+		assert.equal(r1.state, "written");
+		assert.equal(r1.entries, 1, "只镜像常驻条目");
+		const t1 = readFileSync(cardAgentsPath(cwd), "utf8");
+		assert.ok(t1.includes("## 门派（世界书·大世界）\n\n门派设定。"), "镜像条目形态");
+		assert.ok(!t1.includes("只检索不常驻"), "绿灯不进档案");
+		assert.ok(t1.startsWith(mine.trimEnd()), "用户内容原样在前");
+		assert.equal(syncLorebookMirror(cwd).state, "unchanged", "再跑幂等");
+		assert.ok(loadStageMaterials(cwd).cardAgents.includes("门派设定。"), "送模看得到");
+
+		// 新增蓝灯 ⇒ 跟着来
+		book([
+			{ uid: 1, key: ["门派"], comment: "门派", content: "门派设定。", constant: true },
+			{ uid: 2, key: ["绿灯"], comment: "绿灯条目", content: "只检索不常驻。", constant: false },
+			{ uid: 3, key: ["朝堂"], comment: "朝堂", content: "朝堂结构。", constant: true },
+		]);
+		const r2 = syncLorebookMirror(cwd);
+		assert.equal(r2.state, "written");
+		assert.equal(r2.entries, 2);
+		assert.ok(readFileSync(cardAgentsPath(cwd), "utf8").includes("## 朝堂（世界书·大世界）"));
+
+		// 卸下 ⇒ 镜像条目全没，用户内容逐字回到原样
+		cfg([]);
+		const r3 = syncLorebookMirror(cwd);
+		assert.equal(r3.state, "written");
+		assert.equal(r3.entries, 0);
+		assert.equal(readFileSync(cardAgentsPath(cwd), "utf8"), mine, "用户内容一字不动");
+		assert.ok(!loadStageMaterials(cwd).cardAgents.includes("门派设定。"), "送模看不到");
 	} finally {
 		delete process.env.LIYUAN_CODING_AGENT_DIR;
 		rmSync(cwd, { recursive: true, force: true });

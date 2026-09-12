@@ -18,14 +18,38 @@
  */
 
 export interface PromptEntry {
-	/** 小节标题（不含 # 号） */
+	/** 小节标题（不含 # 号）——开关/改写/删除的键，含来源后缀 */
 	name: string;
+	/** 显示名：剥掉来源后缀的标题 */
+	title: string;
+	/** 来源标注（标题尾部后缀解析而得；没有后缀＝用户自己的条目） */
+	source?: EntrySource;
 	/** 节正文（不含标题行），原样保留 */
 	content: string;
 	/** false ＝ 整段被注释包裹（关闭） */
 	enabled: boolean;
 	/** 标题层级（1~6）——渲染时原样还原，### 子节不压平 */
 	level: number;
+}
+
+/**
+ * 来源标注（2026-09-12）：条目从别处复制/转译而来时，标题尾部带一个梨园自己发行的后缀——
+ * `（预设）` 或 `（世界书·书名）`。它是数据不是措辞：带后缀的条目由 harness 全权持有——
+ * 装载/挂载时写入、卸载时剥掉、来源变了重写（server/rest.ts 的同步）；界面挂徽标。
+ * 没有后缀的条目是用户自己的，一概不动。
+ */
+export type EntrySource = { kind: "preset" } | { kind: "lorebook"; book: string };
+
+export const PRESET_SOURCE_SUFFIX = "（预设）";
+export const lorebookSourceSuffix = (book: string): string => `（世界书·${book}）`;
+const SOURCE_SUFFIX_RE = /（(?:预设|世界书·([^（）]+))）$/;
+
+/** 拆标题：显示名 + 来源（无后缀 ⇒ source 缺省） */
+export function parseEntrySource(name: string): { title: string; source?: EntrySource } {
+	const m = SOURCE_SUFFIX_RE.exec(name);
+	if (!m) return { title: name };
+	const title = name.slice(0, m.index).trim();
+	return { title, source: m[1] ? { kind: "lorebook", book: m[1] } : { kind: "preset" } };
 }
 
 const COMMENT_OPEN = "<!--";
@@ -61,7 +85,7 @@ export function parsePromptEntries(md: string): PromptEntry[] {
 				// 注释掉的标题节 ＝ 关闭的条目（正文取标题后的所有行）
 				const body = inner.slice(inner.indexOf(first!) + 1);
 				flush(entries, current);
-				current = { name: m[2].trim(), content: body.join("\n").trim(), enabled: false, level: m[1].length };
+				current = mkEntry(m[2].trim(), body.join("\n").trim(), false, m[1].length);
 			}
 			// 非标题注释 ＝ 备注：跳过（留在原文，不进条目）
 			i = end + 1;
@@ -70,18 +94,23 @@ export function parsePromptEntries(md: string): PromptEntry[] {
 		const m = HEADING_RE.exec(line);
 		if (m) {
 			flush(entries, current);
-			current = { name: m[2].trim(), content: "", enabled: true, level: m[1].length };
+			current = mkEntry(m[2].trim(), "", true, m[1].length);
 		} else if (current) {
 			current.content = current.content ? `${current.content}\n${line}` : line;
 		} else {
 			// 标题前的正文：无标题条目（一次性吸收，之后有标题就正常分段）
-			current = { name: "", content: line, enabled: true, level: 0 };
+			current = mkEntry("", line, true, 0);
 		}
 		i++;
 	}
 	flush(entries, current);
 	return entries.map((e) => ({ ...e, content: e.content.trim() }));
 }
+
+const mkEntry = (name: string, content: string, enabled: boolean, level: number): PromptEntry => {
+	const { title, source } = parseEntrySource(name);
+	return source ? { name, title, source, content, enabled, level } : { name, title, content, enabled, level };
+};
 
 const flush = (entries: PromptEntry[], current: PromptEntry | null): void => {
 	if (current && (current.name || current.content.trim())) {
@@ -103,6 +132,41 @@ export function renderForModel(md: string): string {
 		out.push([heading, e.content].filter((s) => s.trim()).join("\n"));
 	}
 	return out.join("\n\n").trim();
+}
+
+// ---------------- harness 生成条目的形态（预设/世界书镜像共用） ----------------
+
+/** 条目正文里的 markdown 标题行转全角＃：视觉不变，但不再被条目解析器当成新条目割裂 */
+export const escapeEntryText = (text: string): string => text.replace(/^(#{1,6})(\s)/gm, "＃$2");
+
+/** 一条 `## 名字` 条目的原文；enabled=false ⇒ HTML 注释包裹的关闭条目 */
+export function formatEntry(name: string, content: string, enabled = true): string {
+	const body = `## ${name}\n\n${escapeEntryText(content.trim())}\n`;
+	return enabled ? body : `<!--\n${body}-->`;
+}
+
+/** 名字加来源后缀；同名追加序号（条目名是开关的键，必须唯一） */
+export function uniqueEntryName(base: string, suffix: string, used: Set<string>): string {
+	const clean = (base || "未命名").replace(/\s+$/, "");
+	let name = `${clean}${suffix}`;
+	let i = 2;
+	while (used.has(name)) name = `${clean}·${i++}${suffix}`;
+	used.add(name);
+	return name;
+}
+
+/** 剥掉满足条件的条目（含关闭态），保留其余；没有可剥的原样返回 */
+export function stripEntriesWhere(md: string, pred: (entry: PromptEntry) => boolean): string {
+	const names = parsePromptEntries(md)
+		.filter(pred)
+		.map((e) => e.name);
+	if (names.length === 0) return md;
+	let text = md;
+	for (const name of names) {
+		const next = deleteEntry(text, name);
+		if (next !== null) text = next;
+	}
+	return text.replace(/\n{3,}/g, "\n\n").trim();
 }
 
 // ---------------- 条目视图的定点手术（对原文，不重排） ----------------

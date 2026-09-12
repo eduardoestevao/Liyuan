@@ -370,7 +370,7 @@ export function TurnTimeline({
 				return (
 					<details key={gi} className="turn-process turn-process-live" open={active ? true : undefined}>
 						<summary className={active ? "pulse" : undefined}>
-							{active ? plain ? "写卡中" : "扮演中" : "过程"}
+							{active ? plain ? "工作中" : "扮演中" : "过程"}
 							{thinks > 0 && ` · 思考 ${thinks} 段`}
 							{calls > 0 && ` · ${calls} 步`}
 						</summary>
@@ -715,7 +715,7 @@ export function Bubble({
 	}
 	if (msg.channel === "authoring") {
 		return <div className="msg msg-authoring">
-			<div className="msg-head"><span className="msg-name">写卡</span>{msg.unfinished && <span className="chip chip-unfinished">已停止</span>}</div>
+			<div className="msg-head"><span className="msg-name">工作</span>{msg.unfinished && <span className="chip chip-unfinished">已停止</span>}</div>
 			{msg.segments?.length || msg.timeline?.length ? <TurnTimeline segments={msg.segments ?? msg.timeline!} plain /> : <>{msg.thinking && <ThinkingBlock text={msg.thinking} />}<Paragraphs text={msg.text} /></>}
 		</div>;
 	}
@@ -769,7 +769,7 @@ export function Bubble({
 				<div className="msg-head">
 					<MsgAvatar src={avatarUrl} name={name} kind={isUser ? "user" : "char"} />
 					<span className={`msg-name ${isUser ? "" : "msg-name-char"}`}>{name}</span>
-					{msg.mode === "authoring" && <span className="chip">写卡</span>}
+					{msg.mode === "authoring" && <span className="chip">工作</span>}
 					{msg.channel === "greeting" && <span className="chip">开场白</span>}
 					{!isUser && msg.unfinished && (
 						<span className="chip chip-unfinished" title="生成被中断；发送「继续」可接着写">

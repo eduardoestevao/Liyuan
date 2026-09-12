@@ -15,6 +15,8 @@ import {
 import type { DisplayRule } from "../src/cardfront.ts";
 import { extractDraftRules } from "../src/draft.ts";
 import { assemblePresetAfter, constantLoreOf, loadStageMaterials } from "../src/stage/materials.ts";
+import { declarePieces, assembleForDeclare, parseDeclareResponse, translatePresetWithDeclaration } from "../src/preset-declare.ts";
+import { renderForModel } from "../src/prompt-entries.ts";
 import { defaultState } from "../src/state.ts";
 import { DEFAULT_CONFIG, type RpConfig } from "../src/types.ts";
 
@@ -268,7 +270,20 @@ test("detectsLanguageMismatch：中文目标才判、样本要够长", () => {
 
 // ---------------- 素材装载 ----------------
 
-test("loadStageMaterials：卡+预设宏求值+postHistory 每拍求值", () => {
+/** 装载态的转译产物（与 server/rest.ts syncPresetTranslation 同一条纯函数链）：全部段落按「拿不准一律留」落写作条目 */
+const translatedOf = (m: ReturnType<typeof loadStageMaterials>) => {
+	const doc = m.presetDoc!;
+	const macro = { charName: m.card.name, userName: m.config.userName };
+	const pieces = declarePieces(assembleForDeclare(doc, macro));
+	const parsed = parseDeclareResponse("[]", pieces);
+	return translatePresetWithDeclaration(
+		doc,
+		{ version: 1, preset: doc.name, card: m.card.name, createdAt: "2026-09-12T00:00:00.000Z", entries: parsed.entries },
+		macro,
+	);
+};
+
+test("loadStageMaterials：装载的预设不直接进提示词——文档在（采样/名字），装配段空；宏链经转译进条目", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-mat-"));
 	try {
 		writeFileSync(
@@ -281,7 +296,7 @@ test("loadStageMaterials：卡+预设宏求值+postHistory 每拍求值", () => 
 				blocks: [
 					{ id: "s1", channel: "system", enabled: true, content: "{{setvar::tone::清冷}}文风基调：{{getvar::tone}}。" },
 					{ id: "s2", channel: "system", enabled: false, content: "不该出现" },
-					{ id: "p1", channel: "postHistory", enabled: true, content: "回应「{{lastusermessage}}」，保持{{getvar::tone}}。" },
+					{ id: "p1", channel: "postHistory", enabled: true, content: "回应用户，保持{{getvar::tone}}。" },
 				],
 				samplers: { temperature: 0.9 },
 			}),
@@ -294,23 +309,25 @@ test("loadStageMaterials：卡+预设宏求值+postHistory 每拍求值", () => 
 
 		const m = loadStageMaterials(cwd);
 		assert.equal(m.card.name, "云澜");
-		assert.equal(m.presetActive, true);
 		assert.equal(m.presetDoc?.kind, "rp", "旧梨园格式仍能读");
-		assert.equal(m.presetBefore.length, 1, "启用块全量进历史前段（不再拆层退场）");
-		assert.ok(m.presetBefore[0].text.includes("文风基调：清冷"), "setvar/getvar 链跨块生效");
+		assert.equal(m.presetDoc?.samplers.temperature, 0.9, "采样参数从装载的预设取");
+		assert.equal(m.presetActive, false, "装载态不直接喂：模型看的是转译进卡文件的条目");
+		assert.deepEqual(m.presetBefore, []);
+		assert.equal(assemblePresetAfter(m, "我上前行礼。"), undefined, "历史后段随转译并入常驻，不再每拍重装");
 		assert.equal(m.macroWarnings.length, 0);
 		assert.equal(constantLoreOf(m).length, 0);
 
-		const ph = assemblePresetAfter(m, "我上前行礼。") ?? [];
-		assert.equal(ph.length, 1);
-		assert.ok(ph[0].text.includes("回应「我上前行礼。」"), "lastusermessage 宏用本拍原文");
-		assert.ok(ph[0].text.includes("保持清冷"), "历史后段照样看得到前面块设的变量");
+		// 转译产物：setvar/getvar 跨块生效、历史后段照样看得到前面块设的变量、关闭块不出现
+		const t = translatedOf(m).agentsSection;
+		assert.ok(t.includes("文风基调：清冷"), "setvar/getvar 链跨块生效");
+		assert.ok(t.includes("保持清冷"), "历史后段照样看得到前面块设的变量");
+		assert.ok(!t.includes("不该出现"), "预设里关着的块不落任何形态");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-test("loadStageMaterials：启用块全量进提示词——拆层退场后不再有块被偷偷扔掉", () => {
+test("loadStageMaterials：启用块全量成条目——没有块被偷偷扔掉；进提示词走 cardAgents 那一份", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-pol-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", first_mes: "你来了。" } }));
@@ -331,15 +348,15 @@ test("loadStageMaterials：启用块全量进提示词——拆层退场后不�
 		mkdirSync(join(cwd, ".liyuan"), { recursive: true });
 
 		const m = loadStageMaterials(cwd);
-		assert.equal(m.presetBefore.length, 2, "两块都在——用户开着的块一个不扔");
-		assert.equal(m.presetRuleTexts.length, 2, "规则提取看全量");
+		assert.deepEqual(m.presetBefore, [], "不直接喂");
+		const t = translatedOf(m);
+		assert.equal(t.lines.filter((l) => l.action === "agents").length, 2, "两块都在——用户开着的块一个不扔");
 
 		const sp = buildStageSystemPrompt({
 			card: m.card,
 			config: m.config,
 			constantLore: [],
-			presetBefore: m.presetBefore.map((p) => p.text),
-			filledMarkers: m.filledMarkers,
+			cardAgents: renderForModel(t.agentsSection),
 		});
 		assert.ok(sp.includes("文风：冷而克制"), "文风块在场");
 		assert.ok(sp.includes("词汇黑名单"), "纪律块也在场——判死改判归用户，梨园不代劳");
@@ -363,7 +380,7 @@ test("无预设＝真的无预设（刀1）：config.preset 空 → 零兜底、
 		const rules = extractDraftRules(m.presetRuleTexts);
 		assert.equal(rules.wordRange, undefined, "没有预设就没有字数来源，不补兜底");
 
-		// 用户预设在场：照常装载（presets/ 删除不影响用户预设路径）
+		// 用户预设在场：文档照常装载（presets/ 删除不影响用户预设路径），正文经转译进条目
 		writeFileSync(
 			join(cwd, "preset.json"),
 			JSON.stringify({ name: "用户预设", samplers: {}, blocks: [{ id: "u1", channel: "system", enabled: true, content: "用户自己的文风。" }] }),
@@ -374,13 +391,14 @@ test("无预设＝真的无预设（刀1）：config.preset 空 → 零兜底、
 		);
 		const m2 = loadStageMaterials(cwd);
 		assert.equal(m2.presetDoc?.name, "preset", "预设名取文件名，不取文件里写的 name");
-		assert.ok(m2.presetBefore.map((p) => p.text).join("").includes("用户自己的文风"), "用户预设正文在场");
+		assert.deepEqual(m2.presetBefore, [], "装载态不直接喂");
+		assert.ok(translatedOf(m2).agentsSection.includes("用户自己的文风"), "用户预设正文经转译在场");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}
 });
 
-test("预设原文直通：句级过滤退场，验算行也照进提示词", () => {
+test("预设原文直通：句级过滤退场，验算行也照进条目", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-audit-"));
 	try {
 		writeFileSync(join(cwd, "card.json"), JSON.stringify({ data: { name: "云澜", description: "师姐" } }));
@@ -413,12 +431,10 @@ test("预设原文直通：句级过滤退场，验算行也照进提示词", ()
 		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", preset: "preset.json" }));
 
 		const m = loadStageMaterials(cwd);
-		const writing = m.presetBefore.map((p) => p.text).join("\n");
+		const writing = translatedOf(m).agentsSection;
 		assert.ok(writing.includes("以直接对白为主"), "文风指令原文直通");
-		assert.ok(writing.includes("自检"), "句级过滤已退场——预设作者写的每一行都照进提示词（铁律一）");
-
-		// 规则提取看的是同一份原文（字数规则照旧提得出）
-		assert.ok(m.presetRuleTexts.join("\n").includes("800-1200"));
+		assert.ok(writing.includes("自检"), "句级过滤已退场——预设作者写的每一行都照进条目（铁律一）");
+		assert.ok(writing.includes("800-1200"), "字数规则原文照进条目");
 	} finally {
 		rmSync(cwd, { recursive: true, force: true });
 	}

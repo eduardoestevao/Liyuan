@@ -3,8 +3,11 @@
  * - 全局系统提示词：SYSTEM.md（梨园扮演骨架，改后重启生效）+ APPEND_SYSTEM.md
  *   （全局，对所有卡生效——角色相当于原来的预设）
  * - 局部提示词：这张卡的 AGENTS.md（卡档案）+ 这张卡的 APPEND_SYSTEM.md
- * - 预设库（2026-09-12 用户定案：预设直用，不转译）——「装载」设为活动预设，
- *   改动经「保存」写回预设文件本身；条目带来源标注（预设块 / 梨园槽位）。
+ * - 预设库（2026-09-12 用户定序）：导入原样复现 →「装载」设为活动预设 → 块编辑器拨开关
+ *   （人称/基调/文风就是块的 enabled）。**装载即转译、拨开关即转译**：服务端按开关编译、
+ *   声明分流成逐块（预设）条目落进这张卡的提示词文件，没有手动转译；卸载即剥净。
+ * - 条目来源标注：标题后缀 `（预设）` / `（世界书·书名）` 是数据（src/prompt-entries.ts），
+ *   界面只挂徽标；来源书已卸载的条目标出来（送模时已不送，文件未动）。
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -31,6 +34,7 @@ import {
 	parsePromptEntries,
 	setEntryContent,
 	toggleEntry,
+	type PromptEntry,
 } from "../../../src/prompt-entries.ts";
 
 const CHANNEL_LABEL: Record<string, string> = {
@@ -61,16 +65,17 @@ function diffPreview(base: string, mine: string): string {
 	return out.slice(0, 80).join("\n") + (out.length > 80 ? `\n… 共 ${out.length} 行差异` : "");
 }
 
-/** 转译条目的来源识别（2026-09-12 用户定案）：界面给「预设」徽标，辨认不靠正文里的「转译自」字样 */
-function presetDerivedOf(name: string, content: string): boolean {
-	if (name.endsWith("（预设）") || name.includes("转译自")) return true;
-	const first = content.split("\n").find((l) => l.trim() !== "");
-	return !!first && first.trim().startsWith(">") && first.includes("转译自");
+/** 条目来源徽标：只认标题后缀这一个协议（PromptEntry.source），不搜正文措辞。带来源的条目由服务端同步持有 */
+function SourceBadge({ entry }: { entry: PromptEntry }) {
+	const s = entry.source;
+	if (!s) return null;
+	if (s.kind === "preset") return <span className="preset-src-badge preset" title="预设转译条目：随预设装载/开关自动更新">预设</span>;
+	return (
+		<span className="preset-src-badge lore" title="挂载书常驻条目的镜像：挂上就有、卸下就没、书改了跟着改">
+			世界书·{s.book}
+		</span>
+	);
 }
-
-/** 标题里的（转译自「…」）注记从显示名剥掉——来源进徽标，标题保持干净 */
-const stripSourceNote = (name: string) =>
-	name.replace(/（转译自[^）]*）+/g, "").replace(/（预设）$/, "").trim();
 
 /** 条目形提示词文件的双视图编辑器（GitHub 式 条目|源码）：文件是真源，条目是投影 */
 function EntriesEditor({
@@ -179,7 +184,8 @@ function EntriesEditor({
 				/>
 			) : (
 				<>
-					{entries.map((e) => (
+					{entries.map((e) => {
+						return (
 						<div key={e.name} className={`lore-item preset-block ${e.enabled ? "" : "off"} ${open === e.name ? "open" : ""}`}>
 							<div className="lore-head">
 								<button
@@ -193,10 +199,8 @@ function EntriesEditor({
 								>
 									<span className={`group-caret ${open === e.name ? "open" : ""}`}>▸</span>
 									<div className="block-info">
-										<span className="lore-title">
-											{(presetDerivedOf(e.name, e.content) ? stripSourceNote(e.name) : e.name) || "（开头）"}
-										</span>
-										{presetDerivedOf(e.name, e.content) && <span className="preset-src-badge preset">预设</span>}
+										<span className="lore-title">{e.title || "（开头）"}</span>
+										<SourceBadge entry={e} />
 										<span className="lore-meta">
 											{e.content.length.toLocaleString()} 字 · {e.enabled ? "开" : "关"}
 										</span>
@@ -246,7 +250,8 @@ function EntriesEditor({
 								</div>
 							)}
 						</div>
-					))}
+						);
+					})}
 					{creating && (
 						<div className="lore-item preset-block open">
 							<div className="lore-head">
@@ -408,15 +413,14 @@ export function PresetPanel({
 
 	// ---------------- 预设库：装载 / 保存（用户定案 2026-09-12：预设直用，改动存回预设本身） ----------------
 
-	/** 装载：把库里的预设设为活动预设（config.preset，编辑器随之出现） */
+	/** 装载：设为活动预设（config.preset）——服务端随即按开关转译进这张卡的提示词文件 */
 	const loadPreset = (file: string) =>
 		run(async () => {
 			await apiPost("/api/presets/select", { file });
-			toast("info", "已装载——在下方编辑器里改动，点「保存」写回文件");
+			toast("info", "已装载并转译——下方编辑器里拨开关即自动更新");
 			files.reload();
-			if (rules.data?.card) {
-				toast("warning", "本卡已有规矩文件（APPEND_SYSTEM.md），预设会与它同时生效");
-			}
+			rules.reload();
+			agents.reload();
 		});
 
 	/** 保存：把活动预设的未落盘改动写回文件（与编辑器工具条的「保存」同一条端点） */
@@ -427,12 +431,14 @@ export function PresetPanel({
 			files.reload();
 		}, "预设已保存到文件");
 
-	/** 卸载：不再使用活动预设（文件保留在库里） */
+	/** 卸载：不再使用活动预设（文件保留在库里；卡文件里的预设条目由服务端剥净） */
 	const unloadPreset = () =>
 		run(async () => {
 			await apiPost("/api/presets/select", { file: null });
 			toast("info", "已卸载——预设文件保留在库里");
 			files.reload();
+			rules.reload();
+			agents.reload();
 		});
 
 	/** 卡档案（刀3）：保存 / 删除回投影 / 让助手生成 */
@@ -452,36 +458,25 @@ export function PresetPanel({
 			agents.reload();
 		});
 
-	/** 生成路径：把全量投影（含被停用条目）作为用户消息交给助手整理（模型做取舍判断，产物是看得见的文件） */
+	/** 生成路径：把卡自己的内容投影作为用户消息交给助手整理（世界书由镜像同步持有，不在素材里） */
 	const generateAgents = () => {
 		if (!agents.data || !onAssistantPrompt) return;
 		const d = agents.data;
-		const droppedNote =
-			d.droppedTitles.length > 0
-				? [
-						"以下条目目前被运行时整条停用（原因附后）——逐条重新判断：真正的**输出版式**（状态栏格式、排版要求）保留进档案；纯插件协议指令（要求输出 <UpdateVariable>、JSON Patch、表格更新之类）不进——世界状态记账由梨园场记自动完成，模型照协议输出只会污染正文。",
-						...d.droppedTitles.map((t) => `- ${t}`),
-					].join("\n")
-				: "（没有条目被停用）";
 		const instruction = [
 			`给「${d.cardName}」这张卡建立 AGENTS.md（卡档案），写到 ${d.path}。`,
 			"",
-			"下面是这张卡全部常驻内容的全量投影（卡字段 + 常驻世界书 + 作者指令，含被停用条目）。整理成卡档案时：",
+			"下面是这张卡自己的常驻内容投影（卡字段 + 作者指令）。世界书不在其中——挂载书的常驻条目由梨园自动镜像进档案，不要抄进来。整理成卡档案时：",
 			"- 保留全部事实设定与人物信息，保留状态栏等输出版式要求——那是卡作者要的格式；状态栏的标签包裹（如 <normal_status>）必须原样保留，前端据此渲染。",
-			"- 插件协议指令不进来（停用条目的处理见下）；写清你在哪些地方做了取舍。",
-			"- 关键词触发（绿灯）的世界书条目不进来——它们保持可检索。",
 			"- 结构清楚即可（markdown 小节），写事实不写元指令；这是给扮演 agent 读的常驻说明。",
 			"",
-			droppedNote,
-			"",
-			"===== 全量投影（含停用条目）=====",
+			"===== 投影 =====",
 			d.unfilteredProjection,
 			"===== 投影结束 =====",
 			"",
 			`用文件工具把整理结果写到 ${d.path}，写完简要报告你做了哪些取舍。`,
 		].join("\n");
 		onAssistantPrompt(instruction);
-		toast("info", "已把卡内容全量投影发给助手整理——在右栏「助手」里看它工作");
+		toast("info", "已把卡内容投影发给助手整理——在右栏「助手」里看它工作");
 	};
 
 	// ---------------- 遗留态：未迁移的活动预设（块级编辑，与旧面板一致） ----------------
@@ -685,7 +680,7 @@ export function PresetPanel({
 					onClick={() => setTab("library")}
 				>
 					预设库
-					{activeFile ? <span className="preset-tab-count">未转译</span> : null}
+					{activeFile ? <span className="preset-tab-count">已装载</span> : null}
 				</button>
 			</div>
 
@@ -831,9 +826,12 @@ export function PresetPanel({
 						<section className="sp-section">
 							<div className="preset-chan-head">
 								<h4>活动预设</h4>
-								<ConfirmButton className="act" disabled={busy} confirmText="确认卸载（不再使用，文件保留）" onConfirm={() => void unloadPreset()}>
+								<ConfirmButton className="act" disabled={busy} confirmText="确认卸载（卡文件里的预设条目一并移除，预设文件保留）" onConfirm={() => void unloadPreset()}>
 									卸载
 								</ConfirmButton>
+							</div>
+							<div className="field-hint">
+								装载即转译：按下方开关编译后落进这张卡的提示词文件（局部提示词里带「预设」徽标的条目），拨开关即自动更新。
 							</div>
 									<div className="panel-row list-toolbar preset-actions">
 								<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={() => void saveToDisk()}>
@@ -845,7 +843,7 @@ export function PresetPanel({
 							</div>
 							{dirty && (
 								<div className="field-hint preset-dirty-hint">
-									有未保存修改：已立即用于对话；点「保存」写回预设文件。
+									有未保存修改：已转译、已用于对话；点「保存」写回预设文件。
 								</div>
 							)}
 							<PanelStatus loading={loadingDetail} error={loadError} hasData={!!draft || !!missing} />

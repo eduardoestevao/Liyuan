@@ -32,7 +32,6 @@ import { CARD_AGENTS_FILE } from "../card-agents.ts";
 import { stripMvuRuleEntries } from "../mvu.ts";
 import { extractAuthorScripts } from "../authorScripts.ts";
 import {
-	assemble,
 	type AssembledPiece,
 	type AssembleReportItem,
 	type DepthPiece,
@@ -371,6 +370,8 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 	}
 	// 条目引擎：卡档案的关闭节（如不要某个状态栏）与备注注释不进送模面；
 	// 「文件存在」的判据看原文（全关也是用户的明确选择）。
+	// 档案里带 `（世界书·书名）` 的条目是挂载书蓝灯的镜像，由 server/rest.ts syncLorebookMirror
+	// 在每次配置刷新时重写（挂上就有、卸下就没、书改了跟着改）——文件本身就是实时的，这里不另判。
 	const cardAgentsRaw = cardAgents;
 	cardAgents = renderForModel(cardAgents);
 	const agentsActive = cardAgentsRaw.trim().length > 0;
@@ -396,19 +397,17 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 		);
 	}
 
-	// 装配：模拟酒馆引擎按开关拼一次。历史后段每拍重装（{{lastusermessage}}），此处只取静态面。
-	const assembled = presetDoc
-		? assemble(presetDoc.entries, { materials: markerMaterials, charName: card.name, userName: config.userName })
-		: null;
-	const presetBefore = assembled?.before ?? [];
-	const presetDepth = assembled?.depth ?? [];
-	// 只收 filled：声明了却没料的槽位（`marker 无料`）在装配里什么都没 push，
-	// 那个位置是空的——把它当「已归位」会让梨园的兜底也跟着让位，内容两头落空。
-	const filledMarkers = new Set((assembled?.markers ?? []).filter((mk) => mk.filled).map((mk) => mk.id));
-	const presetAssembly = assembled?.report ?? [];
-	const presetRuleTexts = presetBefore.filter((p) => p.source === "block").map((p) => p.text);
-	const presetActive = !!assembled && assembled.before.length + assembled.after.length + assembled.depth.length > 0;
-	const unsupported = new Set(assembled?.unsupported ?? []);
+	// 装载的预设**不再直接进提示词**（2026-09-12 用户定序：装载即转译）：它经引擎按开关编译、
+	// 声明分流后已落成卡文件里的（预设）条目（server/rest.ts syncPresetTranslation），模型看到的
+	// 就是 userRules / cardAgents 那两份。这里再装配一遍就是双份喂。预设文档仍装载着——
+	// samplers、作者正则、名字要从它取；marker 材料照旧准备（梨园自己的兜底槽位用得着）。
+	const presetBefore: AssembledPiece[] = [];
+	const presetDepth: DepthPiece[] = [];
+	const filledMarkers = new Set<string>();
+	const presetAssembly: AssembleReportItem[] = [];
+	const presetRuleTexts: string[] = [];
+	const presetActive = false;
+	const unsupported = new Set<string>();
 
 	// 显示层折叠标签：**猜名单已退役（8/19）**。
 	//
@@ -467,21 +466,11 @@ export function loadStageMaterials(cwd: string): StageMaterials {
 }
 
 /**
- * 历史后段每拍重装（{{lastusermessage}} 在此生效）。
- *
- * 整份重跑而不是"接着历史前段的变量表往下算"——酒馆每轮就是整份重拼，
- * 只重算后半段会让 `getvar` 看到的值与酒馆不一致。前半段字节稳定（除非块里用了
- * `{{lastusermessage}}`），前缀缓存不受影响。无预设或后段为空返回 undefined。
+ * 历史后段：装载的预设已转译成卡文件条目（见 loadStageMaterials 里的说明），历史后段随之
+ * 并入常驻——每拍不再重装。保留签名给 engine 的调用点；恒为 undefined。
  */
-export function assemblePresetAfter(m: StageMaterials, userText: string): AssembledPiece[] | undefined {
-	if (!m.presetDoc) return undefined;
-	const r = assemble(m.presetDoc.entries, {
-		materials: m.markerMaterials,
-		charName: m.card.name,
-		userName: m.config.userName,
-		userText,
-	});
-	return r.after.length > 0 ? r.after : undefined;
+export function assemblePresetAfter(_m: StageMaterials, _userText: string): AssembledPiece[] | undefined {
+	return undefined;
 }
 
 /** 常驻世界书条目（enabled+constant，按 order 排序）——system prompt 素材 */

@@ -145,6 +145,40 @@ export function setMountedLorebooks<T extends { lorebook?: string; lorebooks?: s
 	return next;
 }
 
+/**
+ * 书的标签＝文件名去扩展名——条目来源标注 `（世界书·书名）` 里写的就是它，
+ * 与世界书面板列出的名字同一个字串。
+ */
+export function bookLabelOf(path: string): string {
+	return path.replace(/\\/g, "/").split("/").pop()!.replace(/\.json$/i, "");
+}
+
+/** 当前挂载书的标签集合 */
+export function mountedBookLabels(config: { lorebook?: string; lorebooks?: string[] }): string[] {
+	return [...new Set(mountedLorebookPaths(config).map(bookLabelOf))];
+}
+
+/**
+ * 条目 → 所属挂载书的标签。合并后的条目不带书的身份，这里按内容指纹回查各书
+ * （与 mergeEntries 的去重语义一致：同内容多书并存时归第一本）。补充设定与卡内嵌书的条目
+ * 不在任何挂载书里 ⇒ undefined（它们没有「卸载」这个生命周期，不标）。
+ */
+export function bookOfEntries(
+	mountedAbsPaths: string[],
+	load: (abs: string) => LorebookEntry[] = loadLorebookFile,
+): (entry: LorebookEntry) => string | undefined {
+	const byFingerprint = new Map<string, string>();
+	for (const abs of mountedAbsPaths) {
+		if (!existsSync(abs)) continue;
+		const label = bookLabelOf(abs);
+		for (const e of load(abs)) {
+			const fp = e.content.trim();
+			if (fp && !byFingerprint.has(fp)) byFingerprint.set(fp, label);
+		}
+	}
+	return (entry) => byFingerprint.get(entry.content.trim());
+}
+
 /** 可写回源文件的字段（enabled 仍优先走 config.disabledLore 用户覆盖） */
 export interface LoreEntryPatch {
 	constant?: boolean;

@@ -2006,7 +2006,7 @@ export default function App() {
 					</button>
 				</div>
 				{/*
-				  * 中：会话名 + 一行状态。卡名（原右 gutter）、扮演/写卡（原输入框上方那条）、
+				  * 中：会话名 + 一行状态。卡名（原右 gutter）、扮演/工作（原输入框上方那条）、
 				  * 忙闲与连接态（原右 gutter）三样合并到这里，右 gutter 整个退场。
 				  */}
 				<div className="tb-title">
@@ -2020,17 +2020,21 @@ export default function App() {
 						<span className="tb-sub-sep" aria-hidden="true">
 							·
 						</span>
-						<button
-							type="button"
-							className="tb-sub-mode"
-							disabled={busy || conn !== "open"}
-							title="切换扮演 / 写卡"
-							onClick={() =>
-								ws.send({ type: "conversation_mode", mode: conversationMode === "roleplay" ? "authoring" : "roleplay" })
-							}
-						>
-							{conversationMode === "authoring" ? "写卡" : "扮演"}
-						</button>
+						<div className="tb-sub-mode" role="radiogroup" aria-label="对话模式" title="扮演：演剧情；工作：改卡、写前端/脚本、任何要动代码与文件的任务">
+							{(["roleplay", "authoring"] as const).map((m) => (
+								<button
+									key={m}
+									type="button"
+									role="radio"
+									aria-checked={conversationMode === m}
+									className={`tb-sub-mode-opt ${conversationMode === m ? "active" : ""}`}
+									disabled={busy || conn !== "open" || conversationMode === m}
+									onClick={() => ws.send({ type: "conversation_mode", mode: m })}
+								>
+									{m === "authoring" ? "工作" : "扮演"}
+								</button>
+							))}
+						</div>
 						<span className="tb-sub-sep" aria-hidden="true">
 							·
 						</span>
@@ -2290,7 +2294,7 @@ export default function App() {
 								<div className="msg msg-char msg-live">
 									<div className="msg-head">
 										<MsgAvatar src={charAvatarUrl} name={charName} kind="char" />
-										<span className="msg-name msg-name-char">{streamMode === "authoring" ? "写卡" : charName}</span>
+										<span className="msg-name msg-name-char">{streamMode === "authoring" ? "工作" : charName}</span>
 										<span className="msg-live-tag">生成中</span>
 									</div>
 									{liveSegs.length > 0 ? (
@@ -2383,7 +2387,7 @@ export default function App() {
 								/>
 							)}
 						</div>
-						{/* 扮演/写卡的开关已上移到顶栏副标题（PLAN-FRONTEND-V2 §四），此处不再重复一条 */}
+						{/* 扮演/工作的开关已上移到顶栏副标题（PLAN-FRONTEND-V2 §四），此处不再重复一条 */}
 						{(pending.length > 0 || uploading) && (
 							<div className="composer-shell attach-row">
 								{pending.map((p) => (
@@ -2492,7 +2496,7 @@ export default function App() {
 							<textarea
 								ref={inputRef}
 								value={input}
-								placeholder={conn === "open" ? (conversationMode === "authoring" ? "描述要制作或修改的卡片、界面、脚本…" : userName ? `以「${userName}」的身份发言…` : "输入消息…") : "等待连接…"}
+								placeholder={conn === "open" ? (conversationMode === "authoring" ? "描述要做的事：改卡、写前端或脚本、整理文件…" : userName ? `以「${userName}」的身份发言…` : "输入消息…") : "等待连接…"}
 								rows={1}
 								onFocus={() => {
 									setComposerTools(false);

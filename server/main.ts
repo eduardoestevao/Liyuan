@@ -119,9 +119,11 @@ import {
 	patchLoreEntryAnywhere,
 	selectCard,
 	setLorebookMounted,
+	syncCardFiles,
 	thinkingLevelOfEntry,
 	writeMaybeGzip,
 	type CurrentModelInfo,
+	type PresetSyncResult,
 	type RestHost,
 } from "./rest.ts";
 
@@ -1536,6 +1538,8 @@ const restHost: RestHost = {
 	},
 	/** 身份/配置/世界书挂载等：走扩展 /rprefresh，不整会话 reload */
 	async softRefreshConfig() {
+		// 预设装载态同步（装载/卸载/拨开关/保存/还原都经这里）：先把（预设）条目写进卡文件，再刷新装配
+		await syncPresetNow();
 		if (session.isStreaming) {
 			// 流式中改设定：排队到本轮结束，避免与 prompt 抢通道
 			void session
@@ -1559,6 +1563,8 @@ const restHost: RestHost = {
 	},
 	async switchToCard() {
 		refreshNamesFromConfig(); // rest.ts 已写盘新 card，先让会话过滤对准新卡
+		// 换卡：装载中的预设要按新卡（宏按卡求值、声明按卡留档）重新落条目
+		await syncPresetNow();
 		// 清卡缓存：换卡后列表必须按新 cardPath 重读 rp-card
 		cardCache.clear();
 		const frame = await listSessions();
@@ -1861,6 +1867,47 @@ const restHost: RestHost = {
 			reasoning: opts?.reasoning ?? "off",
 			signal: opts?.signal,
 		}),
+};
+
+/**
+ * 预设装载态同步（rest.ts syncPresetTranslation）：装载即转译、改开关即转译、卸载即剥净。
+ * 失败只通知不抛出——配置刷新不能因为旁路模型断供而卡死；产物有变/首次声明才提示。
+ */
+let presetSyncChain: Promise<PresetSyncResult | undefined> = Promise.resolve(undefined);
+const syncPresetNow = (): Promise<PresetSyncResult | undefined> => {
+	presetSyncChain = presetSyncChain.then(async () => {
+		try {
+			const cur = restHost.listModels().current;
+			const { preset: r, lore } = await syncCardFiles(cwd, {
+				runSideText: restHost.runSideText,
+				modelLabel: cur ? `${cur.provider}/${cur.id}` : undefined,
+			});
+			if (lore.state === "written") {
+				broadcast({ type: "notify", level: "info", text: `卡档案已同步世界书常驻条目：${lore.entries} 条` });
+			}
+			if (r.declareError) {
+				broadcast({
+					type: "notify",
+					level: "error",
+					text: `预设「${r.preset}」声明失败（${r.pending} 段先按保守方式全部保留）：${r.declareError}`,
+				});
+			}
+			if (r.state === "written" && r.preset) {
+				broadcast({
+					type: "notify",
+					level: "info",
+					text: `预设「${r.preset}」已转译：活动条目 ${r.active} 条、停用 ${r.disabled} 条${r.declared ? `（本次声明 ${r.declared} 段）` : ""}`,
+				});
+			} else if (r.state === "stripped") {
+				broadcast({ type: "notify", level: "info", text: "预设已卸载：卡文件里的（预设）条目已移除" });
+			}
+			return r;
+		} catch (err) {
+			broadcast({ type: "notify", level: "error", text: `预设同步失败：${err instanceof Error ? err.message : String(err)}` });
+			return undefined;
+		}
+	});
+	return presetSyncChain;
 };
 
 // 启动时：liyuan.agent.json → models.json，重绑模型 + 应用思考档（配置 → 当前生效）
@@ -3503,6 +3550,8 @@ httpServer.listen(PORT, HOST, () => {
 		console.log(`[liyuan] 迁移 ${line}`);
 	}
 	console.log(`[liyuan] ${urls.join("  |  ")}（手机连同一 Wi-Fi 访问后者；勿暴露公网）`);
+	// 启动时对一次账：装载中的预设与挂载书的镜像（升级前的状态也算）落进卡文件，再刷一次装配
+	void restHost.softRefreshConfig().catch(() => {});
 });
 
 const shutdown = async () => {

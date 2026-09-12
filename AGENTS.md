@@ -11,11 +11,12 @@
    timestamp 核对北京时间。
 3. **流程与提示词的最终形态**定义在 `docs/PLAN-ROUND-FLOW.md`——任何提示词/
    引擎改动都要回答「离这个流程近了多少」。
-4. **当前阶段见 `docs/PLAN-RP-AGENT-NEXT.md`（2026-09-09 收窗）**：写卡板块（主会话模式＋资源工程＋
-   角色卡工坊）已提交 `3d6b837` 并**封存不动**；下一阶段**大改前端**，在新前端里把工坊接回
-   （接回方式见 `docs/PLAN-CARD-STUDIO.md` 第五节），再继续功能更新。工坊功能通道
-   （`/api/card/authoring`）不动即可无缝迁移。`docs/PLAN-RP-AGENT-EXEC.md` 与
-   `docs/PRESET-SPLIT-TAXONOMY.md` 保留为历史计划与研究资料。
+4. **当前阶段见 `docs/PLAN-RP-AGENT-NEXT.md`（2026-09-12 收尾）**：写卡板块（主会话模式＋资源工程＋
+   角色卡工坊＋结构账本／预览通道／手册成包）已提交至 `23a0baf`；前端 4:6 分栏与顶栏三键已落地（`9441353`）。
+   预设的处理是四步管线（导入原样 → 装载拨开关保存 → 引擎按开关编译 → 梨园声明/过目/分流成逐块
+   `（预设）` 条目），条目来源标注（`（预设）` / `（世界书·书名）`）与来源书卸载跟随见
+   `docs/PLAN-PRESET-HARNESS-STRIP.md` 状态末条。工坊功能通道（`/api/card/authoring`）不动。
+   `docs/PLAN-RP-AGENT-EXEC.md` 与 `docs/PRESET-SPLIT-TAXONOMY.md` 保留为历史计划与研究资料。
 
 ## 快速索引
 
@@ -27,4 +28,4 @@
 - `docs/DRAFT-prompt-rp-agent.md` — 「怎么演这一拍」演出指导草稿（B 版）
 - `src/stage/` — 台上引擎（assemble 提示词 / engine 回合循环 / workspace 稿纸 /
   tools 工具 schema）
-- 测试：`node --test test/*.test.ts`（2026-09-09 最近验证：773 项，771 通过，2 项既有失败，详见主会话写卡模式记录）
+- 测试：`node --test test/*.test.ts`（2026-09-12 最近验证：801 项，797 通过，4 项既有实卡环境失败）

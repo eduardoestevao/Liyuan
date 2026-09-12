@@ -17,6 +17,7 @@
  */
 import type { CharacterCard, LorebookEntry, MacroContext, RpConfig } from "./types.ts";
 import { applyMacros } from "./card.ts";
+import { lorebookSourceSuffix } from "./prompt-entries.ts";
 
 /** 卡档案文件名（pi 生态通用名；住在卡文件夹根） */
 export const CARD_AGENTS_FILE = "AGENTS.md";
@@ -29,6 +30,13 @@ export function projectCardToAgents(
 	card: CharacterCard,
 	constantLore: LorebookEntry[],
 	config: RpConfig,
+	opts: {
+		/**
+		 * 条目所属挂载书的标签（src/lorebook.ts bookOfEntries）。给了就把来源写进小节标题
+		 * `## 标题（世界书·书名）`——档案建立后，条目引擎据此认来源、按挂载状态取舍。
+		 */
+		bookOf?: (entry: LorebookEntry) => string | undefined;
+	} = {},
 ): string {
 	const macro: MacroContext = { charName: card.name, userName: config.userName };
 	const m = (s: string) => applyMacros(s, macro);
@@ -45,8 +53,11 @@ export function projectCardToAgents(
 		parts.push(
 			`# 世界设定（常驻事实）\n${constantLore
 				.map((e) => {
-					const title = (e.comment || e.keys?.[0] || "").trim();
-					return `${title ? `## ${title}\n` : ""}${m(e.content)}`;
+					const book = opts.bookOf?.(e);
+					// 有来源书的条目必须有标题行——没有标题就没有条目，来源标注无处可挂
+					const title = (e.comment || e.keys?.[0] || (book ? `条目 ${e.uid}` : "")).trim();
+					const heading = title ? `## ${title}${book ? lorebookSourceSuffix(book) : ""}\n` : "";
+					return `${heading}${m(e.content)}`;
 				})
 				.join("\n\n")}`,
 		);

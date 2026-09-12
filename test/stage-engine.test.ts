@@ -1152,6 +1152,8 @@ test("pi SDK：真实 HTTP 请求保留 RP 上下文、采样参数、鉴权及�
 	try {
 		writeFileSync(join(cwd, "preset.json"), JSON.stringify({ blocks: [{ id: "style", channel: "system", enabled: true, content: "固定测试文案。" }], samplers: { temperature: 0.37, top_p: 0.71 } }));
 		writeFileSync(join(cwd, "liyuan.config.json"), JSON.stringify({ card: "card.json", userName: "沈舟", preset: "preset.json" }));
+		// 装载态不直接喂预设：正文经服务端同步落成卡档案里的（预设）条目（这里手写同一形态），采样参数仍从预设文档取
+		writeFileSync(join(cwd, "AGENTS.md"), ["## style（预设）", "固定测试文案。", ""].join("\n"));
 		const model = { ...getModel("openai", "gpt-4o-mini")!, api: "openai-completions", provider: "native-test", id: "native-test", baseUrl: `http://127.0.0.1:${(server.address() as { port: number }).port}/v1` };
 		const side: StageStreamFn = () => ({ async *[Symbol.asyncIterator]() { yield { type: "done", message: fauxScribeEmpty() }; }, result: async () => fauxScribeEmpty() });
 		const ends: any[] = [];

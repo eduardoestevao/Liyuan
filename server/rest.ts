@@ -92,6 +92,7 @@ import {
 	appendLorebookFileEntry,
 	applyDisabledLore,
 	constantEntries,
+	bookOfEntries,
 	deleteLorebookFileEntry,
 	exportStLorebook,
 	keysFromTitle,
@@ -137,7 +138,18 @@ import {
 	translatePresetToRules,
 	translateReport,
 } from "../src/user-rules.ts";
+import {
+	assembleForDeclare,
+	buildDeclarePrompt,
+	declarePieces,
+	declareTranslateReport,
+	parseDeclareResponse,
+	stripPresetEntries,
+	translatePresetWithDeclaration,
+	type PresetDeclaration,
+} from "../src/preset-declare.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
+import { formatEntry, lorebookSourceSuffix, stripEntriesWhere, uniqueEntryName } from "../src/prompt-entries.ts";
 import { cardProjectOperation, inspectCardProject, previewCardProject, readCardCover } from "../src/card-authoring.ts";
 import type { CardPreviewReport } from "./card-preview.ts";
 import { readDeclaration, removeDeclaration, writeDeclarationFromDetection } from "../src/lorebook-declare.ts";
@@ -1077,6 +1089,200 @@ export function selectPresetFile(cwd: string, file: string | null): boolean {
 	}
 	writeJsonWithBackup(configPath(cwd), config);
 	return true;
+}
+
+// ---------- 预设装载态同步：装载即转译、改开关即转译（2026-09-12 用户定序） ----------
+
+export interface PresetSyncDeps {
+	runSideText: RestHost["runSideText"];
+	/** 声明留档用的模型名 */
+	modelLabel?: string;
+}
+
+export interface PresetSyncResult {
+	/** none=未装载且无残留；stripped=卸载后剥净；unchanged=产物未变；written=产物已写 */
+	state: "none" | "stripped" | "unchanged" | "written";
+	preset?: string;
+	active?: number;
+	disabled?: number;
+	/** 本次向模型声明的段数（0＝全部命中留档） */
+	declared?: number;
+	/** 声明失败：这些段按「拿不准一律留」落成活动条目，下次同步再问 */
+	declareError?: string;
+	pending?: number;
+}
+
+const declarationPath = (cardDir: string, presetName: string): string =>
+	join(cardDir, ".liyuan", `预设声明-${presetSlug(presetName)}.json`);
+
+/** 声明失败后的退避（同一预设×卡 60 秒内不再问模型）——每拨一次开关就撞一次 402 没有意义 */
+const declareFailedAt = new Map<string, number>();
+const DECLARE_RETRY_MS = 60_000;
+
+/** 两份文件的条目级合并：先剥旧预设条目再追加；产物相同不写；剥空了就删文件（那份本就是我们生成的） */
+function mergePresetEntriesInto(path: string, section: string, base: string): { changed: boolean } {
+	const exists = existsSync(path);
+	const raw = exists ? readFileSync(path, "utf8") : base;
+	const stripped = exists ? stripPresetEntries(raw) : raw;
+	let next = stripped;
+	if (section) next = stripped.trim() ? `${stripped.trimEnd()}\n\n${section}` : section;
+	next = next.trim() ? `${next.trim()}\n` : "";
+	if (exists && next === raw) return { changed: false };
+	if (!next) {
+		if (exists) unlinkSync(path);
+		return { changed: exists };
+	}
+	mkdirSync(dirname(path), { recursive: true });
+	writeFileSync(path, next, "utf8");
+	return { changed: true };
+}
+
+/**
+ * 唯一主人：`config.preset`（含未保存草稿）⇒ 当前卡 APPEND_SYSTEM.md / AGENTS.md 里的（预设）条目。
+ * 每次配置刷新跑一遍（装载/卸载/拨开关/保存/还原/换卡/启动都经过 softRefreshConfig）：
+ * - 无预设 ⇒ 两份文件里的预设条目剥净；
+ * - 有预设 ⇒ 引擎按开关编译 → 缺声明的段问一次模型（结果落 .liyuan/预设声明-*.json，按块 identifier 留档，
+ *   拨开关不用重问）→ 按声明分流成逐块（预设）条目 → 条目级合并；产物没变就不碰文件。
+ * 台上不再直接吃装载的预设（materials.ts）——模型看到的就是这两份文件。
+ */
+export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): Promise<PresetSyncResult> {
+	const config = loadConfig(cwd);
+	const cardDir = dirname(resolvePath(cwd, config.card));
+	const appendPath = cardRulesPath(cardDir);
+	const agentsAbs = cardAgentsPath(cardDir);
+	const { doc } = loadEffectivePreset(cwd);
+	if (!doc) {
+		const a = mergePresetEntriesInto(appendPath, "", "");
+		const b = mergePresetEntriesInto(agentsAbs, "", "");
+		return { state: a.changed || b.changed ? "stripped" : "none" };
+	}
+	const card = loadCardFile(resolvePath(cwd, config.card));
+	const macro = { charName: card.name, userName: config.userName };
+	const pieces = declarePieces(assembleForDeclare(doc, macro));
+
+	// 声明留档：按块 identifier 命中就复用；缺的才问模型
+	const declAbs = declarationPath(cardDir, doc.name);
+	let stored: PresetDeclaration | null = null;
+	if (existsSync(declAbs)) {
+		try {
+			stored = JSON.parse(readFileSync(declAbs, "utf8")) as PresetDeclaration;
+		} catch {
+			stored = null;
+		}
+	}
+	const known = new Map((stored?.entries ?? []).map((e) => [e.identifier, e]));
+	const missing = pieces.filter((p) => !known.has(p.id));
+	let declareError: string | undefined;
+	let declared = 0;
+	if (missing.length > 0) {
+		const key = `${doc.name} ${cardDir}`;
+		const failedAt = declareFailedAt.get(key) ?? 0;
+		if (Date.now() - failedAt < DECLARE_RETRY_MS) {
+			declareError = "声明模型刚失败过，稍后再试";
+		} else {
+			const prompt = buildDeclarePrompt(missing, { preset: doc.name, card: card.name });
+			const resp = await deps.runSideText(prompt.systemPrompt, prompt.userText, {
+				maxTokens: 16384,
+				reasoning: "low",
+				signal: AbortSignal.timeout(600_000),
+			});
+			if (typeof resp === "string") {
+				declareFailedAt.delete(key);
+				const parsed = parseDeclareResponse(resp, missing);
+				for (const e of parsed.entries) known.set(e.identifier, e);
+				declared = parsed.entries.length;
+				const nextDecl: PresetDeclaration = {
+					version: 1,
+					preset: doc.name,
+					card: card.name,
+					createdAt: new Date().toISOString(),
+					model: deps.modelLabel,
+					entries: [...known.values()],
+				};
+				mkdirSync(dirname(declAbs), { recursive: true });
+				writeFileSync(declAbs, JSON.stringify(nextDecl, null, "\t"), "utf8");
+			} else {
+				declareFailedAt.set(key, Date.now());
+				declareError = resp.error;
+			}
+		}
+	}
+	// 转译用的声明＝留档 ＋ 未声明段按「拿不准一律留」（normalizeDeclaration 对缺项落 writing，不落盘）
+	const declaration: PresetDeclaration = {
+		version: 1,
+		preset: doc.name,
+		card: card.name,
+		createdAt: stored?.createdAt ?? new Date().toISOString(),
+		model: stored?.model ?? deps.modelLabel,
+		entries: [...known.values()],
+	};
+	const r = translatePresetWithDeclaration(doc, declaration, macro);
+
+	// 无档案的卡：投影打底（带世界书来源标注）——档案一落盘卡即进文件模式（刀3），投影就是原本要喂的内容
+	let agentsBase = "";
+	if (!existsSync(agentsAbs) && r.agentsSection) {
+		const materials = loadStageMaterials(cwd);
+		const bookOf = bookOfEntries(mountedLorebookPaths(config).map((rel) => resolvePath(cwd, rel)));
+		agentsBase = projectCardToAgents(materials.card, constantLoreOf(materials), config, { bookOf });
+	}
+	const a = mergePresetEntriesInto(appendPath, r.appendMarkdown, "");
+	const b = mergePresetEntriesInto(agentsAbs, r.agentsSection, agentsBase);
+	if (a.changed || b.changed || declared > 0) {
+		const reportAbs = join(cardDir, ".liyuan", `转译报告-${presetSlug(doc.name)}.md`);
+		mkdirSync(dirname(reportAbs), { recursive: true });
+		writeFileSync(reportAbs, declareTranslateReport(doc, r, declaration, config.preset ?? doc.name), "utf8");
+	}
+	const pending = pieces.filter((p) => !known.has(p.id)).length;
+	return {
+		state: a.changed || b.changed ? "written" : "unchanged",
+		preset: doc.name,
+		active: r.lines.filter((l) => l.action === "append" || l.action === "agents").length,
+		disabled: r.lines.filter((l) => l.action === "disabled").length,
+		declared,
+		declareError,
+		pending,
+	};
+}
+
+// ---------- 世界书蓝灯镜像：挂上就有、卸下就没、书改了跟着改（2026-09-12 用户点名） ----------
+
+/**
+ * 卡档案 AGENTS.md 在场（文件模式）时，挂载书的常驻条目以 `## 标题（世界书·书名）` 条目镜像在档案里，
+ * 由本函数在每次配置刷新时整组重写：先剥掉全部 `（世界书·…）` 条目，再按当前挂载书的有效常驻集
+ * （与台上同一份：用户停用、协议判定、MVU 规则归属都已应用）重新落。文件就是实时的，条目视图看得见。
+ * 档案不在场 ⇒ 台上本就从挂载书现场装配，无事可做。
+ */
+export function syncLorebookMirror(cwd: string): { state: "none" | "unchanged" | "written"; entries: number } {
+	const config = loadConfig(cwd);
+	const agentsAbs = cardAgentsPath(dirname(resolvePath(cwd, config.card)));
+	if (!existsSync(agentsAbs)) return { state: "none", entries: 0 };
+	const materials = loadStageMaterials(cwd);
+	const bookOf = bookOfEntries(mountedLorebookPaths(config).map((rel) => resolvePath(cwd, rel)));
+	const used = new Set<string>();
+	const mirror: string[] = [];
+	for (const e of constantLoreOf(materials)) {
+		const book = bookOf(e) ?? "补充设定";
+		const title = (e.comment || e.keys?.[0] || `条目 ${e.uid}`).trim();
+		mirror.push(formatEntry(uniqueEntryName(title, lorebookSourceSuffix(book), used), e.content));
+	}
+	const raw = readFileSync(agentsAbs, "utf8");
+	const stripped = stripEntriesWhere(raw, (e) => e.source?.kind === "lorebook");
+	let next = stripped;
+	if (mirror.length > 0) next = stripped.trim() ? `${stripped.trimEnd()}\n\n${mirror.join("\n")}` : mirror.join("\n");
+	next = next.trim() ? `${next.trim()}\n` : "";
+	if (next === raw) return { state: "unchanged", entries: mirror.length };
+	writeFileSync(agentsAbs, next, "utf8");
+	return { state: "written", entries: mirror.length };
+}
+
+/** 配置刷新时的卡文件对账：预设转译 + 世界书镜像（各认自己的来源后缀，互不相扰） */
+export async function syncCardFiles(
+	cwd: string,
+	deps: PresetSyncDeps,
+): Promise<{ preset: PresetSyncResult; lore: ReturnType<typeof syncLorebookMirror> }> {
+	const preset = await syncPresetTranslation(cwd, deps);
+	const lore = syncLorebookMirror(cwd);
+	return { preset, lore };
 }
 
 // ---------- 世界书文件管理（PLAN-PANELS-V2 §2.3：选书/导入/删除） ----------
@@ -2815,33 +3021,22 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const abs = cardAgentsPath(cardDir);
 				const content = existsSync(abs) ? readFileSync(abs, "utf8") : "";
 				const materials = loadStageMaterials(host.cwd);
-				// 生效投影（diff 基准）：跑的就是装配那条路——协议判死/归属剥离都已在内
-				const projection = projectCardToAgents(materials.card, constantLoreOf(materials), config);
-				// 生成素材：**未过协议/归属过滤**的全量常驻 + 判死名单。生成是模型判断
-				// 「哪段是版式（保留）、哪段是插件协议（剔除）」的唯一时机——输入不能预先
-				// 被正则筛过，否则格式规范永远到不了档案里（PLAN-AGENT-SLOTS §六解法2）。
-				const unfiltered = constantEntries(
-					applyDisabledLore(
-						mergeEntries(...mountedLorebookPaths(config).map((rel) => {
-							const p = resolvePath(host.cwd, rel);
-							return existsSync(p) ? loadLorebookFile(p) : [];
-						}), existsSync(overlayPathFor(host.cwd, materials.card.name, config.card))
-							? loadLorebookFile(overlayPathFor(host.cwd, materials.card.name, config.card))
-							: []),
-						config.disabledLore,
-					),
-				);
-				const unfilteredProjection = projectCardToAgents(materials.card, unfiltered, config);
+				// 生效投影（diff 基准）：跑的就是装配那条路——协议判死/归属剥离都已在内；
+				// 蓝灯小节标题带 `（世界书·书名）`，与档案里的镜像条目同一形态（syncLorebookMirror）
+				const bookOf = bookOfEntries(mountedLorebookPaths(config).map((rel) => resolvePath(host.cwd, rel)));
+				const projection = projectCardToAgents(materials.card, constantLoreOf(materials), config, { bookOf });
+				// 生成素材：只给卡自己的内容——世界书由镜像同步持有，助手不必也不该把书抄进档案
+				const unfilteredProjection = projectCardToAgents(materials.card, [], config);
 				sendJson(res, 200, {
 					exists: existsSync(abs),
 					active: content.trim() ? "file" : "projection",
 					content,
 					projection,
 					unfilteredProjection,
-					/** 被运行时判死/归属剥离的条目（生成时交模型重新判断） */
+					/** 被运行时判死/归属剥离的条目（判定数据可改，见世界书面板） */
 					droppedTitles: materials.protocolDrops.map((d) => `${d.title}（${d.label}）`),
 					path: abs,
-					cardName: config.displayName ?? basename(config.card).replace(/\.(png|json)$/i, ""),
+					cardName: config.displayName ?? basename(config.card).replace(/.(png|json)$/i, ""),
 				});
 				return true;
 			}
@@ -2868,10 +3063,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				sendJson(res, 200, { ok: true });
 				return true;
 			}
+			/** 刀2 整份收入（无界面入口，留给 REST 调用方）；装载态的自动转译见 syncPresetTranslation */
 			case "POST /api/presets/translate": {
 				if (refuseWhileStreaming()) return true;
-				const body = JSON.parse(await readBody(req)) as {
-					file?: string; overwrite?: boolean };
+				const body = JSON.parse(await readBody(req)) as { file?: string; overwrite?: boolean };
 				const file = validatePresetPath(body.file ?? "");
 				const abs = resolvePath(host.cwd, file);
 				if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);

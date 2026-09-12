@@ -2,12 +2,18 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 
 import {
+	PRESET_SOURCE_SUFFIX,
 	appendEntry,
 	deleteEntry,
+	formatEntry,
+	lorebookSourceSuffix,
+	parseEntrySource,
 	parsePromptEntries,
 	renderForModel,
 	setEntryContent,
+	stripEntriesWhere,
 	toggleEntry,
+	uniqueEntryName,
 } from "../src/prompt-entries.ts";
 
 const MD = [
@@ -110,4 +116,61 @@ test("边界：未闭合注释按到文件尾；全关 ⇒ 送模空串（用户
 	const out = renderForModel(allOff!);
 	assert.equal(out.includes("以「你」叙述。"), false, "第二人称本就关");
 	assert.equal(out.includes("以「我」叙述。"), false);
+});
+
+test("来源标注：标题尾部（预设）/（世界书·书名）解析成 source，显示名剥后缀；无后缀＝用户自己的", () => {
+	const md = [
+		"## 身份（预设）",
+		"预设身份。",
+		"## 门派（世界书·大世界）",
+		"门派设定。",
+		"## 武学（上）",
+		"用户自己的。",
+		"<!--",
+		"## 思考（预设）",
+		"关闭的机制段。",
+		"-->",
+	].join("\n");
+	const entries = parsePromptEntries(md);
+	assert.deepEqual(
+		entries.map((e) => [e.name, e.title, e.source?.kind, (e.source as { book?: string } | undefined)?.book, e.enabled]),
+		[
+			["身份（预设）", "身份", "preset", undefined, true],
+			["门派（世界书·大世界）", "门派", "lorebook", "大世界", true],
+			["武学（上）", "武学（上）", undefined, undefined, true],
+			["思考（预设）", "思考", "preset", undefined, false],
+		],
+	);
+	assert.deepEqual(parseEntrySource("条目 3（世界书·书 A）"), { title: "条目 3", source: { kind: "lorebook", book: "书 A" } });
+	assert.equal(lorebookSourceSuffix("大世界"), "（世界书·大世界）");
+	assert.equal(PRESET_SOURCE_SUFFIX, "（预设）");
+	// 手术仍按完整标题（含后缀）寻址
+	assert.ok(!parsePromptEntries(deleteEntry(md, "门派（世界书·大世界）")!).some((e) => e.source?.kind === "lorebook"));
+});
+
+test("harness 生成条目：formatEntry / uniqueEntryName / stripEntriesWhere（按来源剥，无可剥原样返回）", () => {
+	const used = new Set<string>();
+	const n1 = uniqueEntryName("门派", lorebookSourceSuffix("大世界"), used);
+	const n2 = uniqueEntryName("门派", lorebookSourceSuffix("大世界"), used);
+	assert.equal(n1, "门派（世界书·大世界）");
+	assert.equal(n2, "门派·2（世界书·大世界）", "同名追加序号");
+	const md = [
+		"# 我的档案",
+		"档案正文。",
+		formatEntry(n1, "# 内文标题\n门派设定。"),
+		formatEntry("思考（预设）", "关闭的机制段。", false),
+		"## 武学",
+		"用户自己的。",
+	].join("\n");
+	const entries = parsePromptEntries(md);
+	assert.deepEqual(
+		entries.map((e) => [e.title, e.source?.kind, e.enabled]),
+		[["我的档案", undefined, true], ["门派", "lorebook", true], ["思考", "preset", false], ["武学", undefined, true]],
+	);
+	assert.ok(entries[1].content.startsWith("＃ 内文标题"), "正文里的标题行转全角＃，不割裂条目");
+	const noLore = stripEntriesWhere(md, (e) => e.source?.kind === "lorebook");
+	assert.ok(!noLore.includes("门派设定") && noLore.includes("关闭的机制段") && noLore.includes("用户自己的"));
+	const noPreset = stripEntriesWhere(md, (e) => e.source?.kind === "preset");
+	assert.ok(noPreset.includes("门派设定") && !noPreset.includes("关闭的机制段"), "关闭态也剥");
+	assert.equal(stripEntriesWhere(md, () => false), md, "无可剥 ⇒ 原样（一个字节不动）");
 });
