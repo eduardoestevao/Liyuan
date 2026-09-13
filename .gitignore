@@ -117,3 +117,6 @@ skills/预设-*/
 # 桌面版（docs/PLAN-DESKTOP.md）：stage 产物与构建输出不入库
 desktop/app/
 desktop/dist/
+
+# 本机 MCP 配置（含 API key，仓库公开不入库）；zai 看图链路的正本在此，见记忆 ref-image-viewing-workflow
+.mcp.json
