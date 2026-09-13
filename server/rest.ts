@@ -1112,10 +1112,19 @@ export interface PresetSyncResult {
 	pending?: number;
 }
 
-const declarationPath = (cardDir: string, presetName: string): string =>
+/**
+ * 声明留档（全局一份，跟预设本体住一起——世界书同款形状）：`assets/presets/.liyuan/预设声明-*.json`。
+ * 声明分类的是预设块，不依赖卡；按卡留档（b737bfd 形态）会让每张卡首次装载同一份预设
+ * 都问一次模型（实测 20+ 秒），2026-09-13 改全局共享，一份预设只声明一次。
+ */
+const declarationPath = (cwd: string, presetName: string): string =>
+	join(cwd, PRESETS_DIR, ".liyuan", `预设声明-${presetSlug(presetName)}.json`);
+
+/** 旧按卡留档：全局档缺失时的回读来源（读到即上提全局），只读不写 */
+const legacyDeclarationPath = (cardDir: string, presetName: string): string =>
 	join(cardDir, ".liyuan", `预设声明-${presetSlug(presetName)}.json`);
 
-/** 声明失败后的退避（同一预设×卡 60 秒内不再问模型）——每拨一次开关就撞一次 402 没有意义 */
+/** 声明失败后的退避（同一预设 60 秒内不再问模型）——每拨一次开关就撞一次 402 没有意义 */
 const declareFailedAt = new Map<string, number>();
 const DECLARE_RETRY_MS = 60_000;
 
@@ -1141,8 +1150,8 @@ function mergePresetEntriesInto(path: string, section: string, base: string): { 
  * 唯一主人：`config.preset`（含未保存草稿）⇒ 当前卡 APPEND_SYSTEM.md / AGENTS.md 里的（预设）条目。
  * 每次配置刷新跑一遍（装载/卸载/拨开关/保存/还原/换卡/启动都经过 softRefreshConfig）：
  * - 无预设 ⇒ 两份文件里的预设条目剥净；
- * - 有预设 ⇒ 引擎按开关编译 → 缺声明的段问一次模型（结果落 .liyuan/预设声明-*.json，按块 identifier 留档，
- *   拨开关不用重问）→ 按声明分流成逐块（预设）条目 → 条目级合并；产物没变就不碰文件。
+ * - 有预设 ⇒ 引擎按开关编译 → 缺声明的段问一次模型（结果全局留档 assets/presets/.liyuan/，按块 identifier 复用，
+ *   拨开关不重问、换卡也不重问）→ 按声明分流成逐块（预设）条目 → 条目级合并；产物没变就不碰文件。
  * 台上不再直接吃装载的预设（materials.ts）——模型看到的就是这两份文件。
  */
 export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): Promise<PresetSyncResult> {
@@ -1160,8 +1169,8 @@ export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): 
 	const macro = { charName: card.name, userName: config.userName };
 	const pieces = declarePieces(assembleForDeclare(doc, macro));
 
-	// 声明留档：按块 identifier 命中就复用；缺的才问模型
-	const declAbs = declarationPath(cardDir, doc.name);
+	// 声明留档：全局一份（按块 identifier 命中就复用）；缺的才问模型
+	const declAbs = declarationPath(cwd, doc.name);
 	let stored: PresetDeclaration | null = null;
 	if (existsSync(declAbs)) {
 		try {
@@ -1170,17 +1179,30 @@ export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): 
 			stored = null;
 		}
 	}
+	// 旧按卡留档上提：全局档还没有时回读当前卡那份——声明实质不依赖卡，读到即全库生效
+	let lifted = false;
+	if (!stored) {
+		const legacyAbs = legacyDeclarationPath(cardDir, doc.name);
+		if (existsSync(legacyAbs)) {
+			try {
+				stored = JSON.parse(readFileSync(legacyAbs, "utf8")) as PresetDeclaration;
+				lifted = true;
+			} catch {
+				stored = null;
+			}
+		}
+	}
 	const known = new Map((stored?.entries ?? []).map((e) => [e.identifier, e]));
 	const missing = pieces.filter((p) => !known.has(p.id));
 	let declareError: string | undefined;
 	let declared = 0;
 	if (missing.length > 0) {
-		const key = `${doc.name} ${cardDir}`;
+		const key = doc.name;
 		const failedAt = declareFailedAt.get(key) ?? 0;
 		if (Date.now() - failedAt < DECLARE_RETRY_MS) {
 			declareError = "声明模型刚失败过，稍后再试";
 		} else {
-			const prompt = buildDeclarePrompt(missing, { preset: doc.name, card: card.name });
+			const prompt = buildDeclarePrompt(missing, { preset: doc.name });
 			const resp = await deps.runSideText(prompt.systemPrompt, prompt.userText, {
 				maxTokens: 16384,
 				reasoning: "low",
@@ -1194,7 +1216,6 @@ export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): 
 				const nextDecl: PresetDeclaration = {
 					version: 1,
 					preset: doc.name,
-					card: card.name,
 					createdAt: new Date().toISOString(),
 					model: deps.modelLabel,
 					entries: [...known.values()],
@@ -1206,12 +1227,22 @@ export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): 
 				declareError = resp.error;
 			}
 		}
+	} else if (lifted && stored) {
+		// 旧档整份命中（无需重问模型）：归一后落全局（剥掉旧形态的 card 字段），其余卡此后直接命中
+		const liftedDecl: PresetDeclaration = {
+			version: 1,
+			preset: stored.preset || doc.name,
+			createdAt: stored.createdAt,
+			...(stored.model ? { model: stored.model } : {}),
+			entries: [...known.values()],
+		};
+		mkdirSync(dirname(declAbs), { recursive: true });
+		writeFileSync(declAbs, JSON.stringify(liftedDecl, null, "\t"), "utf8");
 	}
 	// 转译用的声明＝留档 ＋ 未声明段按「拿不准一律留」（normalizeDeclaration 对缺项落 writing，不落盘）
 	const declaration: PresetDeclaration = {
 		version: 1,
 		preset: doc.name,
-		card: card.name,
 		createdAt: stored?.createdAt ?? new Date().toISOString(),
 		model: stored?.model ?? deps.modelLabel,
 		entries: [...known.values()],

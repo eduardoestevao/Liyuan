@@ -50,7 +50,6 @@ export interface DeclareEntry {
 export interface PresetDeclaration {
 	version: 1;
 	preset: string;
-	card: string;
 	createdAt: string;
 	/** 声明用的模型（留档；重声明会覆盖） */
 	model?: string;
@@ -95,7 +94,7 @@ const STATION_DEFINITIONS: Record<DeclareStation, string> = {
 
 export function buildDeclarePrompt(
 	pieces: DeclarePiece[],
-	meta: { preset: string; card: string },
+	meta: { preset: string },
 ): { systemPrompt: string; userText: string } {
 	const segments = pieces
 		.map(
@@ -121,7 +120,7 @@ export function buildDeclarePrompt(
 	].join("\n");
 
 	const userText = [
-		`预设「${meta.preset}」→ 卡「${meta.card}」。分段内容如下（⟦…⟧ 标记行是分度信息，不属于分段正文）：`,
+		`预设「${meta.preset}」。分段内容如下（⟦…⟧ 标记行是分度信息，不属于分段正文）：`,
 		"",
 		segments,
 	].join("\n");
@@ -341,7 +340,7 @@ export function declareTranslateReport(
 		`# 转译报告：${doc.name}（窄拆）`,
 		``,
 		`- 原文：\`${sourceFile}\`（未改动，可重新转译）`,
-		`- 日期：${declaration.createdAt}；卡：${declaration.card}${declaration.model ? `；声明模型：${declaration.model}` : ""}`,
+		`- 日期：${declaration.createdAt}${declaration.model ? `；声明模型：${declaration.model}` : ""}`,
 		`- 产物一：本卡 APPEND_SYSTEM.md（${count("append")} 条身份条目，${r.appendMarkdown.length.toLocaleString()} 字）`,
 		`- 产物二：本卡 AGENTS.md（写作条目 ${count("agents")} 条＋关闭的机制条目 ${count("disabled")} 条，共 ${r.agentsSection.length.toLocaleString()} 字；关闭条目不进送模）`,
 		`- 预设开关关着的块：${count("skipped-disabled")} 块（要它们就在预设编辑器里打开、保存、重新转译）`,
@@ -365,7 +364,7 @@ export function declareTranslateReport(
 		``,
 		`- 破限信件对原是带角色的消息（模型见「自己已答应」），转译后拍平为文件内引文，结构弱化、语义保留。`,
 		`- 停输出合约后，靠预设教模型吐状态栏/选项的卡会停止吐——梨园里这是预期行为（MVU/面板/ask 接管）；卡自带的输出格式不受影响。`,
-		`- 声明草稿留档：本目录 预设声明-*.json，可改后重新转译。`,
+		`- 声明草稿留档：assets/presets/.liyuan/预设声明-*.json（全局一份，可改后重新转译）。`,
 	];
 	return [...head, ...rows, ...tail, ""].join("\n");
 }

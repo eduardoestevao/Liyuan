@@ -1580,8 +1580,10 @@ const restHost: RestHost = {
 	},
 	async switchToCard() {
 		refreshNamesFromConfig(); // rest.ts 已写盘新 card，先让会话过滤对准新卡
-		// 换卡：装载中的预设要按新卡（宏按卡求值、声明按卡留档）重新落条目
-		await syncPresetNow();
+		// 换卡：装载中的预设要按新卡（宏按卡求值）重新落条目；声明全局留档（assets/presets/.liyuan/），
+		// 换卡不再重复问模型。后台跑，不挡切会话：链条自带串行（presetSyncChain）与跑完通知；
+		// 开场白来自卡本体，不吃预设条目，紧接着的第一拍万一赶在转译落盘前，下一拍现读即生效。
+		void syncPresetNow();
 		// 清卡缓存：换卡后列表必须按新 cardPath 重读 rp-card
 		cardCache.clear();
 		const frame = await listSessions();

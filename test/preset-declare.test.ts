@@ -62,7 +62,6 @@ test("declarePieces：排除 marker 与末条 assistant 预填，保留文档序
 test("buildDeclarePrompt：带标识符、站别判据与输出格式", () => {
 	const { systemPrompt, userText } = buildDeclarePrompt(declarePieces(assembled), {
 		preset: "测试预设",
-		card: "角色",
 	});
 	assert.match(systemPrompt, /identity/);
 	assert.match(systemPrompt, /拿不准的分段一律 writing/);
@@ -110,7 +109,6 @@ test("translatePresetWithDeclaration：逐块（预设）条目，机制段关�
 	const declaration: PresetDeclaration = {
 		version: 1,
 		preset: "测试预设",
-		card: "角色",
 		createdAt: "2026-09-12T00:00:00.000Z",
 		entries: parsed.entries,
 	};
@@ -168,7 +166,7 @@ test("translatePresetWithDeclaration：预设开关拨动后重编译，产物�
 	const parsed = parseDeclareResponse(JSON.stringify([{ id: "off", station: "writing" }]), pieces);
 	const r = translatePresetWithDeclaration(
 		doc2,
-		{ version: 1, preset: "测试预设", card: "角色", createdAt: "2026-09-12T00:00:00.000Z", entries: parsed.entries },
+		{ version: 1, preset: "测试预设", createdAt: "2026-09-12T00:00:00.000Z", entries: parsed.entries },
 		{ charName: "角色", userName: "用户" },
 	);
 	assert.match(r.agentsSection, /## 关闭的（预设）\n\n不该出现/);
