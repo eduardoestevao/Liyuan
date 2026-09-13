@@ -713,7 +713,15 @@ function BackupSection({ toast }: { toast: (level: "info" | "warning" | "error",
 	);
 }
 
-export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "error", text: string) => void }) {
+export function SettingsPanel({
+	toast,
+	onOpenAbout,
+	currentVersion,
+}: {
+	toast: (level: "info" | "warning" | "error", text: string) => void;
+	onOpenAbout?: () => void;
+	currentVersion?: string;
+}) {
 	const { data, error, loading, reload } = usePanelData(() => apiGet<{ config: RpConfigView }>("/api/config"), { cacheKey: "/api/config" });
 	const { busy, run } = useAction(toast);
 
@@ -844,6 +852,20 @@ export function SettingsPanel({ toast }: { toast: (level: "info" | "warning" | "
 						<div className="field-hint">
 							开=询问档：剧情相关（含「我该怎么办」）一律戏内，用选择卡共创；关=静默档自行推进。戏外只办系统事，不处理剧情。
 						</div>
+					</section>
+
+					<section className="sp-section">
+						<h4>关于</h4>
+						<div className="field-hint">
+							梨园 Liyuan v{currentVersion || "1.6.0"} · 基于 pi 构建的 RP Agent
+						</div>
+						{onOpenAbout && (
+							<div className="access-actions" style={{ marginTop: 6 }}>
+								<button type="button" className="drawer-btn" onClick={onOpenAbout}>
+									查看完整关于
+								</button>
+							</div>
+						)}
 					</section>
 
 					<div className="sticky-save">

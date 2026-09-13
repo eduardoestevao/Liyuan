@@ -4,6 +4,13 @@
 appId: app.rpagent.liyuan
 productName: Liyuan
 asar: false # server 子进程经 ELECTRON_RUN_AS_NODE 跑，asar 的 fs 补丁对它不生效，代码必须落普通文件
+# publish：只为生成 app-update.yml / latest*.yml（electron-updater 的检查源）。
+# 发版时把 latest.yml(win)/latest-linux.yml(linux) 随安装包一起挂上 Release——不挂则桌面端检查静默 404。
+# 只在打包机本地用（--publish never），CI 走 artifacts 手工挂载，不给 token。
+publish:
+  - provider: github
+    owner: weidu12123
+    repo: Liyuan
 directories:
   app: app # 应用目录＝stage 产物（其 package.json 即应用清单，stage 会补 main/author）
   output: dist

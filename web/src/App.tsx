@@ -63,6 +63,7 @@ import {
 	IconSend,
 	IconSessions,
 	IconSettings,
+	IconInfo,
 	IconStatus,
 	IconStop,
 	IconUploads,
@@ -101,6 +102,7 @@ import { RosterPanel } from "./components/RosterPanel.tsx";
 import { ScriptHost } from "./components/ScriptHost.tsx";
 import { SessionsPanel } from "./components/SessionsPanel.tsx";
 import { SettingsPanel } from "./components/SettingsPanel.tsx";
+import { AboutPanel } from "./components/AboutPanel.tsx";
 import { SessionStatsBar, StatusStrip } from "./components/StatusStrip.tsx";
 import { UploadsPanel } from "./components/UploadsPanel.tsx";
 import { StoreModal, WorldlinePanel } from "./components/WorldlinePanel.tsx";
@@ -151,6 +153,7 @@ type PanelId =
 	| "preset"
 	| "powers"
 	| "settings"
+	| "about"
 	| "roles"
 	| "lorebook"
 	| "roster"
@@ -168,8 +171,8 @@ const agentId = (name: string): AgentPanelId => `agent:${name}`;
  * 运行时状态，留聊天面或会话树。以后新面板往哪放照这条问，不必一事一议。
  */
 const DRAWER_SECTIONS: PanelId[] = ["roles", "connect", "preset", "lorebook", "powers", "uploads"];
-/** 抽屉可开全集＝轨位 + 轨底的设置 */
-const DRAWER_PANELS: PanelId[] = [...DRAWER_SECTIONS, "settings"];
+/** 抽屉可开全集＝轨位 + 轨底的设置与关于 */
+const DRAWER_PANELS: PanelId[] = [...DRAWER_SECTIONS, "settings", "about"];
 /** 右栏可开面板：状态栏 / 世界线 / 登场名录 / 会话树 / agent 面板（桌面端平立分栏，会话左移） */
 const RIGHT_OPENABLE: PanelId[] = ["sessions", "status", "worldline", "roster"];
 
@@ -190,6 +193,7 @@ const PANEL_LABEL: Record<PanelId, string> = {
 	preset: "提示词",
 	powers: "扩展",
 	settings: "设置",
+	about: "关于",
 	roles: "角色",
 	lorebook: "世界书",
 	roster: "登场名录",
@@ -205,6 +209,7 @@ const PANEL_ICON: Record<PanelId, (p: { size?: number }) => React.JSX.Element> =
 	preset: IconPreset,
 	powers: IconPuzzle,
 	settings: IconSettings,
+	about: IconInfo,
 	roles: IconCard,
 	lorebook: IconLorebook,
 	roster: IconRoster,
@@ -1529,7 +1534,21 @@ export default function App() {
 					</>
 				);
 			case "settings":
-				return <SettingsPanel toast={pushToast} />;
+				return (
+					<SettingsPanel
+						toast={pushToast}
+						onOpenAbout={() => openLeft("about")}
+						currentVersion={updateInfo?.currentVersion}
+					/>
+				);
+			case "about":
+				return (
+					<AboutPanel
+						update={updateInfo}
+						onOpenUpdate={() => setUpdateModalOpen(true)}
+						toast={pushToast}
+					/>
+				);
 			case "roles":
 				return (
 					<RolesPanel
@@ -1641,6 +1660,16 @@ export default function App() {
 							data-tip="设置"
 						>
 							<IconSettings size={19} />
+						</button>
+						<button
+							type="button"
+							className={`drawer-rail-btn drawer-rail-foot ${leftPanel === "about" ? "active" : ""}`}
+							onClick={() => openLeft("about")}
+							aria-label="关于"
+							aria-current={leftPanel === "about"}
+							data-tip="关于"
+						>
+							<IconInfo size={19} />
 						</button>
 					</nav>
 				)}
@@ -1775,11 +1804,8 @@ export default function App() {
 		openLeft(id);
 	};
 
-	/** 顶栏主标题：会话名 → 首句 → 兜底。欢迎态固定「新对话」（与参考物同口径） */
+	/** 顶栏主标题：当前会话与卡名 */
 	const currentSession = sessions?.find((s) => s.current);
-	const sessionTitle = welcome
-		? "新对话"
-		: currentSession?.name || currentSession?.firstMessage?.slice(0, 40) || "新对话";
 
 	return (
 		<PanelRefreshContext.Provider value={agentTick}>

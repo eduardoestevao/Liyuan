@@ -138,6 +138,16 @@ const ci = spawnSync("npm ci --omit=dev", {
 });
 if (ci.status !== 0 || ci.error) die(`npm ci 失败${ci.error ? `：${ci.error.message}` : ""}`);
 
+// electron-updater 只被桌面壳（app/main.mjs）用到，不进根 package.json（源码包用户不需要）；
+// --no-save 塞进 app/node_modules，不动 lock——与 desktop/package.json devDeps 钉同一版本
+const upd = spawnSync("npm install electron-updater@^6.8.0 --omit=dev --no-save --no-package-lock", {
+	cwd: appDir,
+	stdio: "inherit",
+	shell: true,
+});
+if (upd.status !== 0 || upd.error) die(`electron-updater 安装失败${upd.error ? `：${upd.error.message}` : ""}`);
+log("electron-updater → app/node_modules（桌面壳自动更新）");
+
 // file: 依赖是符号链接 → 替换为实体拷贝（目标必须落在 app/packages 内）
 const scope = path.join(appDir, "node_modules", "@liyuan");
 if (fs.existsSync(scope)) {
@@ -159,6 +169,9 @@ if (fs.existsSync(scope)) {
 	const appPkg = JSON.parse(fs.readFileSync(appPkgPath, "utf8"));
 	appPkg.main = "main.mjs";
 	appPkg.author ??= { name: "weidu12123" };
+	// 打包器按依赖图修剪 node_modules：只在磁盘上放 electron-updater 不够（--no-save 不进清单，
+	// 会被当 extraneous 剔出产品树——9/13 实弹踩过），必须在这里显式声明才会保留
+	appPkg.dependencies = { ...appPkg.dependencies, "electron-updater": "^6.8.0" };
 	fs.writeFileSync(appPkgPath, `${JSON.stringify(appPkg, null, "\t")}\n`, "utf8");
 }
 
@@ -180,6 +193,7 @@ const mustExist = [
 	"node_modules/ws",
 	"node_modules/jiti",
 	"node_modules/@modelcontextprotocol/sdk",
+	"node_modules/electron-updater",
 	"node_modules/@liyuan/agent-runtime/package.json",
 ];
 for (const rel of mustExist) {

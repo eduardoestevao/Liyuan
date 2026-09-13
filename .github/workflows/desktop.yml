@@ -61,6 +61,7 @@ jobs:
             desktop/dist/*.exe
             desktop/dist/*.dmg
             desktop/dist/*.AppImage
+            desktop/dist/latest*.yml
           if-no-files-found: error
 
   # AppImage 冒烟：干净数据根 + env 指定端口，起真窗口（xvfb）探活
@@ -86,6 +87,7 @@ jobs:
           chmod +x dist/Liyuan-*-linux-desktop.AppImage
           export LIYUAN_DESKTOP_DATA_ROOT="$HOME/liyuan-smoke-data"
           export PORT=7650
+          export LIYUAN_UPDATE_OFF=1 # 冒烟环境不做更新检查/下载
           xvfb-run -a dist/Liyuan-*-linux-desktop.AppImage --appimage-extract-and-run &
           APP_PID=$!
           for i in $(seq 1 90); do

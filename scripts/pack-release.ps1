@@ -184,6 +184,8 @@ function Stage-Clean {
     "scratch", "summaries", "output", "persist",
     "ab-test", "import-test", "liyuan-profiles",
     "data",
+    # 桌面版为独立 Electron 封装（构建产物 app/dist/node_modules），源码包不包含
+    "desktop",
     # 卡＝工作空间：cards/<卡文件夹>/ 整棵是用户私有数据（卡本体 + 卡级配置 +
     # 每个子项目的会话/账本/世界线）。漏掉这一行 = 把用户的卡打进公开发布包。
     "cards",
@@ -232,15 +234,15 @@ function Stage-Clean {
 
   # Keep only Liyuan default_* sample cards (never ship ST/community demo packs
   # like Seraphina/Eldoria, nor personal Chinese test cards).
-  $cards = Join-Path $dest "assets\cards"
-  if (Test-Path $cards) {
-    Get-ChildItem $cards -File | Where-Object {
-      $_.Name -notmatch '^default_'
-    } | Remove-Item -Force -ErrorAction SilentlyContinue
-    # Explicitly drop ST leftovers if someone drops them back as default_*
-    Get-ChildItem $cards -File | Where-Object {
-      $_.Name -match '(?i)seraphina'
-    } | Remove-Item -Force -ErrorAction SilentlyContinue
+  # NOTE: /XD cards matches directory names anywhere and also excludes assets/cards.
+  # Explicitly restore default_* sample cards into assets/cards.
+  $cardsSrc = Join-Path $prod "assets\cards"
+  $cardsDst = Join-Path $dest "assets\cards"
+  New-Item -ItemType Directory -Force -Path $cardsDst | Out-Null
+  if (Test-Path $cardsSrc) {
+    Get-ChildItem $cardsSrc -File | Where-Object {
+      $_.Name -match '^default_' -and $_.Name -notmatch '(?i)seraphina'
+    } | Copy-Item -Destination $cardsDst -Force
   }
   # Standalone lorebooks: strip all (Qingwu embeds its own character_book)
   $lore = Join-Path $dest "assets\lorebooks"
@@ -344,12 +346,13 @@ skip_dirs = {
   '.liyuan-media', '.liyuan-memory', '.liyuan-skills', '.liyuan-state',
   '.liyuan-uploads', '.liyuan-audio', '.liyuan-worldline',
   '.rp-media', '.rp-uploads',
-  'cards'
+  'desktop'
 }
 exec_names = {'start.sh', 'start.command', 'install.sh', 'docker-entrypoint.sh'}
 with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
     for root, dirs, files in os.walk(stage):
-        dirs[:] = [d for d in dirs if d not in skip_dirs]
+        # Only exclude root-level cards/ (user workspaces); assets/cards holds default demo cards
+        dirs[:] = [d for d in dirs if not (Path(root) == stage and d == 'cards') and d not in skip_dirs]
         for f in files:
             if f.endswith(('.log', '.bak', '.tsbuildinfo')):
                 continue
@@ -396,6 +399,8 @@ if not any(n.endswith('.liyuan/extensions/roleplay.ts') for n in names):
     errors.append('MISSING .liyuan/extensions/roleplay.ts (RP layer would not load)')
 if not any(n.endswith('server/mcp/vision-server.mjs') for n in names):
     errors.append('MISSING server/mcp/vision-server.mjs (builtin vision MCP would not ship)')
+if not any(n.endswith('assets/cards/default_Qingwu.json') for n in names):
+    errors.append('MISSING assets/cards/default_Qingwu.json (default demo card missing)')
 catalogs = []
 for kind in ('src', 'dist'):
     prefix = f'Liyuan/packages/ai/{kind}/providers/data/'

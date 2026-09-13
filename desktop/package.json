@@ -1,7 +1,7 @@
 {
 	"name": "liyuan-desktop",
 	"private": true,
-	"version": "1.5.4",
+	"version": "1.6.0",
 	"description": "梨园桌面版封装（Electron 壳；产品代码由 scripts/stage-desktop.mjs 装入 app/）",
 	"main": "main.mjs",
 	"scripts": {
@@ -13,6 +13,7 @@
 	},
 	"devDependencies": {
 		"electron": "^44.3.0",
-		"electron-builder": "^26.15.3"
+		"electron-builder": "^26.15.3",
+		"electron-updater": "^6.8.0"
 	}
 }

@@ -8074,3 +8074,122 @@ label.drawer-btn {
 		background: var(--bg);
 	}
 }
+
+/* ── 关于面板（AboutPanel） ── */
+.about-panel-body {
+	padding: 16px;
+}
+.about-hero {
+	display: flex;
+	align-items: center;
+	gap: 14px;
+	padding: 16px 14px;
+	background: var(--surface-dim);
+	border: 1px solid var(--hairline);
+	border-radius: var(--radius);
+	margin-bottom: 20px;
+}
+.about-hero-logo {
+	flex: none;
+	border-radius: 12px;
+	box-shadow: var(--shadow-1);
+}
+.about-hero-text {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+	min-width: 0;
+}
+.about-hero-title {
+	margin: 0;
+	font-family: var(--font-serif);
+	font-size: 17px;
+	font-weight: 600;
+	color: var(--text-strong);
+	letter-spacing: 0.04em;
+}
+.about-hero-tagline {
+	font-size: 12px;
+	color: var(--text-soft);
+	line-height: 1.45;
+}
+.about-status-grid {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+	margin-bottom: 10px;
+}
+.about-status-row {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	font-size: 13px;
+}
+.about-label {
+	color: var(--text-soft);
+}
+.about-val {
+	color: var(--text-strong);
+	font-weight: 500;
+}
+.about-ver-tag {
+	font-family: var(--font-mono, monospace);
+	font-weight: 600;
+	color: var(--accent);
+	background: var(--accent-wash);
+	padding: 1px 8px;
+	border-radius: 999px;
+	font-size: 12px;
+}
+.about-update-box {
+	background: var(--surface-dim);
+	border: 1px solid var(--hairline);
+	border-radius: 8px;
+	padding: 10px 12px;
+}
+.about-update-latest {
+	display: flex;
+	align-items: center;
+	gap: 6px;
+	font-size: 12.5px;
+	color: var(--ok, #2e7d32);
+}
+.about-check-icon {
+	flex: none;
+}
+.about-update-alert {
+	display: flex;
+	justify-content: space-between;
+	align-items: center;
+	gap: 8px;
+	font-size: 12.5px;
+	color: var(--accent);
+}
+.about-update-msg {
+	min-width: 0;
+}
+.about-license-block {
+	font-size: 12.5px;
+	color: var(--text-soft);
+	line-height: 1.6;
+	background: var(--surface-dim);
+	border-radius: 6px;
+	padding: 10px 12px;
+	border: 1px solid var(--hairline);
+}
+.about-license-block a {
+	color: var(--accent);
+	text-decoration: underline;
+	text-underline-offset: 3px;
+}
+.about-links-row {
+	display: flex;
+	flex-wrap: wrap;
+	gap: 8px;
+}
+.about-link-btn {
+	text-decoration: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+}

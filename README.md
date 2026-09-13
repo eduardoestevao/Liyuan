@@ -3,6 +3,8 @@
 **基于 pi 构建的 RP Agent**  
 Liyuan is an RP Agent built on pi, designed to bring coding agent capabilities into role-playing.
 
+📖 **[使用文档](https://docs.liyuan.pro)** · 🚀 **[下载发布版](https://github.com/weidu12123/Liyuan/releases)**
+
 ![梨园主界面](docs/images/home.png)
 
 ---
@@ -59,6 +61,8 @@ Liyuan is an RP Agent built on pi, designed to bring coding agent capabilities i
 ---
 
 ## 快速开始
+
+> 完整图文上手与界面详解请参阅 **[梨园使用文档 (docs.liyuan.pro)](https://docs.liyuan.pro)**。
 
 ### 环境要求
 - **Node.js ≥ 22**

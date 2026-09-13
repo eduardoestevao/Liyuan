@@ -158,7 +158,9 @@ function portInUse(port) {
 		const srv = net.createServer();
 		srv.once("error", () => resolve(true));
 		srv.once("listening", () => srv.close(() => resolve(false)));
-		srv.listen(port);
+		// 显式绑 0.0.0.0：与 server 的绑定族一致。不写 host 会绑 ::（IPv6），
+		// Windows 上 IPv4:port 被占时 :: 仍可能绑定成功 → 误判空闲 → server 起来就 EADDRINUSE
+		srv.listen(port, "0.0.0.0");
 	});
 }
 
@@ -324,18 +326,128 @@ async function changeDataRoot() {
 
 const serverUrl = () => `http://127.0.0.1:${serverPort}/`;
 
+// ---------- 自动更新（electron-updater；docs/PLAN-DESKTOP.md §更新） ----------
+// 只有两类形态启用：win NSIS 安装版（exe 同目录有卸载器）与 linux AppImage。
+// mac 未签名（Squirrel 拒绝替换签名不一致的 app）、win 便携 zip（解压运行无安装器语义）不启用——菜单指路发布页。
+// LIYUAN_UPDATE_URL：把更新源指到自建/镜像（generic provider，目录下放 latest*.yml 与安装包）。
+// LIYUAN_UPDATE_OFF=1：全关（冒烟环境用）。
+const RELEASES_URL = "https://github.com/weidu12123/Liyuan/releases/latest";
+let autoUpdater = null;
+let manualCheck = false; // 菜单手动触发：结果（含失败）要弹框；启动自动检查全程静默
+
+async function setupAutoUpdate() {
+	if (process.env.LIYUAN_UPDATE_OFF === "1") return;
+	if (process.platform === "darwin") return; // 未签名，自动更新必败
+	if (process.platform === "win32" && !fs.existsSync(path.join(path.dirname(process.execPath), "Uninstall Liyuan.exe"))) {
+		return; // 便携 zip 解压形态：没有卸载器，静默装会把用户「升级」成安装版，不干
+	}
+	if (process.platform === "linux" && !process.env.APPIMAGE) return;
+	try {
+		const mod = await import("electron-updater");
+		autoUpdater = mod.autoUpdater ?? mod.default?.autoUpdater ?? null;
+	} catch {
+		return; // 装载失败（形态异常等）：菜单回落指路，绝不影响启动
+	}
+	if (!autoUpdater) return;
+	autoUpdater.autoDownload = true; // 发现新版后台静默下载，不打扰；就绪后才询问安装
+	autoUpdater.autoInstallOnAppQuit = false; // 只有点「重启并安装」才装，退出时不偷装
+	if (process.env.LIYUAN_UPDATE_URL)
+		autoUpdater.setFeedURL({ provider: "generic", url: process.env.LIYUAN_UPDATE_URL });
+	autoUpdater.on("update-not-available", () => {
+		if (manualCheck) {
+			manualCheck = false;
+			void dialog.showMessageBox({
+				type: "info",
+				title: "梨园",
+				message: `已是最新版本（v${app.getVersion()}）。`,
+				buttons: ["好"],
+			});
+		}
+	});
+	autoUpdater.on("update-downloaded", (info) => {
+		const choice = dialog.showMessageBoxSync({
+			type: "question",
+			title: "梨园更新",
+			message: `新版本 v${info.version} 已下载就绪。`,
+			detail: `当前 v${app.getVersion()}。重启并安装大约需要几秒。\n角色卡、会话与配置都在数据目录，不受影响。`,
+			buttons: ["重启并安装", "以后再说"],
+			defaultId: 0,
+			cancelId: 1,
+		});
+		if (choice === 0) {
+			killServer(); // NSIS 要覆盖的文件正被 server 子进程占用（同一 exe 二进制）
+			autoUpdater.quitAndInstall(true, true);
+		}
+	});
+	autoUpdater.on("error", (err) => {
+		if (manualCheck) {
+			manualCheck = false;
+			void dialog.showMessageBox({
+				type: "warning",
+				title: "梨园",
+				message: "检查更新失败。",
+				detail: `${err instanceof Error ? err.message : String(err)}\n\n也可以到发布页手动下载新版。`,
+				buttons: ["好"],
+			});
+		}
+		// 自动检查静默失败：网络不通是常态，不弹窗
+	});
+	// 启动后延迟检查：错开冷启动（起服务、播种、首窗）的高峰
+	setTimeout(() => {
+		void autoUpdater.checkForUpdates().catch(() => {});
+	}, 15_000);
+}
+
+/** 菜单入口：启用态走真检查，未启用形态指路发布页 */
+function checkUpdates() {
+	if (!autoUpdater) return void shell.openExternal(RELEASES_URL);
+	manualCheck = true;
+	void autoUpdater.checkForUpdates().catch(() => {});
+}
+
 // ---------- 窗口与菜单 ----------
 
 let win = null;
 
-const SPLASH =
-	"data:text/html;charset=utf-8," +
-	encodeURIComponent(
-		`<!doctype html><meta charset="utf-8"><title>梨园</title>` +
-			`<style>html,body{margin:0;height:100%;background:#141312;color:#c9b8a6;font:16px/1.8 system-ui,sans-serif}` +
-			`main{height:100%;display:grid;place-items:center}</style>` +
-			`<main><div>梨园启动中…</div></main>`,
-	);
+function buildSplash() {
+	let logoSrc = "";
+	try {
+		const p = path.join(productRoot, "web", "dist", "logo-128.png");
+		if (fs.existsSync(p)) {
+			logoSrc = `data:image/png;base64,${fs.readFileSync(p).toString("base64")}`;
+		}
+	} catch {}
+	// 兜底 SVG：若万一未找到文件，保持相同尺寸与梨园朱砂花造型
+	if (!logoSrc) {
+		logoSrc =
+			"data:image/svg+xml," +
+			encodeURIComponent(
+				`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="none">` +
+					`<rect width="64" height="64" rx="14" fill="#1e1a18"/>` +
+					`<path d="M32 10c-1 8-8 12-8 20 0 6 4 10 8 12 4-2 8-6 8-12 0-8-7-12-8-20z" fill="#c4bbb1"/>` +
+					`<path d="M22 42c4 6 10 8 10 8s6-2 10-8" stroke="#e25a3c" stroke-width="2.5" stroke-linecap="round"/>` +
+					`</svg>`,
+			);
+	}
+	const html =
+		`<!doctype html><html lang="zh-CN"><head><meta charset="utf-8"><title>梨园</title>` +
+		`<style>` +
+		`*{box-sizing:border-box;margin:0;padding:0}` +
+		`html,body{width:100%;height:100%;overflow:hidden;background:#141110;color:#c4bbb1;` +
+		`font-family:-apple-system,BlinkMacSystemFont,"PingFang SC","HarmonyOS Sans SC","Microsoft YaHei","Noto Sans SC",sans-serif;` +
+		`-webkit-user-select:none;user-select:none}` +
+		`.splash{height:100%;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:22px}` +
+		`.splash-logo{width:80px;height:80px;border-radius:18px;box-shadow:0 8px 32px rgba(0,0,0,0.45),0 2px 8px rgba(0,0,0,0.3);display:block}` +
+		`.splash-loading{display:flex;align-items:center;gap:9px;font-size:13px;letter-spacing:0.18em;color:#9a9188}` +
+		`.splash-dot{width:6px;height:6px;border-radius:50%;background:#e25a3c;animation:splash-pulse 1.8s ease-in-out infinite}` +
+		`@keyframes splash-pulse{0%,100%{opacity:0.3;transform:scale(0.85)}50%{opacity:1;transform:scale(1.15);box-shadow:0 0 8px rgba(226,90,60,0.6)}}` +
+		`</style></head>` +
+		`<body><main class="splash">` +
+		`<img class="splash-logo" src="${logoSrc}" alt="梨园" />` +
+		`<div class="splash-loading"><span class="splash-dot"></span><span>加载中…</span></div>` +
+		`</main></body></html>`;
+	return "data:text/html;charset=utf-8," + encodeURIComponent(html);
+}
 
 function createWindow() {
 	win = new BrowserWindow({
@@ -343,11 +455,11 @@ function createWindow() {
 		height: 820,
 		minWidth: 940,
 		minHeight: 600,
-		backgroundColor: "#141312",
+		backgroundColor: "#141110",
 		title: "梨园",
 		autoHideMenuBar: true, // 菜单栏默认隐藏（Alt 呼出）——2026-09-12 用户反馈
 	});
-	win.loadURL(SPLASH);
+	win.loadURL(buildSplash());
 	win.on("closed", () => {
 		win = null;
 	});
@@ -386,8 +498,8 @@ function buildMenu() {
 			label: "帮助",
 			submenu: [
 				{
-					label: "检查更新（GitHub Releases）",
-					click: () => void shell.openExternal("https://github.com/weidu12123/Liyuan/releases/latest"),
+					label: "检查更新…",
+					click: () => checkUpdates(),
 				},
 				{
 					label: "关于",
@@ -419,6 +531,7 @@ async function bootstrap() {
 	dataRootResolved = dataRoot;
 	seedDataRoot(dataRoot);
 	buildMenu();
+	void setupAutoUpdate();
 	try {
 		serverPort = await pickPort();
 		spawnServer(dataRoot);
