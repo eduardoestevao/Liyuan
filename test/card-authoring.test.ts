@@ -1,11 +1,11 @@
 import assert from "node:assert/strict";
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import test, { type TestContext } from "node:test";
 import {
 	applyCardProject, buildCardProject, inspectCardProject, prepareCardProject,
-	previewCardProject, readCardResource, undoCardProject, writeCardResource,
+	previewCardProject, readCardResource, setCardCover, undoCardProject, writeCardResource,
 } from "../src/card-authoring.ts";
 import { exportCardFile, loadCardFile, minimalPngBuffer, readCardJsonFromPng, readCardRawJson, writeCardJsonToPng } from "../src/card.ts";
 import { collectActiveLoreForExport } from "../server/rest.ts";
@@ -73,6 +73,44 @@ for (const png of [false, true]) test("工程往返与局部修改保真：" + (
 	const afterUndo = undoCardProject(cwd, card);
 	assert.deepEqual(readFileSync(card), originalBytes);
 	assert.ok(afterUndo.resources.find(r => r.id === entry.id)?.changed, "撤回应用仍保留创作稿");
+});
+
+test("JSON 卡封面走侧挂：应用落同名 .png，撤回整张恢复，导出 PNG 拿它当壳", t => {
+	// 序列一：无旧侧挂 → 设封面 → 应用 → 撤回（侧挂随之移除）；导出用侧挂当壳
+	{
+		const { cwd, card } = project(t);
+		const sidecar = join(dirname(card), "card.png");
+		prepareCardProject(cwd, card);
+		const coverA = minimalPngBuffer();
+		const st = setCardCover(cwd, card, coverA.toString("base64"));
+		assert.equal(st.changes.cover, true, "封面改动进账本");
+		assert.ok(!existsSync(sidecar), "应用前侧挂不落盘");
+		applyCardProject(cwd, card, buildCardProject(cwd, card).hash);
+		assert.ok(existsSync(sidecar));
+		assert.deepEqual(readFileSync(sidecar), coverA);
+		assert.deepEqual(JSON.parse(readFileSync(card, "utf8")).data.name, "工程测试", "卡本体不被嵌图");
+		// 导出 PNG：壳换成侧挂，卡数据完整可读回
+		const withCover = exportCardFile(card, { format: "png", loreMode: "embedded" });
+		assert.deepEqual(readCardJsonFromPng(withCover.body), JSON.parse(readFileSync(card, "utf8")));
+		undoCardProject(cwd, card);
+		assert.ok(!existsSync(sidecar), "应用前没有侧挂，撤回就清掉后落的");
+	}
+	// 序列二：已有侧挂（上轮应用落的）→ 换封面 → 应用 → 撤回恢复上一张
+	{
+		const { cwd, card } = project(t);
+		const sidecar = join(dirname(card), "card.png");
+		prepareCardProject(cwd, card);
+		const coverA = minimalPngBuffer();
+		const coverB = Buffer.concat([minimalPngBuffer(), Buffer.from("v2")]);
+		setCardCover(cwd, card, coverA.toString("base64"));
+		applyCardProject(cwd, card, buildCardProject(cwd, card).hash);
+		assert.deepEqual(readFileSync(sidecar), coverA);
+		setCardCover(cwd, card, coverB.toString("base64"));
+		applyCardProject(cwd, card, buildCardProject(cwd, card).hash);
+		assert.deepEqual(readFileSync(sidecar), coverB);
+		undoCardProject(cwd, card);
+		assert.deepEqual(readFileSync(sidecar), coverA, "撤回恢复到上次应用前的侧挂");
+	}
 });
 
 test("过期资源、构建与外部原卡修改都不能覆盖新内容", t => {

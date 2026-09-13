@@ -7,12 +7,20 @@
  * - 角色卡存放在 keyword 为 "ccv3"（V3）或 "chara"（V2/V1）的 tEXt 中，text 为 base64(JSON)
  */
 
-import { readFileSync, writeFileSync } from "node:fs";
+import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import type { CharacterCard, LorebookEntry } from "./types.ts";
 import { normalizeEntries } from "./lorebook.ts";
 export { applyMacros } from "./card-macros.ts";
 
 const PNG_SIGNATURE = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);
+
+/**
+ * JSON 卡的侧挂封面路径：卡本体同目录同名 `.png`（裸图，不含卡数据）。
+ * 这是 JSON 卡封面的唯一寻址规则（工坊应用落盘、图片端点回落、导出当壳、删卡清理共用）。
+ * 不进卡库：裸图解析不出卡名，`listCardLibrary` 按「非角色卡」跳过；卡文件夹内
+ * `cardFileIn` 字典序 `.json` 先于 `.png`，卡本体身份不受影响。
+ */
+export const coverSidecarOf = (cardPath: string): string => cardPath.replace(/\.json$/i, ".png");
 
 /** 从 PNG buffer 中提取全部 tEXt 键值对 */
 export function extractPngTextChunks(buf: Buffer): Record<string, string> {
@@ -526,7 +534,13 @@ export function exportCardFile(
 
 	const buf = readFileSync(path);
 	const isPng = buf.length >= 8 && buf.subarray(0, 8).equals(PNG_SIGNATURE);
-	const base = isPng ? buf : minimalPngBuffer();
+	// JSON 卡导出 PNG：有侧挂封面就拿它当壳（替掉占位图），封面跟着导出走
+	let base: Buffer;
+	if (isPng) base = buf;
+	else {
+		const sidecar = coverSidecarOf(path);
+		base = existsSync(sidecar) ? readFileSync(sidecar) : minimalPngBuffer();
+	}
 	const png = writeCardJsonToPng(base, json);
 	return {
 		filename: `${safeName}.png`,

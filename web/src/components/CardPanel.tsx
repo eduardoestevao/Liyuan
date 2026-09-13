@@ -401,7 +401,9 @@ function CardDetail({
 				<>
 					<section className="sp-section">
 						<div className="card-hero">
-							{libItem?.isPng && <img className="card-hero-img" src={cardImgUrl(libItem.path)} alt={data.name} />}
+							{(libItem?.isPng || libItem?.hasCover) && (
+								<img className="card-hero-img" src={cardImgUrl(libItem.path)} alt={data.name} />
+							)}
 							<div className="card-hero-info">
 								<div className="model-current">{data.name}</div>
 								{data.displayName && <div className="field-hint">显示名：{data.displayName}</div>}
@@ -511,7 +513,7 @@ function CardItem({
 				title={current ? "当前使用中（点击进详情）" : `切换到「${c.name}」并打开详情`}
 				onClick={() => onPick(c)}
 			>
-				{c.isPng ? (
+				{c.isPng || c.hasCover ? (
 					<img className="card-thumb" src={cardImgUrl(c.path)} alt={c.name} loading="lazy" />
 				) : (
 					<span className="card-thumb card-thumb-json">JSON</span>
@@ -915,7 +917,7 @@ export function CardPanel({
 								}}
 								title="打开当前卡详情并进入对话"
 							>
-								{currentLibItem.isPng ? (
+								{currentLibItem.isPng || currentLibItem.hasCover ? (
 									<img className="card-thumb" src={cardImgUrl(currentLibItem.path)} alt={currentLibItem.name} />
 								) : (
 									<span className="card-thumb card-thumb-json">JSON</span>

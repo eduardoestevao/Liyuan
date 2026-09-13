@@ -8,7 +8,7 @@ import { existsSync, mkdirSync, readdirSync, readFileSync, realpathSync, renameS
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { spawnSync } from "node:child_process";
 import { Script } from "node:vm";
-import { normalizeCard, readCardRawBuffer, readCardRawJson, writeCardJsonToPng } from "./card.ts";
+import { coverSidecarOf, normalizeCard, readCardRawBuffer, readCardRawJson, writeCardJsonToPng } from "./card.ts";
 import { resolveCardSpace } from "./cardspace.ts";
 import { CARD_AUTHORING_DIR, dir, insidePath as inside } from "./paths.ts";
 import { buildCardFrontSnapshot } from "./cardfront.ts";
@@ -342,7 +342,6 @@ export function applyCardProject(cwd: string, cardPath: string, expectedBuild: s
 	if (cardSourceHash(previous) !== m.base) throw new Error("原卡已被其他操作修改，未覆盖；请保留创作稿并重新同步（rebase）");
 	if (!buildHasChanges(build)) return inspectCardProject(cwd, cardPath);
 	const { isPng } = loadSnapshot(root, m.base);
-	if (changes.cover && !isPng) throw new Error("JSON 卡没有封面，请先清除封面改动");
 	const shell = changes.cover ? readFileSync(coverFile(root, changes.cover)) : previous;
 	const next = isPng ? writeCardJsonToPng(shell, build.raw) : Buffer.from(JSON.stringify(build.raw, null, "\t") + "\n");
 	const hash = saveSnapshot(root, next);
@@ -351,11 +350,31 @@ export function applyCardProject(cwd: string, cardPath: string, expectedBuild: s
 	const drafts: Record<string, string> = {};
 	for (const r of draftResources(root, view, true)) if (r.changed && !r.removed) drafts[r.id] = readFileSync(guardedPath(root, r.file), "utf8");
 	atomicWrite(undoFile(root), JSON.stringify(drafts));
+	// JSON 卡的封面＝侧挂文件（卡数据不嵌图）。应用前先把旧侧挂状态存档，撤回按它整张恢复
+	const sidecar = isPng ? null : coverSidecarOf(cardPath);
+	if (sidecar) {
+		const existed = existsSync(sidecar);
+		if (existed) writeFileSync(guardedPath(root, "undo-cover.png"), readFileSync(sidecar));
+		else if (existsSync(guardedPath(root, "undo-cover.png"))) unlinkSync(guardedPath(root, "undo-cover.png"));
+		atomicWrite(guardedPath(root, "undo-cover.json"), JSON.stringify({ existed }));
+	}
 	atomicWrite(cardPath, next);
+	const restoreSidecar = () => {
+		if (!sidecar) return;
+		const meta = guardedPath(root, "undo-cover.json");
+		if (!existsSync(meta)) return;
+		const { existed } = JSON.parse(readFileSync(meta, "utf8")) as { existed?: boolean };
+		const saved = guardedPath(root, "undo-cover.png");
+		if (existed && existsSync(saved)) atomicWrite(sidecar, readFileSync(saved));
+		else if (existsSync(sidecar)) unlinkSync(sidecar);
+	};
 	try {
+		// 新侧挂只在真有封面改动时落盘（无改动不动用户既有的侧挂）
+		if (sidecar && changes.cover) atomicWrite(sidecar, shell);
 		saveManifest(root, { version: 1, original: m.original, base: hash, previous: m.base, previousChanges: changes });
 	} catch (error) {
 		atomicWrite(cardPath, previous);
+		restoreSidecar();
 		throw error;
 	}
 	saveChanges(root, emptyChanges());
@@ -375,6 +394,17 @@ export function undoCardProject(cwd: string, cardPath: string): CardProjectStatu
 	const previous = loadSnapshot(root, m.previous);
 	const drafts = existsSync(undoFile(root)) ? JSON.parse(readFileSync(undoFile(root), "utf8")) as Record<string, string> : {};
 	atomicWrite(cardPath, previous.bytes);
+	// JSON 卡撤回：侧挂封面一并回到应用前（存档在时还原图，不在时移除后落的）
+	if (!previous.isPng) {
+		const sidecar = coverSidecarOf(cardPath);
+		const meta = guardedPath(root, "undo-cover.json");
+		if (existsSync(meta)) {
+			const { existed } = JSON.parse(readFileSync(meta, "utf8")) as { existed?: boolean };
+			const saved = guardedPath(root, "undo-cover.png");
+			if (existed && existsSync(saved)) atomicWrite(sidecar, readFileSync(saved));
+			else if (existsSync(sidecar)) unlinkSync(sidecar);
+		}
+	}
 	try {
 		saveManifest(root, { version: 1, original: m.original, base: m.previous });
 	} catch (error) {
@@ -385,6 +415,7 @@ export function undoCardProject(cwd: string, cardPath: string): CardProjectStatu
 	saveChanges(root, changes);
 	materializeSources(root, draftView(previous.raw, changes).raw, drafts);
 	if (existsSync(undoFile(root))) unlinkSync(undoFile(root));
+	for (const f of [guardedPath(root, "undo-cover.json"), guardedPath(root, "undo-cover.png")]) if (existsSync(f)) unlinkSync(f);
 	return inspectCardProject(cwd, cardPath);
 }
 
@@ -517,13 +548,12 @@ export function setCardMeta(cwd: string, cardPath: string, key: string, fields: 
 	return { item: outlineItem(cwd, cardPath, key), status: inspectCardProject(cwd, cardPath) };
 }
 
-/** 换封面：只换 PNG 图像，卡数据在应用时写回；传空清除。 */
+/** 换封面：PNG 卡换内嵌图像，JSON 卡落到侧挂文件（同名 .png），都在应用时写盘；传空清除。 */
 export function setCardCover(cwd: string, cardPath: string, data: string | null) {
 	const root = cardAuthoringDirectory(cwd, cardPath);
 	requirePrepared(root);
 	const changes = loadChanges(root);
 	if (data === null) { delete changes.cover; saveChanges(root, changes); return inspectCardProject(cwd, cardPath); }
-	if (!loadSnapshot(root, loadManifest(root).base).isPng) throw new Error("JSON 卡没有封面");
 	const bytes = Buffer.from(data, "base64");
 	if (bytes.length < 8 || !bytes.subarray(0, 8).equals(PNG_SIGNATURE)) throw new Error("封面必须是 PNG");
 	const hash = cardSourceHash(bytes);

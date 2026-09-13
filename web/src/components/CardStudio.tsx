@@ -26,7 +26,7 @@ interface SectionMeta {
 
 const SECTIONS: SectionMeta[] = [
 	{ code: "00", id: "settings", num: "00", title: "作品设置", desc: "这里只保留整张角色卡共用的信息。具体内容从创作目录进入对应部分完成。" },
-	{ code: "01", id: "settings", num: "01", title: "角色设定", desc: "设定主角的性格生境、外貌特征、处境场景与对话示范。" },
+	{ code: "01", id: "settings", num: "01", title: "世界与角色设定", desc: "这张卡是一个角色还是一个世界，都从这里写：世界观与规则系统、核心角色的性格处境与对话示范。" },
 	{ code: "02", id: "lore-knowledge", num: "02", title: "世界书与设定集", desc: "管理角色卡自带的世界书设定条目，支持常驻规则与关键词触发设定。" },
 	{ code: "03", id: "rules", num: "03", title: "创作与系统规则", desc: "直接约束模型输出的系统级提示词与末端指令。" },
 	{ code: "04", id: "greetings", num: "04", title: "第一条消息与开场分支", desc: "第一条消息是故事的起点。可配置默认开场白与多个备选分支。" },
@@ -130,6 +130,8 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	// 本地封面文件预览 URL
 	const [customCoverUrl, setCustomCoverUrl] = useState<string | null>(null);
+	/** 卡图 URL 加载失败（JSON 卡还没侧挂封面）→ 显示占位而不是碎图 */
+	const [coverBroken, setCoverBroken] = useState(false);
 	const fileInputRef = useRef<HTMLInputElement>(null);
 
 	// 测试预览弹层与预览壳上报的事件
@@ -158,6 +160,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 
 	const cardPath = cardInfo?.path ?? "";
 	const coverUrl = customCoverUrl || (status?.changes.cover ? `/api/card/authoring/cover?v=${status.version}` : cardPath ? `/api/cards/image?path=${encodeURIComponent(cardPath)}` : null);
+	useEffect(() => { setCoverBroken(false); }, [coverUrl]);
 
 	const operation = <T,>(args: Record<string, unknown>) =>
 		apiPost<T>("/api/card/authoring", { ...args, card: cardPath });
@@ -423,8 +426,8 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 						封面立绘
 					</div>
 					<div className="cs-cover-placeholder">
-						{coverUrl ? (
-							<img src={coverUrl} alt="封面" className="cs-cover-img" />
+						{coverUrl && !coverBroken ? (
+							<img src={coverUrl} alt="封面" className="cs-cover-img" onError={() => setCoverBroken(true)} />
 						) : (
 							<>
 								<span style={{ fontSize: 24 }}>🖼️</span>
@@ -434,7 +437,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 					</div>
 					<div style={{ fontSize: 13, fontWeight: 600, color: "var(--text-strong)" }}>角色卡图片</div>
 					<div className="cs-cover-desc">
-						{status?.changes.cover ? "已选新封面，随「应用」写入角色卡；只换图像，卡数据不动。" : "选择 PNG 图像后进入创作稿，随「应用」写入角色卡。"}
+						{status?.changes.cover ? "已选新封面，随「应用」写入角色卡；只换图像，卡数据不动。" : "选择 PNG 图像后进入创作稿，随「应用」写入（PNG 卡换内嵌图，JSON 卡落侧挂文件）。"}
 					</div>
 					<input
 						ref={fileInputRef}
@@ -556,7 +559,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			);
 		};
 
-		// 01 角色设定 (Personality / Scenario / Mes Example)
+		// 01 世界与角色设定 (Personality / Scenario / Mes Example / Creator Notes)
 	const renderSection01 = () => {
 		const persRes = findResource("personality");
 		const scenRes = findResource("scenario");
@@ -572,7 +575,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 			<div style={{ display: "flex", flexDirection: "column", gap: 20 }}>
 				<div className="cs-card">
 					<div className="cs-field">
-						<label className="cs-label">性格与特征 (Personality)</label>
+						<label className="cs-label">核心设定 (Personality)</label>
 						<textarea
 							className="cs-textarea"
 							rows={5}
@@ -580,11 +583,11 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 							onChange={(e) => {
 								if (persRes) setDrafts((d) => ({ ...d, [persRes.id]: e.target.value }));
 							}}
-							placeholder="描述角色的性情、行为风格、语气口吻与价值观..."
+							placeholder="角色的性情作风，或这张卡的核心设定：世界观、规则系统、力量体系..."
 						/>
 					</div>
 					<div className="cs-field">
-						<label className="cs-label">场景与处境 (Scenario)</label>
+						<label className="cs-label">世界与处境 (Scenario)</label>
 						<textarea
 							className="cs-textarea"
 							rows={4}
@@ -592,7 +595,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 							onChange={(e) => {
 								if (scenRes) setDrafts((d) => ({ ...d, [scenRes.id]: e.target.value }));
 							}}
-							placeholder="描述故事的初始处境、当前背景与互动条件..."
+							placeholder="故事发生的舞台：世界格局、初始处境、互动条件..."
 						/>
 					</div>
 					<div className="cs-field">
@@ -629,10 +632,10 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 								if (scenRes && drafts[scenRes.id] !== undefined) await saveResource(scenRes, drafts[scenRes.id]);
 								if (mesRes && drafts[mesRes.id] !== undefined) await saveResource(mesRes, drafts[mesRes.id]);
 								if (noteRes && drafts[noteRes.id] !== undefined) await saveResource(noteRes, drafts[noteRes.id]);
-								setNotice("角色设定已保存！");
+								setNotice("设定已保存！");
 							}}
 						>
-							保存角色设定
+							保存设定
 						</button>
 					</div>
 				</div>
@@ -797,7 +800,7 @@ export function CardStudio({ onClose, onApplied }: { onClose: () => void; onAppl
 										key={`keys-${current.key}-${(current.e.keys || []).join(",")}`}
 										onBlur={(e) => {
 											const keys = e.target.value.split(/[,，]/).map((k) => k.trim()).filter(Boolean);
-											if (keys.join(" ") !== (current.e.keys || []).join(" ")) void setMeta(current.item!.key, { keys }, "关键词已更新");
+											if (keys.join("") !== (current.e.keys || []).join("")) void setMeta(current.item!.key, { keys }, "关键词已更新");
 										}}
 										placeholder="常驻条目无需填写"
 									/>

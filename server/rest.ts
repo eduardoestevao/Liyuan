@@ -38,6 +38,7 @@ import {
 } from "../src/agent-config.ts";
 import {
 	addCardGreeting,
+	coverSidecarOf,
 	deleteCardGreeting,
 	exportCardFile,
 	loadCardFile,
@@ -643,6 +644,8 @@ interface CardLibItem {
 	name: string;
 	tags: string[];
 	isPng: boolean;
+	/** 有封面可显示：PNG 卡恒真；JSON 卡看侧挂封面（同名 .png）在不在 */
+	hasCover: boolean;
 	mtimeMs: number;
 }
 
@@ -672,7 +675,8 @@ function listCardLibrary(cwd: string, config: RpConfig): CardLibItem[] {
 				cardMetaCache.set(abs, { mtimeMs, meta });
 			}
 			if (!meta) continue;
-			out.push({ path: `${spec.relBase}/${f}`, name: meta.name, tags: meta.tags, isPng: /\.png$/i.test(f), mtimeMs });
+			const isPng = /\.png$/i.test(f);
+			out.push({ path: `${spec.relBase}/${f}`, name: meta.name, tags: meta.tags, isPng, hasCover: isPng || existsSync(coverSidecarOf(abs)), mtimeMs });
 		}
 	}
 	out.sort((a, b) => a.name.localeCompare(b.name));
@@ -2551,7 +2555,12 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			case "GET /api/cards/image": {
 				const p = query.get("path") ?? "";
 				const abs = assertLibraryCard(host.cwd, loadConfig(host.cwd), p);
-				if (!/\.png$/i.test(abs)) throw new Error("该卡没有内嵌立绘（JSON 卡）");
+				// PNG 卡＝整份卡文件（图内嵌卡数据）；JSON 卡回落侧挂封面（同名 .png，工坊「应用」落的）
+				let img = abs;
+				if (!/\.png$/i.test(abs)) {
+					img = coverSidecarOf(abs);
+					if (!existsSync(img)) throw new Error("该卡没有立绘（PNG 卡或已设侧挂封面才有）");
+				}
 				/**
 				 * 卡图＝整份卡文件（JSON 内嵌在 PNG 里），单张动辄几 MB，必须真缓存住。
 				 *
@@ -2565,7 +2574,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				 */
 				let mtime = 0;
 				try {
-					mtime = statSync(abs).mtimeMs;
+					mtime = statSync(img).mtimeMs;
 				} catch {
 					/* ignore */
 				}
@@ -2582,7 +2591,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					"cache-control": "no-cache",
 					etag,
 				});
-				res.end(readFileSync(abs));
+				res.end(readFileSync(img));
 				return true;
 			}
 			case "POST /api/cards": {
@@ -2681,8 +2690,10 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					config = loadConfig(host.cwd);
 				}
 
-				// 卡本体
+				// 卡本体（JSON 卡的侧挂封面跟着卡走，留着就是孤儿裸图）
 				unlinkSync(abs);
+				const sidecar = coverSidecarOf(abs);
+				if (sidecar !== abs && existsSync(sidecar)) unlinkSync(sidecar);
 				cardMetaCache.delete(abs);
 				const favs = loadFavs(host.cwd);
 				if (favs.includes(p)) {

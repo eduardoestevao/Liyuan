@@ -238,7 +238,7 @@ test("重新同步：外部改动成为新基线，未改稿件跟随，改过�
 	assert.equal(inspectCardProject(cwd, card).conflicts, undefined, "应用后冲突清除");
 });
 
-test("封面：只换 PNG 图像，卡数据照常写回；JSON 卡拒绝", t => {
+test("封面：PNG 卡只换图像，卡数据照常写回；JSON 卡也受理（侧挂）", t => {
 	const { cwd, card } = project(t, true);
 	const cover = minimalPngBuffer();
 	assert.throws(() => setCardCover(cwd, card, Buffer.from("not png").toString("base64")), /PNG/);
@@ -248,8 +248,10 @@ test("封面：只换 PNG 图像，卡数据照常写回；JSON 卡拒绝", t =>
 	applyCardProject(cwd, card, build.hash);
 	assert.equal(data(card).name, "账本测试");
 	assert.equal(inspectCardProject(cwd, card).changes.cover, false);
+	// JSON 卡不再拒绝（2026-09-14 侧挂封面）：受理进账本，落盘细节见 card-authoring 侧挂测试
 	const json = project(t, false);
-	assert.throws(() => setCardCover(json.cwd, json.card, cover.toString("base64")), /JSON 卡/);
+	const st = setCardCover(json.cwd, json.card, cover.toString("base64"));
+	assert.equal(st.changes.cover, true);
 });
 
 test("工具面：写卡模式只留 card_project 一条写路径；操作入口能走完整链", t => {

@@ -515,6 +515,8 @@ export interface CardLibItem {
 	name: string;
 	tags: string[];
 	isPng: boolean;
+	/** 有封面可显示：PNG 卡恒真；JSON 卡看侧挂封面（同名 .png）在不在 */
+	hasCover?: boolean;
 	mtimeMs: number;
 	fav: boolean;
 }
