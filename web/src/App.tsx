@@ -100,7 +100,7 @@ import { PresetPanel } from "./components/PresetPanel.tsx";
 import { RolesPanel, type RolesTab } from "./components/RolesPanel.tsx";
 import { RosterPanel } from "./components/RosterPanel.tsx";
 import { ScriptHost } from "./components/ScriptHost.tsx";
-import { SessionsPanel } from "./components/SessionsPanel.tsx";
+import { SessionsPanel, NewProjectBox, nextProjectName } from "./components/SessionsPanel.tsx";
 import { SettingsPanel } from "./components/SettingsPanel.tsx";
 import { AboutPanel } from "./components/AboutPanel.tsx";
 import { SessionStatsBar, StatusStrip } from "./components/StatusStrip.tsx";
@@ -266,6 +266,9 @@ export default function App() {
 	const [updateModalOpen, setUpdateModalOpen] = useState(false);
 	const [updateToastDismissed, setUpdateToastDismissed] = useState(false);
 	const updateErrRef = useRef<string | null>(null);
+	// 顶栏「新建」：点击出两项（新建项目 / 新建对话，2026-09-14 用户点名——一般先建项目）
+	const [newMenuOpen, setNewMenuOpen] = useState(false);
+	const [namingProject, setNamingProject] = useState(false);
 	const [input, setInput] = useState("");
 	// 待发送附件（附件随消息，上传即落服务端 .liyuan-uploads/，发送时路径附在消息尾行）
 	const [pending, setPending] = useState<PendingUpload[]>([]);
@@ -1834,6 +1837,21 @@ export default function App() {
 				<UpdateModal update={updateInfo} onClose={() => setUpdateModalOpen(false)} onToast={pushToast} />
 			)}
 
+			{/* 顶栏「新建项目」起名弹窗（与左栏同一条 onNew 通道） */}
+			{namingProject && chats && (
+				<NewProjectBox
+					initial={nextProjectName(chats)}
+					busy={busy}
+					onDone={(name) => {
+						setNamingProject(false);
+						if (name) {
+							ws.send({ type: "new", name });
+							dismissWelcome();
+						}
+					}}
+				/>
+			)}
+
 			{/* 左侧栏：在桌面为平级满高分栏（与主工作区同图层分立）；移动端为浮层抽屉 */}
 			{sidePanel(leftPanel, "left")}
 
@@ -1852,20 +1870,73 @@ export default function App() {
 						>
 							<IconPanelLeft size={18} />
 						</button>
-						<button
-							type="button"
-							className="tb-btn"
-							onClick={() => {
-								ws.send({ type: "new" });
-								dismissWelcome();
-							}}
-							disabled={conn !== "open"}
-							aria-label="新建对话"
-							data-tip="新建"
-							title="新建对话"
-						>
-							<IconNewChat size={18} />
-						</button>
+						{chats ? (
+							<div className="tb-new-wrap">
+								<button
+									type="button"
+									className={`tb-btn ${newMenuOpen ? "active" : ""}`}
+									onClick={() => setNewMenuOpen((v) => !v)}
+									disabled={conn !== "open"}
+									aria-label="新建"
+									aria-expanded={newMenuOpen}
+									data-tip="新建"
+									title="新建项目 / 新建对话"
+								>
+									<IconNewChat size={18} />
+								</button>
+								{newMenuOpen && (
+									<>
+										<div className="tb-new-backdrop" onClick={() => setNewMenuOpen(false)} />
+										<div className="tb-new-menu" role="menu">
+											<button
+												type="button"
+												role="menuitem"
+												className="tb-new-item"
+												onClick={() => {
+													setNewMenuOpen(false);
+													setNamingProject(true);
+												}}
+											>
+												新建项目
+												<span className="tb-new-item-sub">新的一层，起名后建</span>
+											</button>
+											<button
+												type="button"
+												role="menuitem"
+												className="tb-new-item"
+												onClick={() => {
+													setNewMenuOpen(false);
+													// 当前项目里再开一个＝chat_new_session（项目行「＋」同通道）；
+													// 裸 new 在两层布局下是新建项目，别用。
+													const currentChatId = sessions?.find((s) => s.current)?.chatId;
+													if (currentChatId) ws.send({ type: "chat_new_session", chatId: currentChatId });
+													else ws.send({ type: "new" });
+													dismissWelcome();
+												}}
+											>
+												新建对话
+												<span className="tb-new-item-sub">在当前项目里再开一个</span>
+											</button>
+										</div>
+									</>
+								)}
+							</div>
+						) : (
+							<button
+								type="button"
+								className="tb-btn"
+								onClick={() => {
+									ws.send({ type: "new" });
+									dismissWelcome();
+								}}
+								disabled={conn !== "open"}
+								aria-label="新建对话"
+								data-tip="新建"
+								title="新建对话"
+							>
+								<IconNewChat size={18} />
+							</button>
+						)}
 					</div>
 				{/*
 				  * 中：会话名 + 一行状态。卡名（原右 gutter）、扮演/工作（原输入框上方那条）、

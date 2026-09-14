@@ -47,7 +47,7 @@ function chatLabel(c: WireChatInfo): string {
 }
 
 /** 新建项目弹窗的默认名：已有「新建对话（N）」取最大 N＋1，否则从（1）起 */
-function nextProjectName(chats: WireChatInfo[]): string {
+export function nextProjectName(chats: WireChatInfo[]): string {
 	let max = 0;
 	for (const c of chats) {
 		const m = /^新建对话（(\d+)）$/.exec(c.name ?? "");
@@ -104,8 +104,8 @@ function RenameBox({ initial, onDone }: { initial: string; onDone: (name: string
 	);
 }
 
-/** 新建项目弹窗 */
-function NewProjectBox({ initial, busy, onDone }: { initial: string; busy: boolean; onDone: (name: string | null) => void }) {
+/** 新建项目弹窗（顶栏「新建项目」也用它，App.tsx 引用） */
+export function NewProjectBox({ initial, busy, onDone }: { initial: string; busy: boolean; onDone: (name: string | null) => void }) {
 	const [value, setValue] = useState(initial);
 	const ref = useRef<HTMLInputElement>(null);
 	useEffect(() => {
