@@ -14,7 +14,9 @@
  *
  * 纯函数 + 零模块级可变状态（jiti 二象性红线），可单测。
  */
+import { createHash } from "node:crypto";
 import { assemble, type AssembledPiece, type AssembleResult } from "./preset-assemble.ts";
+import { createMacroEnv, evalPresetMacros } from "./preset-macro.ts";
 import type { PresetDoc } from "./preset-doc.ts";
 import { PRESET_SOURCE_SUFFIX, formatEntry, stripEntriesWhere, uniqueEntryName } from "./prompt-entries.ts";
 
@@ -367,4 +369,319 @@ export function declareTranslateReport(
 		`- 声明草稿留档：assets/presets/.liyuan/预设声明-*.json（全局一份，可改后重新转译）。`,
 	];
 	return [...head, ...rows, ...tail, ""].join("\n");
+}
+
+// ================================================================================
+// 机制二：模型处理（2026-09-14 用户定案——与声明机制并存、按预设自选，大预设专用）
+//
+// 与声明机制的差别：模型不只发站名小标签，而是读整份拼接后的酒馆提示词，把有效内容
+// **合并重组**成两份正文（身份实质不丢、写作合并去重），机制段丢弃报账。代价：分钟级
+// （输出几千字）vs 声明的 30 秒。产物两条固定名条目，无逐块形态。
+// ================================================================================
+
+/** 拼接时 char/user 以占位符身份代入：引擎同一条求值路径，产物自然保留占位符（落盘再按卡求值） */
+export const CHAR_PLACEHOLDER = "{{char}}";
+export const USER_PLACEHOLDER = "{{user}}";
+
+/** 引擎按开关编译整份预设（setvar/getvar 照常解，char/user 留占位） */
+export function compilePreset(doc: PresetDoc): AssembleResult {
+	return assemble(doc.entries, { charName: CHAR_PLACEHOLDER, userName: USER_PLACEHOLDER });
+}
+
+/** 编译结果里交给处理模型的片段（非 marker；after 尾部连续 assistant＝预填位除外，8/23 定案） */
+export interface CompiledPiece extends AssembledPiece {
+	where: "before" | "after" | "depth";
+}
+
+export function compiledPieces(r: AssembleResult): CompiledPiece[] {
+	let end = r.after.length;
+	while (end > 0 && r.after[end - 1].role === "assistant") end--;
+	return [
+		...r.before.map((p) => ({ ...p, where: "before" as const })),
+		...r.after.slice(0, end).map((p) => ({ ...p, where: "after" as const })),
+		...r.depth.map((p) => ({ ...p, where: "depth" as const })),
+	];
+}
+
+export interface DroppedItem {
+	name: string;
+	reason: string;
+}
+
+/** 处理留档：一份预设一份档（assets/presets/.liyuan/），指纹命中即复用，不重跑模型 */
+export interface PresetProcessStore {
+	version: 1;
+	preset: string;
+	/** 产物对应的预设原文指纹（拨开关/改内容都会变） */
+	fingerprint: string;
+	identity: string;
+	writing: string;
+	dropped: DroppedItem[];
+	model?: string;
+	createdAt: string;
+}
+
+/** 原文指纹：名字＋整份 raw（开关、内容、顺序任何变化都会变） */
+export function presetFingerprint(doc: PresetDoc): string {
+	return createHash("sha1").update(JSON.stringify({ name: doc.name, raw: doc.raw })).digest("hex");
+}
+
+/** 处理提示词（数据加工通道，非 RP 送模面）。正文走标签段——长中文正文塞 JSON 字符串必撞不转义引号/裸换行（实弹两连败坐实）。 */
+export function buildProcessPrompt(
+	pieces: CompiledPiece[],
+	meta: { preset: string },
+): { systemPrompt: string; userText: string } {
+	const segments = pieces
+		.map(
+			(p, i) =>
+				`⟦片段${i + 1}｜${p.id}｜${p.role}｜${p.where === "before" ? "历史前" : p.where === "after" ? "历史后" : "深度注入"}｜${p.name}⟧\n${p.text}`,
+		)
+		.join("\n\n");
+
+	const systemPrompt = [
+		"你处理一份角色扮演预设。输入是它经引擎按用户选项编译后的线性提示词，已按来源块切成分段，每段头部带 ⟨标识符｜角色｜位置｜块名⟩ 标记行。",
+		"",
+		"把有效内容加工成两份产物：",
+		"- identity：身份与人格设定、作家扮演、破限信件、内容边界共识。此类内容**实质一字不丢**：可合并重复、调整衔接，不可摘要、不可删减、不可软化。信件对保留「来信—回信」的结构。",
+		"- writing：指导写正文的规则：文风、描写边界、禁词表、对白与转述规则、nsfw 准则、字数要求。合并重组为一段连贯的规则，去掉段与段之间重复的条目。",
+		"",
+		"直接丢弃，不进产物，但要列入 dropped 报账：",
+		"- 思考协议（思考模板、思考量要求、自检清单、思维链仪式）",
+		"- 草稿协议（分段草稿、排练注释、改稿仪式）",
+		"- 输出合约（格式模块顺序、正文包裹标签、状态栏/选项/摘要等每拍附加输出规格）",
+		"- 记忆记账（要求每拍输出摘要/关键记忆供留存的自建记忆系统）",
+		"- 材料包装（包裹内容槽位的开闭标签、分节标题、加载演出）",
+		"- 与已选选项相斥或被排除的内容",
+		"",
+		"规矩：",
+		"- 原料只用输入里的内容，不发明新规则、不添加新要求。",
+		"- {{char}}/{{user}} 保持占位符原样，不代入具体名字。",
+		"- 某份产物没有可归入的内容就整段省略。",
+		"",
+		"输出以下三段，标签行独占一行，标签外不要任何说明文字：",
+		"",
+		"<identity>",
+		"（身份与破限正文，正常分行书写）",
+		"</identity>",
+		"",
+		"<writing>",
+		"（写作规则正文，正常分行书写）",
+		"</writing>",
+		"",
+		"<dropped>",
+		"- 分段名或内容简述——不超过20字的理由",
+		"</dropped>",
+	].join("\n");
+
+	const userText = [
+		`预设「${meta.preset}」。分段内容如下（⟦…⟧ 标记行是分度信息，不属于分段正文）：`,
+		"",
+		segments,
+	].join("\n");
+
+	return { systemPrompt, userText };
+}
+
+export interface ParsedProcess {
+	identity: string;
+	writing: string;
+	dropped: DroppedItem[];
+}
+
+/**
+ * 模型输出的 JSON 高频病（2026-09-14 实弹坐实）：① 多行正文直接裸换行写进字符串字面量；
+ * ② 字符串内裸双引号不转义（如 `爱用"～""呢"`）。③ 尾逗号（`[…,]`）一并修掉。
+ * 按字符扫描一遍同修：字符串内的裸控制字符转义；引号用**结构前瞻**判定——后随（跳过空白）
+ * `,` `}` `]` `:` 或到末尾才是字符串终点，否则是内嵌引号、转义掉。其余字节原样。
+ */
+function repairJsonStringLiterals(s: string): string {
+	const isStructural = (c: string | undefined): boolean =>
+		c === "," || c === "}" || c === "]" || c === ":" || c === undefined;
+	const isWs = (c: string | undefined): boolean => c === " " || c === "\n" || c === "\r" || c === "\t";
+	let out = "";
+	let inStr = false;
+	let pending = ""; // 字符串外挂起的 `,` 与其后空白——真正落笔前先看下一字符是不是 }/]（尾逗号）
+	for (let i = 0; i < s.length; i++) {
+		const c = s[i];
+		if (inStr) {
+			if (c === "\\") {
+				out += c + (s[i + 1] ?? "");
+				i++;
+				continue;
+			}
+			if (c === '"') {
+				let j = i + 1;
+				while (j < s.length && isWs(s[j])) j++;
+				if (isStructural(s[j])) {
+					inStr = false;
+					out += c;
+				} else {
+					out += '\\"';
+				}
+				continue;
+			}
+			const code = s.charCodeAt(i);
+			if (code < 0x20) {
+				out += code === 10 ? "\\n" : code === 13 ? "\\r" : code === 9 ? "\\t" : `\\u${code.toString(16).padStart(4, "0")}`;
+				continue;
+			}
+			out += c;
+		} else {
+			if (pending) {
+				if (c === ",") continue; // 连续逗号按一枚
+				if (isWs(c)) {
+					pending += c;
+					continue;
+				}
+				if (c !== "}" && c !== "]") out += pending; // 不是尾逗号：原样落笔
+				pending = "";
+			}
+			if (c === ",") {
+				pending = c;
+				continue;
+			}
+			if (c === '"') inStr = true;
+			out += c;
+		}
+	}
+	return out + pending;
+}
+
+/**
+ * 解析＋错误文案（失败留档用）。契约：标签段优先（正文按行取原文，无转义可坏）；
+ * 模型仍回 JSON（旧习惯）时走修复解析兜底。
+ */
+export function parseProcessResponseWithError(text: string): { value: ParsedProcess | null; parseError?: string } {
+	const section = (tag: string): string => {
+		const m = text.match(new RegExp(`<${tag}>\\s*([\\s\\S]*?)\\s*</${tag}>`, "i"));
+		return m ? m[1].trim() : "";
+	};
+	const identity = section("identity");
+	const writing = section("writing");
+	const droppedRaw = section("dropped");
+	if (identity || writing || droppedRaw || /<\/?(?:identity|writing|dropped)>/i.test(text)) {
+		const dropped: DroppedItem[] = droppedRaw
+			.split("\n")
+			.map((l) => l.replace(/^\s*[-*·•]\s*/, "").trim())
+			.filter(Boolean)
+			.map((l) => {
+				const m = l.split(/——|—/);
+				const name = (m[0] ?? "").trim().slice(0, 120);
+				const reason = (m.slice(1).join("——") || "").trim().slice(0, 60);
+				return { name: name || "未名分段", reason };
+			});
+		return { value: { identity, writing, dropped } };
+	}
+
+	const stripped = text.replace(/```(?:json)?/gi, "");
+	const start = stripped.indexOf("{");
+	const end = stripped.lastIndexOf("}");
+	if (start < 0 || end <= start) return { value: null, parseError: "响应里既没有标签段也不是 JSON" };
+	const raw = stripped.slice(start, end + 1);
+	const errors: string[] = [];
+	for (const candidate of [raw, repairJsonStringLiterals(raw)]) {
+		try {
+			const v = JSON.parse(candidate);
+			if (v && typeof v === "object") {
+				const o = v as Record<string, unknown>;
+				const str = (x: unknown): string => (typeof x === "string" ? x : "");
+				const dropped: DroppedItem[] = Array.isArray(o.dropped)
+					? (o.dropped as unknown[])
+							.filter((d): d is Record<string, unknown> => !!d && typeof d === "object")
+							.map((d) => ({
+								name: str(d.name).slice(0, 120) || "未名分段",
+								reason: str(d.reason).slice(0, 60),
+							}))
+					: [];
+				return { value: { identity: str(o.identity).trim(), writing: str(o.writing).trim(), dropped } };
+			}
+		} catch (e) {
+			errors.push(e instanceof Error ? e.message : String(e));
+		}
+	}
+	return { value: null, parseError: errors.join("；修复后 ") };
+}
+
+export function parseProcessResponse(text: string): ParsedProcess | null {
+	return parseProcessResponseWithError(text).value;
+}
+
+export interface ProcessedEntries {
+	/** 卡级 APPEND_SYSTEM.md 追加段（一条「预设提示词（预设）」；无身份产物则空串） */
+	appendMarkdown: string;
+	/** 卡档案 AGENTS.md 追加段（一条「预设写作规则（预设）」；无则空串） */
+	agentsSection: string;
+	identityChars: number;
+	writingChars: number;
+	/** 产物里清单外的宏（原样保留在文本里，交上层上报） */
+	unsupportedMacros: string[];
+}
+
+/** 处理产物 → 两条条目：{{char}}/{{user}} 占位按卡求值，正文防标题割裂转义 */
+export function processIntoEntries(
+	processed: { identity: string; writing: string },
+	opts: { charName: string; userName: string },
+): ProcessedEntries {
+	const env = createMacroEnv({ charName: opts.charName, userName: opts.userName });
+	const unsupported = new Set<string>();
+	const evalIt = (s: string): string => {
+		if (!s.trim()) return "";
+		const r = evalPresetMacros(s, env);
+		for (const u of r.unsupported) unsupported.add(u);
+		return r.text;
+	};
+	const identity = evalIt(processed.identity);
+	const writing = evalIt(processed.writing);
+	return {
+		appendMarkdown: identity ? formatEntry(`预设提示词${PRESET_SOURCE_SUFFIX}`, identity) : "",
+		agentsSection: writing ? formatEntry(`预设写作规则${PRESET_SOURCE_SUFFIX}`, writing) : "",
+		identityChars: identity.length,
+		writingChars: writing.length,
+		unsupportedMacros: [...unsupported],
+	};
+}
+
+export function processReport(
+	doc: PresetDoc,
+	r: {
+		identityChars: number;
+		writingChars: number;
+		dropped: DroppedItem[];
+		unsupportedMacros: string[];
+		usesLastUserMessage: string[];
+		disabledCount: number;
+	},
+	store: PresetProcessStore,
+	sourceFile: string,
+): string {
+	const head = [
+		`# 处理报告：${doc.name}`,
+		``,
+		`- 原文：\`${sourceFile}\`（未改动，可重新处理）`,
+		`- 指纹：\`${store.fingerprint.slice(0, 12)}\`；日期：${store.createdAt}${store.model ? `；处理模型：${store.model}` : ""}`,
+		`- 产物一：本卡 APPEND_SYSTEM.md「预设提示词（预设）」一条，${r.identityChars.toLocaleString()} 字（身份/破限）`,
+		`- 产物二：本卡 AGENTS.md「预设写作规则（预设）」一条，${r.writingChars.toLocaleString()} 字（写作规则）`,
+		`- 丢弃：${r.dropped.length} 段（思考/草稿/输出/记忆机制、包装标签、被选项排除的内容）`,
+		`- 预设开关关着的块：${r.disabledCount.toLocaleString()} 块（要它们就在预设编辑器里打开，再点「重新装载」）`,
+	];
+	if (r.usesLastUserMessage.length > 0) {
+		head.push(`- ⚠ 引用 {{lastusermessage}} 的块（逐拍宏，编译按空串求值）：${r.usesLastUserMessage.join("、")}`);
+	}
+	if (r.unsupportedMacros.length > 0) {
+		head.push(`- ⚠ 产物里清单外宏（原样保留）：${r.unsupportedMacros.join("、")}`);
+	}
+	if (r.dropped.length > 0) {
+		head.push(``, `## 丢弃账`, ``);
+		for (const d of r.dropped) head.push(`- ${d.name}${d.reason ? `——${d.reason}` : ""}`);
+	}
+	head.push(
+		``,
+		`## 已知代价（既定，不当 bug 查）`,
+		``,
+		`- 破限信件对被合并进一条身份契约，role 结构弱化、语义保留。`,
+		`- 丢弃输出合约后，靠预设教模型吐状态栏/选项的卡会停止吐——梨园里这是预期行为（MVU/面板/ask 接管）。`,
+		`- 产物是模型加工结果：预设选项改动后需点「重新装载」，产物才会跟着变。`,
+		`- 处理留档：assets/presets/.liyuan/预设处理-*.json（按指纹复用；删掉即强制重处理）。`,
+	);
+	return [...head, ""].join("\n");
 }

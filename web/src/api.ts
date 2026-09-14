@@ -563,11 +563,23 @@ export interface PersonasResponse {
 export interface PresetFileInfo {
 	file: string;
 	name: string;
+	/** 机制自选（2026-09-14）：declare＝快速处理（默认，分类照搬）；process＝深度处理（模型重组） */
+	mode?: "declare" | "process";
 }
 
 export interface PresetsResponse {
 	active: string | null;
 	presets: PresetFileInfo[];
+}
+
+/** GET /api/presets/blocks：库内任意预设的块视图（不装载也能展开拨开关） */
+export interface PresetBlocksResponse {
+	file: string;
+	active: boolean;
+	/** 活动预设：有未落盘草稿 */
+	dirty: boolean;
+	name: string;
+	blocks: Array<PresetBlockView & { content?: string }>;
 }
 
 /** 用户提示词：SYSTEM.md（全局系统提示词）+ 两级 APPEND_SYSTEM.md（全局/这张卡） */

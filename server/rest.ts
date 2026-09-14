@@ -142,12 +142,20 @@ import {
 import {
 	assembleForDeclare,
 	buildDeclarePrompt,
+	buildProcessPrompt,
+	compiledPieces,
+	compilePreset,
 	declarePieces,
 	declareTranslateReport,
 	parseDeclareResponse,
+	parseProcessResponseWithError,
+	presetFingerprint,
+	processIntoEntries,
+	processReport,
 	stripPresetEntries,
 	translatePresetWithDeclaration,
 	type PresetDeclaration,
+	type PresetProcessStore,
 } from "../src/preset-declare.ts";
 import { cardAgentsPath, projectCardToAgents } from "../src/card-agents.ts";
 import { formatEntry, lorebookSourceSuffix, stripEntriesWhere, uniqueEntryName } from "../src/prompt-entries.ts";
@@ -252,8 +260,9 @@ export interface RestHost {
 	/**
 	 * 热更新：扩展内重读 config/卡/世界书/预设并重建 system prompt，不 session.reload。
 	 * 用于切身份、改 user 设定、挂载世界书等——ST 式即时生效。
+	 * reprocessPreset：预设处理机制（process）强制重跑一次模型（装载/重新装载按钮用）。
 	 */
-	softRefreshConfig(): Promise<void>;
+	softRefreshConfig(opts?: { reprocessPreset?: boolean }): Promise<void>;
 	/** 页面回报 agent 预览结果；未决请求不存在时返回 false */
 	settleCardPreview(report: CardPreviewReport): boolean;
 	/** 与写卡工具同一条预览通道（REST 侧供面板与验证用） */
@@ -1107,6 +1116,8 @@ export interface PresetSyncResult {
 	/** none=未装载且无残留；stripped=卸载后剥净；unchanged=产物未变；written=产物已写 */
 	state: "none" | "stripped" | "unchanged" | "written";
 	preset?: string;
+	/** 用了哪种机制（declare＝声明分类；process＝模型处理） */
+	mode?: PresetMode;
 	active?: number;
 	disabled?: number;
 	/** 本次向模型声明的段数（0＝全部命中留档） */
@@ -1114,6 +1125,15 @@ export interface PresetSyncResult {
 	/** 声明失败：这些段按「拿不准一律留」落成活动条目，下次同步再问 */
 	declareError?: string;
 	pending?: number;
+	/** 机制二（process）：本次调了处理模型／两条产物字数／失败原因 */
+	processed?: boolean;
+	identityChars?: number;
+	writingChars?: number;
+	processError?: string;
+	/** 预设原文指纹与产物指纹不一致＝选项改了产物还是上次的（要点「重新装载」） */
+	stale?: boolean;
+	/** 从未处理且后台刷新不许烧模型——提示用户去点「重新装载」 */
+	needProcess?: boolean;
 }
 
 /**
@@ -1131,6 +1151,89 @@ const legacyDeclarationPath = (cardDir: string, presetName: string): string =>
 /** 声明失败后的退避（同一预设 60 秒内不再问模型）——每拨一次开关就撞一次 402 没有意义 */
 const declareFailedAt = new Map<string, number>();
 const DECLARE_RETRY_MS = 60_000;
+
+// ---------- 机制自选（2026-09-14 用户定案）：declare＝声明分类（默认）；process＝模型处理 ----------
+
+/** 机制表：一份 JSON 映射（assets/presets/.liyuan/预设机制.json），按预设名记；缺省＝declare */
+export type PresetMode = "declare" | "process";
+
+const presetModesPath = (cwd: string): string => join(cwd, PRESETS_DIR, ".liyuan", "预设机制.json");
+
+function readPresetModes(cwd: string): Record<string, PresetMode> {
+	try {
+		const raw = JSON.parse(readFileSync(presetModesPath(cwd), "utf8")) as Record<string, unknown>;
+		const out: Record<string, PresetMode> = {};
+		for (const [k, v] of Object.entries(raw)) {
+			if (v === "declare" || v === "process") out[k] = v;
+		}
+		return out;
+	} catch {
+		return {};
+	}
+}
+
+const presetModeOf = (cwd: string, presetName: string): PresetMode => readPresetModes(cwd)[presetName] ?? "declare";
+
+function setPresetMode(cwd: string, presetName: string, mode: PresetMode): void {
+	const all = readPresetModes(cwd);
+	if (mode === "declare") delete all[presetName]; // 默认值不落盘，表里只记例外
+	else all[presetName] = mode;
+	mkdirSync(dirname(presetModesPath(cwd)), { recursive: true });
+	writeFileSync(presetModesPath(cwd), JSON.stringify(all, null, "\t"), "utf8");
+}
+
+/** 处理留档（机制二）：一份预设一份档，按原文指纹命中复用；换卡只做机械落盘 */
+const processStorePath = (cwd: string, presetName: string): string =>
+	join(cwd, PRESETS_DIR, ".liyuan", `预设处理-${presetSlug(presetName)}.json`);
+
+/** 处理失败留档（实弹教训：只报 toast 不够定位）——存响应原文头尾＋解析报错，成功即删 */
+const processFailurePath = (cwd: string, presetName: string): string =>
+	join(cwd, PRESETS_DIR, ".liyuan", `预设处理失败-${presetSlug(presetName)}.json`);
+
+export interface ProcessFailureRecord {
+	version: 1;
+	preset: string;
+	fingerprint: string;
+	error: string;
+	failedAt: string;
+	responseHead?: string;
+	responseTail?: string;
+	responseChars?: number;
+	parseError?: string;
+}
+
+/** 处理失败后的退避（同一预设 60 秒内不再问模型）；显式重新装载绕过 */
+const processFailedAt = new Map<string, number>();
+const PROCESS_RETRY_MS = 60_000;
+
+const readProcessStore = (abs: string): PresetProcessStore | null => {
+	if (!existsSync(abs)) return null;
+	try {
+		return JSON.parse(readFileSync(abs, "utf8")) as PresetProcessStore;
+	} catch {
+		return null;
+	}
+};
+
+const writeProcessStore = (abs: string, store: PresetProcessStore): void => {
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, JSON.stringify(store, null, "\t"), "utf8");
+};
+
+const writeProcessFailure = (abs: string, rec: ProcessFailureRecord): void => {
+	mkdirSync(dirname(abs), { recursive: true });
+	writeFileSync(abs, JSON.stringify(rec, null, "\t"), "utf8");
+};
+
+const clearProcessFailure = (abs: string): void => {
+	if (existsSync(abs)) {
+		try {
+			unlinkSync(abs);
+		} catch {
+			/* ignore */
+		}
+	}
+};
 
 /** 两份文件的条目级合并：先剥旧预设条目再追加；产物相同不写；剥空了就删文件（那份本就是我们生成的） */
 function mergePresetEntriesInto(path: string, section: string, base: string): { changed: boolean } {
@@ -1152,13 +1255,18 @@ function mergePresetEntriesInto(path: string, section: string, base: string): { 
 
 /**
  * 唯一主人：`config.preset`（含未保存草稿）⇒ 当前卡 APPEND_SYSTEM.md / AGENTS.md 里的（预设）条目。
- * 每次配置刷新跑一遍（装载/卸载/拨开关/保存/还原/换卡/启动都经过 softRefreshConfig）：
- * - 无预设 ⇒ 两份文件里的预设条目剥净；
- * - 有预设 ⇒ 引擎按开关编译 → 缺声明的段问一次模型（结果全局留档 assets/presets/.liyuan/，按块 identifier 复用，
- *   拨开关不重问、换卡也不重问）→ 按声明分流成逐块（预设）条目 → 条目级合并；产物没变就不碰文件。
- * 台上不再直接吃装载的预设（materials.ts）——模型看到的就是这两份文件。
+ * 每次配置刷新跑一遍（装载/卸载/拨开关/保存/还原/换卡/启动都经过 softRefreshConfig），机制按预设自选：
+ * - declare（默认）⇒ 引擎按开关编译 → 缺声明的段问一次模型（30 秒级，全局留档按块复用）
+ *   → 分流成逐块（预设）条目（机制段成关闭条目）；
+ * - process ⇒ 模型处理拼接全文成两条产物（分钟级）。**模型调用只发生在装载缺档/重新装载这类
+ *   用户正盯着的动作**（opts.reprocess），后台刷新一律机械落盘——绝不偷偷烧几分钟模型。
+ * 无预设 ⇒ 两份文件里的预设条目剥净。台上不直接吃装载的预设（materials.ts）。
  */
-export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): Promise<PresetSyncResult> {
+export async function syncPresetTranslation(
+	cwd: string,
+	deps: PresetSyncDeps,
+	opts: { reprocess?: boolean } = {},
+): Promise<PresetSyncResult> {
 	const config = loadConfig(cwd);
 	const cardDir = dirname(resolvePath(cwd, config.card));
 	const appendPath = cardRulesPath(cardDir);
@@ -1168,6 +1276,9 @@ export async function syncPresetTranslation(cwd: string, deps: PresetSyncDeps): 
 		const a = mergePresetEntriesInto(appendPath, "", "");
 		const b = mergePresetEntriesInto(agentsAbs, "", "");
 		return { state: a.changed || b.changed ? "stripped" : "none" };
+	}
+	if (presetModeOf(cwd, doc.name) === "process") {
+		return await syncPresetProcess(cwd, deps, opts, { doc, appendPath, agentsAbs });
 	}
 	const card = loadCardFile(resolvePath(cwd, config.card));
 	const macro = { charName: card.name, userName: config.userName };
@@ -1310,14 +1421,168 @@ export function syncLorebookMirror(cwd: string): { state: "none" | "unchanged" |
 	return { state: "written", entries: mirror.length };
 }
 
-/** 配置刷新时的卡文件对账：预设转译 + 世界书镜像（各认自己的来源后缀，互不相扰） */
+/** 配置刷新时的卡文件对账：预设转译（按预设自选机制）+ 世界书镜像（各认自己的来源后缀，互不相扰） */
 export async function syncCardFiles(
 	cwd: string,
 	deps: PresetSyncDeps,
+	opts: { reprocess?: boolean } = {},
 ): Promise<{ preset: PresetSyncResult; lore: ReturnType<typeof syncLorebookMirror> }> {
-	const preset = await syncPresetTranslation(cwd, deps);
+	const preset = await syncPresetTranslation(cwd, deps, opts);
 	const lore = syncLorebookMirror(cwd);
 	return { preset, lore };
+}
+
+/**
+ * 机制二：模型处理（syncPresetTranslation 的 process 分支主体）。
+ * 留档按指纹命中即复用（换卡只做机械落盘）；拨开关只改指纹、产物沿用留档标 stale；
+ * 留档缺失时**不烧模型**——剥净＋needProcess 提示，等用户点「重新装载」（opts.reprocess 才真跑）。
+ */
+async function syncPresetProcess(
+	cwd: string,
+	deps: PresetSyncDeps,
+	opts: { reprocess?: boolean },
+	ctx: { doc: PresetDoc; appendPath: string; agentsAbs: string },
+): Promise<PresetSyncResult> {
+	const { doc, appendPath, agentsAbs } = ctx;
+	const config = loadConfig(cwd);
+	const cardDir = dirname(resolvePath(cwd, config.card));
+	const card = loadCardFile(resolvePath(cwd, config.card));
+	const macro = { charName: card.name, userName: config.userName };
+	const compiled = compilePreset(doc);
+	const pieces = compiledPieces(compiled);
+	const fingerprint = presetFingerprint(doc);
+
+	const storeAbs = processStorePath(cwd, doc.name);
+	const failAbs = processFailurePath(cwd, doc.name);
+	let store = readProcessStore(storeAbs);
+	let processed = false;
+	let processError: string | undefined;
+	if (!store || opts.reprocess) {
+		const failedAt = processFailedAt.get(doc.name) ?? 0;
+		if (!opts.reprocess && Date.now() - failedAt < PROCESS_RETRY_MS) {
+			processError = "处理模型刚失败过，稍后再试";
+		} else if (pieces.length === 0) {
+			// 全关/零料：空产物也落档，别让每次装载都惦记
+			store = {
+				version: 1,
+				preset: doc.name,
+				fingerprint,
+				identity: "",
+				writing: "",
+				dropped: [],
+				model: deps.modelLabel,
+				createdAt: new Date().toISOString(),
+			};
+			processed = true;
+			writeProcessStore(storeAbs, store);
+			clearProcessFailure(failAbs);
+		} else {
+			const prompt = buildProcessPrompt(pieces, { preset: doc.name });
+			const resp = await deps.runSideText(prompt.systemPrompt, prompt.userText, {
+				maxTokens: 32768,
+				reasoning: "low",
+				signal: AbortSignal.timeout(600_000),
+			});
+			if (typeof resp === "string") {
+				const { value: parsed, parseError } = parseProcessResponseWithError(resp);
+				if (parsed) {
+					processFailedAt.delete(doc.name);
+					store = {
+						version: 1,
+						preset: doc.name,
+						fingerprint,
+						identity: parsed.identity,
+						writing: parsed.writing,
+						dropped: parsed.dropped,
+						model: deps.modelLabel,
+						createdAt: new Date().toISOString(),
+					};
+					processed = true;
+					writeProcessStore(storeAbs, store);
+					clearProcessFailure(failAbs);
+				} else {
+					processFailedAt.set(doc.name, Date.now());
+					processError = "处理响应不可解析";
+					writeProcessFailure(failAbs, {
+						version: 1,
+						preset: doc.name,
+						fingerprint,
+						error: processError,
+						failedAt: new Date().toISOString(),
+						responseHead: resp.slice(0, 1200),
+						responseTail: resp.slice(-400),
+						responseChars: resp.length,
+						...(parseError ? { parseError } : {}),
+					});
+				}
+			} else {
+				processFailedAt.set(doc.name, Date.now());
+				processError = resp.error;
+				writeProcessFailure(failAbs, {
+					version: 1,
+					preset: doc.name,
+					fingerprint,
+					error: processError,
+					failedAt: new Date().toISOString(),
+				});
+			}
+		}
+	}
+	if (!store) {
+		// 无留档（从未处理/处理失败）：剥净＋提示——后台刷新绝不烧模型
+		const a = mergePresetEntriesInto(appendPath, "", "");
+		const b = mergePresetEntriesInto(agentsAbs, "", "");
+		return {
+			state: a.changed || b.changed ? "stripped" : "none",
+			preset: doc.name,
+			mode: "process",
+			processed,
+			processError,
+			needProcess: true,
+		};
+	}
+
+	const entries = processIntoEntries(store, macro);
+	// 无档案的卡：投影打底（带世界书来源标注）——档案一落盘卡即进文件模式（刀3）
+	let agentsBase = "";
+	if (!existsSync(agentsAbs) && entries.agentsSection) {
+		const materials = loadStageMaterials(cwd);
+		const bookOf = bookOfEntries(mountedLorebookPaths(config).map((rel) => resolvePath(cwd, rel)));
+		agentsBase = projectCardToAgents(materials.card, constantLoreOf(materials), config, { bookOf });
+	}
+	const a = mergePresetEntriesInto(appendPath, entries.appendMarkdown, "");
+	const b = mergePresetEntriesInto(agentsAbs, entries.agentsSection, agentsBase);
+	if (a.changed || b.changed || processed) {
+		const reportAbs = join(cardDir, ".liyuan", `处理报告-${presetSlug(doc.name)}.md`);
+		mkdirSync(dirname(reportAbs), { recursive: true });
+		writeFileSync(
+			reportAbs,
+			processReport(
+				doc,
+				{
+					identityChars: entries.identityChars,
+					writingChars: entries.writingChars,
+					dropped: store.dropped,
+					unsupportedMacros: entries.unsupportedMacros,
+					usesLastUserMessage: compiled.usesLastUserMessage,
+					disabledCount: compiled.report.filter((it) => it.action === "关闭").length,
+				},
+				store,
+				config.preset ?? doc.name,
+			),
+			"utf8",
+		);
+	}
+	return {
+		state: a.changed || b.changed ? "written" : "unchanged",
+		preset: doc.name,
+		mode: "process",
+		identityChars: entries.identityChars,
+		writingChars: entries.writingChars,
+		processed,
+		processError,
+		stale: store.fingerprint !== fingerprint,
+	};
 }
 
 // ---------- 世界书文件管理（PLAN-PANELS-V2 §2.3：选书/导入/删除） ----------
@@ -2919,16 +3184,101 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			// ---- 多预设管理（PLAN-PANELS-V2 §2.6） ----
 			case "GET /api/presets": {
 				const config = loadConfig(host.cwd);
-				sendJson(res, 200, { active: config.preset ?? null, presets: listPresetFiles(host.cwd) });
+				const modes = readPresetModes(host.cwd);
+				sendJson(res, 200, {
+					active: config.preset ?? null,
+					presets: listPresetFiles(host.cwd).map((p) => ({ ...p, mode: modes[p.name] ?? "declare" })),
+				});
+				return true;
+			}
+			/** 机制自选（2026-09-14 用户定案）：declare＝声明分类（默认，30 秒级）；process＝模型处理（分钟级，产物两条） */
+			case "PUT /api/presets/mode": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { file?: string; mode?: string };
+				const file = validatePresetPath(body.file ?? "");
+				if (body.mode !== "declare" && body.mode !== "process") throw new Error("mode 必须是 declare 或 process");
+				if (!existsSync(resolvePath(host.cwd, file))) throw new Error(`预设文件不存在：${file}`);
+				setPresetMode(host.cwd, presetNameFromFile(file), body.mode);
+				const config = loadConfig(host.cwd);
+				if (config.preset === file) await host.softRefreshConfig();
+				sendJson(res, 200, { ok: true });
 				return true;
 			}
 			case "POST /api/presets/select": {
 				if (refuseWhileStreaming()) return true;
-				const body = JSON.parse(await readBody(req)) as { file?: string | null };
+				const body = JSON.parse(await readBody(req)) as { file?: string | null; redeclare?: boolean };
 				// 切换（含“丢弃未保存草稿”）归 selectPresetFile，与 preset_select 工具共用
 				if (!selectPresetFile(host.cwd, body.file ?? null)) throw new Error("预设文件不存在");
-				await host.softRefreshConfig();
+				// 重新装载按机制分流：声明＝丢弃声明缓存全部重问（30 秒级）；
+				// 处理＝强制重跑处理模型（分钟级，按钮在等、完成有 toast）。
+				// 处理机制的普通装载（首装缺留档）也跑一次——用户正盯着按钮。
+				let reprocess = false;
+				if (body.file) {
+					const name = presetNameFromFile(body.file);
+					if (presetModeOf(host.cwd, name) === "process") {
+						reprocess = body.redeclare === true || !readProcessStore(processStorePath(host.cwd, name));
+					} else if (body.redeclare) {
+						const declAbs = declarationPath(host.cwd, name);
+						if (existsSync(declAbs)) {
+							try {
+								unlinkSync(declAbs);
+							} catch {
+								/* ignore */
+							}
+						}
+					}
+				}
+				await host.softRefreshConfig(reprocess ? { reprocessPreset: true } : undefined);
 				sendJson(res, 200, { ok: true });
+				return true;
+			}
+			/**
+			 * 库内任意预设的块视图（2026-09-14 用户点名：不装载也能展开拨开关）。
+			 * 活动预设读生效态（草稿优先），其余读磁盘原版。
+			 */
+			case "GET /api/presets/blocks": {
+				const file = validatePresetPath(query.get("file") ?? "");
+				const config = loadConfig(host.cwd);
+				const isActive = config.preset === file;
+				let doc: PresetDoc | null = null;
+				if (isActive) {
+					doc = loadEffectivePreset(host.cwd).doc;
+				} else {
+					const abs = resolvePath(host.cwd, file);
+					if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);
+					doc = readPresetDoc(host.cwd, file);
+				}
+				if (!doc) throw new Error(`预设文件不存在：${file}`);
+				sendJson(res, 200, {
+					file,
+					active: isActive,
+					dirty: isActive && existsSync(presetOverridePath(host.cwd)),
+					name: doc.name,
+					blocks: presetDocView(doc, { full: true }),
+				});
+				return true;
+			}
+			/**
+			 * 拨库内任意预设的块开关。活动预设＝打进运行时草稿并即时重转译（与 PUT /api/preset 同语义，
+			 * 「保存」才落盘）；其余＝直接写原版文件（未装载，不上台，无需刷新）。
+			 */
+			case "PUT /api/presets/blocks": {
+				if (refuseWhileStreaming()) return true;
+				const body = JSON.parse(await readBody(req)) as { file?: string; blocks?: PresetBlockPatch[] };
+				const file = validatePresetPath(body.file ?? "");
+				if (!Array.isArray(body.blocks) || body.blocks.length === 0) throw new Error("缺少 blocks");
+				const abs = resolvePath(host.cwd, file);
+				if (!existsSync(abs)) throw new Error(`预设文件不存在：${file}`);
+				const config = loadConfig(host.cwd);
+				if (config.preset === file) {
+					writePresetDraft(host.cwd, { blocks: body.blocks });
+					await host.softRefreshConfig();
+					sendJson(res, 200, { ok: true, dirty: true });
+					return true;
+				}
+				const base = readPresetDoc(host.cwd, file);
+				writeJsonWithBackup(abs, patchPresetRaw(base, { blocks: body.blocks }));
+				sendJson(res, 200, { ok: true, dirty: false });
 				return true;
 			}
 			case "POST /api/presets/saveas": {

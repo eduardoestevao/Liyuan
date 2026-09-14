@@ -1554,9 +1554,9 @@ const restHost: RestHost = {
 		resyncAll();
 	},
 	/** 身份/配置/世界书挂载等：走扩展 /rprefresh，不整会话 reload */
-	async softRefreshConfig() {
-		// 预设装载态同步（装载/卸载/拨开关/保存/还原都经这里）：先把（预设）条目写进卡文件，再刷新装配
-		await syncPresetNow();
+	async softRefreshConfig(opts?: { reprocessPreset?: boolean }) {
+		// 预设装载态同步（装载/卸载/拨开关/保存/还原/重新装载都经这里）：先把（预设）条目写进卡文件，再刷新装配
+		await syncPresetNow(opts?.reprocessPreset === true);
 		if (session.isStreaming) {
 			// 流式中改设定：排队到本轮结束，避免与 prompt 抢通道
 			void session
@@ -1884,31 +1884,55 @@ const restHost: RestHost = {
  * 失败只通知不抛出——配置刷新不能因为旁路模型断供而卡死；产物有变/首次声明才提示。
  */
 let presetSyncChain: Promise<PresetSyncResult | undefined> = Promise.resolve(undefined);
-const syncPresetNow = (): Promise<PresetSyncResult | undefined> => {
+const syncPresetNow = (reprocess = false): Promise<PresetSyncResult | undefined> => {
 	presetSyncChain = presetSyncChain.then(async () => {
 		try {
 			const cur = restHost.listModels().current;
-			const { preset: r, lore } = await syncCardFiles(cwd, {
-				runSideText: restHost.runSideText,
-				modelLabel: cur ? `${cur.provider}/${cur.id}` : undefined,
-			});
+			const { preset: r, lore } = await syncCardFiles(
+				cwd,
+				{
+					runSideText: restHost.runSideText,
+					modelLabel: cur ? `${cur.provider}/${cur.id}` : undefined,
+				},
+				{ reprocess },
+			);
 			if (lore.state === "written") {
 				broadcast({ type: "notify", level: "info", text: `卡档案已同步世界书常驻条目：${lore.entries} 条` });
 			}
-			if (r.declareError) {
-				broadcast({
-					type: "notify",
-					level: "error",
-					text: `预设「${r.preset}」声明失败（${r.pending} 段先按保守方式全部保留）：${r.declareError}`,
-				});
+			if (r.mode === "process") {
+				if (r.processError) {
+					broadcast({
+						type: "notify",
+						level: "error",
+						text: `预设「${r.preset}」处理失败（产物暂缺，原因已落档 assets/presets/.liyuan/）：${r.processError}`,
+					});
+				} else if (r.needProcess) {
+					broadcast({ type: "notify", level: "info", text: `预设「${r.preset}」尚未处理——到预设库点「重新装载」生成产物（要几分钟）` });
+				} else if (r.state === "written" && r.preset) {
+					broadcast({
+						type: "notify",
+						level: "info",
+						text: `预设「${r.preset}」已处理：身份 ${r.identityChars ?? 0} 字、写作 ${r.writingChars ?? 0} 字${r.processed ? "（本次模型处理）" : "（沿用留档）"}${r.stale ? "；选项已改，要点「重新装载」才更新" : ""}`,
+					});
+				}
+			} else {
+				if (r.declareError) {
+					broadcast({
+						type: "notify",
+						level: "error",
+						text: `预设「${r.preset}」声明失败（${r.pending} 段先按保守方式全部保留）：${r.declareError}`,
+					});
+				}
+				if (r.state === "written" && r.preset) {
+					broadcast({
+						type: "notify",
+						level: "info",
+						text: `预设「${r.preset}」已转译：活动条目 ${r.active} 条、停用 ${r.disabled} 条${r.declared ? `（本次声明 ${r.declared} 段）` : ""}`,
+					});
+				}
 			}
-			if (r.state === "written" && r.preset) {
-				broadcast({
-					type: "notify",
-					level: "info",
-					text: `预设「${r.preset}」已转译：活动条目 ${r.active} 条、停用 ${r.disabled} 条${r.declared ? `（本次声明 ${r.declared} 段）` : ""}`,
-				});
-			} else if (r.state === "stripped") {
+			// 卸载剥净才提示（process 机制缺留档的剥净有自己的 needProcess 提示，别误报「已卸载」）
+			if (r.state === "stripped" && r.mode !== "process") {
 				broadcast({ type: "notify", level: "info", text: "预设已卸载：卡文件里的（预设）条目已移除" });
 			}
 			return r;

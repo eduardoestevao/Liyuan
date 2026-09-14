@@ -4,8 +4,15 @@ import { test } from "node:test";
 import {
 	assembleForDeclare,
 	buildDeclarePrompt,
+	buildProcessPrompt,
+	compiledPieces,
+	compilePreset,
 	declarePieces,
 	parseDeclareResponse,
+	parseProcessResponse,
+	parseProcessResponseWithError,
+	presetFingerprint,
+	processIntoEntries,
 	stripPresetEntries,
 	translatePresetWithDeclaration,
 	type PresetDeclaration,
@@ -206,4 +213,91 @@ test("stripPresetEntries：剥掉（预设）来源条目（含注释态），�
 	assert.ok(stripped.includes("世界书内容"));
 	assert.ok(!stripped.includes("预设内容"));
 	assert.ok(!stripped.includes("轻小说文风"));
+});
+
+// ---------------- 机制二：模型处理（2026-09-14 与声明并存、按预设自选） ----------------
+
+test("compilePreset：{{char}}/{{user}} 留占位，指纹对开关/内容敏感；处理提示词用标签段契约", () => {
+	const rawWithUser = JSON.parse(JSON.stringify(rawPreset)) as typeof rawPreset;
+	rawWithUser.prompts[0].content = "你是资深写手，为{{user}}执笔。";
+	const pieces = compiledPieces(compilePreset(loadPresetDoc(rawWithUser, "测试预设")));
+	assert.ok(pieces.some((p) => p.text.includes("{{user}}")));
+
+	const fp1 = presetFingerprint(doc);
+	const flipped = JSON.parse(JSON.stringify(rawPreset)) as typeof rawPreset;
+	const order = (flipped.prompt_order as Array<{ order: Array<{ identifier: string; enabled: boolean }> }>)[0].order;
+	for (const o of order) if (o.identifier === "off") o.enabled = true;
+	assert.notEqual(presetFingerprint(loadPresetDoc(flipped, "测试预设")), fp1, "开关变化指纹必须变");
+
+	const p = buildProcessPrompt(pieces, { preset: "测试预设" });
+	assert.ok(p.systemPrompt.includes("<identity>"));
+	assert.ok(p.systemPrompt.includes("<dropped>"));
+	assert.ok(!p.systemPrompt.includes("输出 JSON"), "正文不再要求装进 JSON 字符串");
+	assert.ok(p.userText.includes("⟦片段1"));
+});
+
+test("parseProcessResponse：标签段契约——正文分行、裸引号天然无恙；JSON 兜底（含裸换行/裸引号/尾逗号修复）", () => {
+	// 实弹病样（爱用"～""呢" 裸引号＋多行正文）在标签段下根本不经转义，原样保留
+	const tagged = [
+		"好的：",
+		"<identity>",
+		"口吻：慵懒、软糯、妩媚，尾音适当拖长，爱用\"～\"\"呢\"\"嘛\"\"啦\"",
+		"态度：不解释、不争辩。",
+		"</identity>",
+		"",
+		"<writing>",
+		"## 人称视角",
+		"本轮使用第二人称叙述。",
+		"</writing>",
+		"",
+		"<dropped>",
+		"- 上下文结束标签——材料包装：包裹内容槽位标签",
+		"- 狐言狐语",
+		"</dropped>",
+	].join("\n");
+	const r = parseProcessResponse(tagged);
+	assert.ok(r);
+	assert.equal(r.identity, '口吻：慵懒、软糯、妩媚，尾音适当拖长，爱用"～""呢""嘛""啦"\n态度：不解释、不争辩。');
+	assert.equal(r.writing, "## 人称视角\n本轮使用第二人称叙述。");
+	assert.deepEqual(r.dropped, [
+		{ name: "上下文结束标签", reason: "材料包装：包裹内容槽位标签" },
+		{ name: "狐言狐语", reason: "" },
+	]);
+
+	// JSON 兜底：合法 JSON 直收
+	const good = parseProcessResponse('{"identity":"你是作家。","writing":"白描。","dropped":[{"name":"思考","reason":"思考协议"}]}');
+	assert.ok(good);
+	assert.deepEqual(good.dropped, [{ name: "思考", reason: "思考协议" }]);
+	// 裸换行（实弹主死因）修复
+	const bareNewline = parseProcessResponse('{\n"identity": "你是作家。\n第一条守则。",\n"writing": "w",\n"dropped": []\n}');
+	assert.ok(bareNewline);
+	assert.equal(bareNewline.identity, "你是作家。\n第一条守则。");
+	// 裸引号（实弹第二例）＋尾逗号修复
+	const bareQuote = parseProcessResponse('{"identity":"爱用"～""呢"之后离开",\n"writing":"w","dropped":[{"name":"n","reason":"r",},],}');
+	assert.ok(bareQuote);
+	// 病样解析失败时带出报错文案（失败留档用）
+	const bad = parseProcessResponseWithError("抱歉我不能");
+	assert.equal(bad.value, null);
+	assert.match(bad.parseError ?? "", /标签段/);
+});
+
+test("processIntoEntries：两条固定条目、占位按卡求值、空产物不落条目", () => {
+	const r = processIntoEntries(
+		{ identity: "你是为{{user}}执笔的作家。\n## 作家信条\n专注。", writing: "文风：白描为主。" },
+		{ charName: "云澜", userName: "明月" },
+	);
+	const appendEntries = parsePromptEntries(r.appendMarkdown);
+	assert.equal(appendEntries.length, 1);
+	assert.equal(appendEntries[0].name, "预设提示词（预设）");
+	assert.ok(appendEntries[0].content.includes("为明月执笔"));
+	assert.ok(appendEntries[0].content.includes("＃ 作家信条"), "正文里的 # 标题被转义，不割裂条目");
+
+	const agentsEntries = parsePromptEntries(r.agentsSection);
+	assert.equal(agentsEntries.length, 1);
+	assert.equal(agentsEntries[0].name, "预设写作规则（预设）");
+
+	// 换卡：占位符按新卡求值，条目名不变；空产物不落条目
+	const r2 = processIntoEntries({ identity: "为{{user}}执笔。", writing: "" }, { charName: "大乾", userName: "怀瑾" });
+	assert.ok(r2.appendMarkdown.includes("为怀瑾执笔"));
+	assert.equal(r2.agentsSection, "");
 });
