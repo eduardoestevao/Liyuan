@@ -138,9 +138,11 @@ const ci = spawnSync("npm ci --omit=dev", {
 });
 if (ci.status !== 0 || ci.error) die(`npm ci 失败${ci.error ? `：${ci.error.message}` : ""}`);
 
-// electron-updater 只被桌面壳（app/main.mjs）用到，不进根 package.json（源码包用户不需要）；
-// --no-save 塞进 app/node_modules，不动 lock——与 desktop/package.json devDeps 钉同一版本
-const upd = spawnSync("npm install electron-updater@^6.8.0 --omit=dev --no-save --no-package-lock", {
+// electron-updater 只被桌面壳（app/main.mjs）用到，不进根 package.json（源码包用户不需要）。
+// 不用 --no-save/--no-package-lock：CI 的 npm 10（node 22）在该组合下 arborist 崩溃
+// （Cannot read properties of null (reading 'edgesOut')）——app/ 是一次性 staging 目录，
+// 让 npm 照常写 manifest/lock 无妨；版本钉死与本机产物一致
+const upd = spawnSync("npm install electron-updater@6.8.0 --omit=dev", {
 	cwd: appDir,
 	stdio: "inherit",
 	shell: true,
