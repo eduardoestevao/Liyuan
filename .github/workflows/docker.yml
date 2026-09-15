@@ -58,3 +58,41 @@ jobs:
             ${{ steps.image.outputs.name }}:latest
           cache-from: type=gha
           cache-to: type=gha,mode=max
+
+  # 冒烟：把刚推的镜像按用户的 compose 路径拉起来探活（镜像私有也要能验——
+  # 用 GITHUB_TOKEN 登录拉取，不依赖可见性）。与 desktop.yml 的 AppImage 冒烟同款。
+  smoke:
+    name: smoke (pull & probe)
+    runs-on: ubuntu-latest
+    needs: publish
+    permissions:
+      contents: read
+      packages: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Login to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      # deploy/compose.ghcr.yml 即文档里用户 curl 的那份：相对路径 ./data 落在 compose 文件旁
+      - name: Pull and up (compose.ghcr.yml)
+        run: docker compose -f deploy/compose.ghcr.yml up -d --wait --wait-timeout 300
+
+      - name: HTTP probe
+        run: |
+          code=$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:7620/)
+          test "$code" = 200 || { echo "GET / -> $code"; exit 1; }
+
+      - name: Config seeded as real files
+        run: |
+          test -f deploy/data/config/liyuan.config.json
+          test -f deploy/data/config/liyuan.agent.json
+          test -f deploy/data/cards/default_Qingwu.json
+
+      - name: Dump logs on failure
+        if: failure()
+        run: docker compose -f deploy/compose.ghcr.yml logs --tail=200
