@@ -23,7 +23,8 @@ jobs:
             targets: --win zip nsis
           - name: macos
             os: macos-latest
-            targets: --mac dmg
+            # CLI 给了目标就会盖掉 yml 里的 arch 列表（只剩宿主架构）——必须显式传双架构
+            targets: --mac dmg --x64 --arm64
           - name: linux
             os: ubuntu-latest
             targets: --linux AppImage
@@ -63,6 +64,7 @@ jobs:
             desktop/dist/*.exe
             desktop/dist/*.dmg
             desktop/dist/*.AppImage
+            desktop/dist/*.blockmap
             desktop/dist/latest*.yml
           if-no-files-found: error
 
