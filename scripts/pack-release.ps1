@@ -181,7 +181,7 @@ function Stage-Clean {
     ".rp-media", ".rp-uploads",
     ".playwright-mcp",
     ".superpowers", "superpowers",
-    "scratch", "summaries", "output", "persist",
+    "scratch", "summaries", "output", "persist", "artifacts",
     "ab-test", "import-test", "liyuan-profiles",
     "data",
     # 桌面版为独立 Electron 封装（构建产物 app/dist/node_modules），源码包不包含
@@ -196,6 +196,7 @@ function Stage-Clean {
     "*.bak",
     ".liyuan-personas.json",
     ".liyuan-mcp.json",
+    ".mcp.json",
     "liyuan.config.json", "liyuan.agent.json", "liyuan.agent.meta.json",
     "liyuan-preset.json",
     "shot-*.png", "bug-*.png", "fix-*.png", "latest-ui.png",
@@ -296,6 +297,8 @@ function Stage-Clean {
     "docs\PLAN-*.md",
     "docs\REVIEW-*.md",
     "docs\DRAFT-*.md",
+    "docs\FINDINGS-*.md",
+    "docs\PI-RETURN-*.md",
     "docs\PRESET-SPLIT-TAXONOMY.md",
     # 内部文档（含本地绝对路径/会话定位，仅仓库可见）+ 预设装载期生成物（用户数据）
     "docs\READING-THINKING.md",
@@ -346,7 +349,7 @@ skip_dirs = {
   '.liyuan-media', '.liyuan-memory', '.liyuan-skills', '.liyuan-state',
   '.liyuan-uploads', '.liyuan-audio', '.liyuan-worldline',
   '.rp-media', '.rp-uploads',
-  'desktop'
+  'desktop', 'artifacts'
 }
 exec_names = {'start.sh', 'start.command', 'install.sh', 'docker-entrypoint.sh'}
 with zipfile.ZipFile(zip_path, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as zf:
@@ -413,7 +416,7 @@ if catalogs[0] != catalogs[1]:
 forbidden_dirs = ['.liyuan-memory/', '.liyuan-state/', '.liyuan-uploads/', '.liyuan-lore/',
                   '.liyuan-codex/', '.liyuan-assistant/', '.liyuan-worldline/', '.liyuan-media/',
                   '.liyuan-audio/', '.liyuan-cache/', '.superpowers/', 'scratch/', 'summaries/',
-                  'output/', 'persist/', 'test/', 'assets/presets/']
+                  'output/', 'persist/', 'artifacts/', 'test/', 'assets/presets/']
 for d in forbidden_dirs:
     hits = [n for n in names if ('/' + d) in n]
     if hits:
@@ -421,8 +424,8 @@ for d in forbidden_dirs:
 junk = [n for n in names if n.count('/') == 1 and n.split('/')[1].startswith('_')]
 if junk:
     errors.append(f'DEV SCRATCH at root: {junk[:5]}')
-for f in ('.liyuan/settings.json', '.liyuan-personas.json', 'liyuan.agent.meta.json', '.liyuan-mcp.json'):
-    if any(n.endswith('/' + f) for n in names):
+for f in ('.liyuan/settings.json', '.liyuan-personas.json', 'liyuan.agent.meta.json', '.liyuan-mcp.json', '.mcp.json'):
+    if any(n.endswith('/' + f) or n.endswith(f) for n in names):
         errors.append(f'PERSONAL FILE {f}')
 if errors:
     print('ZIP CHECK FAILED: ' + r'''$ZipPath''')
