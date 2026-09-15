@@ -50,7 +50,9 @@ jobs:
 
       - name: electron-builder
         working-directory: desktop
-        run: npx electron-builder ${{ matrix.targets }}
+        # publish 配置只为生成 latest*.yml（更新元数据）；CI 不持有 GH_TOKEN，
+        # 不加 --publish never 时 electron-builder 在 CI 环境会把 publish 当显式配置要求 token
+        run: npx electron-builder ${{ matrix.targets }} --publish never
 
       - name: Upload artifacts
         uses: actions/upload-artifact@v4
