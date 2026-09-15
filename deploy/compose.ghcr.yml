@@ -1,0 +1,67 @@
+# GHCR 镜像版 compose（deploy/README.md 方式 C）
+# 与仓库根 docker-compose.yml 的区别只有一处：直接拉 ghcr.io/weidu12123/liyuan，不在服务器上构建。
+# 数据布局（./data/ 与命名卷）与根 compose 完全一致，两种方式可随时互相切换。
+# 用法：docker compose up -d    更新：docker compose pull && docker compose up -d
+
+services:
+  liyuan:
+    image: ghcr.io/weidu12123/liyuan:latest
+    container_name: liyuan
+    restart: unless-stopped
+    ports:
+      - "${LIYUAN_PORT:-7620}:7620"
+    environment:
+      HOST: "0.0.0.0"
+      PORT: "7620"
+    volumes:
+      # 持久化 agent 会话 / 用户数据
+      - liyuan-agent:/root/.liyuan
+      - liyuan-state:/app/.liyuan-state
+      - liyuan-uploads:/app/.liyuan-uploads
+      - liyuan-media:/app/.liyuan-media
+      - liyuan-audio:/app/.liyuan-audio
+      - liyuan-artifacts:/app/.liyuan-artifacts
+      - liyuan-codex:/app/.liyuan-codex
+      - liyuan-lore:/app/.liyuan-lore
+      - liyuan-memory:/app/.liyuan-memory
+      - liyuan-skills:/app/.liyuan-skills
+      - liyuan-worldline:/app/.liyuan-worldline
+      - liyuan-cache:/app/.liyuan-cache
+      - liyuan-presets:/app/assets/presets
+      - liyuan-personas-assets:/app/assets/personas
+      - liyuan-profiles:/app/liyuan-profiles
+      - liyuan-skills-project:/app/skills
+      # 配置 + 用户导入的角色卡 / 世界书（与根 compose 同一套布局；只挂目录不挂单文件）
+      - ./data/config:/app/config
+      - ./data/cards:/app/assets/cards
+      - ./data/lorebooks:/app/assets/lorebooks
+    healthcheck:
+      test:
+        [
+          "CMD",
+          "node",
+          "-e",
+          "fetch('http://127.0.0.1:7620/').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))",
+        ]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 45s
+
+volumes:
+  liyuan-agent:
+  liyuan-state:
+  liyuan-uploads:
+  liyuan-media:
+  liyuan-audio:
+  liyuan-artifacts:
+  liyuan-codex:
+  liyuan-lore:
+  liyuan-memory:
+  liyuan-skills:
+  liyuan-worldline:
+  liyuan-cache:
+  liyuan-presets:
+  liyuan-personas-assets:
+  liyuan-profiles:
+  liyuan-skills-project:

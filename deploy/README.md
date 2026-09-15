@@ -76,3 +76,22 @@ docker compose up -d --build
 ```
 
 若你之前按旧文档手工填过 `data/config/liyuan.agent.json`（是文件不是目录），它会被原样保留，Key 不丢。
+
+## 方式 C：GHCR 镜像（免构建）
+
+服务器上不装 Node、不在服务器上构建，直接拉预构建镜像（amd64 / arm64）：
+
+```bash
+mkdir -p /opt/liyuan && cd /opt/liyuan
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/weidu12123/Liyuan/master/deploy/compose.ghcr.yml
+docker compose up -d
+# 打开 http://服务器IP:7620
+```
+
+数据落在 `./data/`，布局与方式 B 完全一致，两种方式可随时互相切换。更新：
+
+```bash
+docker compose pull && docker compose up -d
+```
+
+也可直接 `docker pull ghcr.io/weidu12123/liyuan:1.6.0` 指定版本。

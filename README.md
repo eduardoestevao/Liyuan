@@ -101,6 +101,14 @@ docker compose up -d --build
 ```
 数据与配置持久化保存于本地映射卷中。
 
+也可直接拉预构建镜像，免去服务器构建：
+
+```bash
+mkdir -p liyuan && cd liyuan
+curl -fsSL -o docker-compose.yml https://raw.githubusercontent.com/weidu12123/Liyuan/master/deploy/compose.ghcr.yml
+docker compose up -d
+```
+
 ---
 
 ## 开发者
