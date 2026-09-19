@@ -6,6 +6,7 @@ import { LoginGate } from "./LoginGate.tsx";
 import "./app.css";
 import { installParentTavernShim } from "./tavernShim.ts";
 import { initTheme } from "./theme.ts";
+import { I18nProvider } from "./i18n.tsx";
 
 initTheme();
 // 三档程序卡：父页 TavernHelper / TheaterAPI / 事件总线（iframe 经 parent 访问）
@@ -13,9 +14,11 @@ installParentTavernShim();
 
 createRoot(document.getElementById("root")!).render(
 	<StrictMode>
-		<LoginGate>
-			<App />
-		</LoginGate>
+		<I18nProvider>
+			<LoginGate>
+				<App />
+			</LoginGate>
+		</I18nProvider>
 	</StrictMode>,
 );
 

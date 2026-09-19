@@ -6,10 +6,12 @@
 import { useEffect, useState } from "react";
 import { api } from "./api.ts";
 import { BrandLogo } from "./components/BrandLogo.tsx";
+import { useI18n } from "./i18n.tsx";
 
 type Gate = "checking" | "open" | "locked";
 
 export function LoginGate({ children }: { children: React.ReactNode }) {
+	const { t } = useI18n();
 	const [gate, setGate] = useState<Gate>("checking");
 	const [password, setPassword] = useState("");
 	const [error, setError] = useState("");
@@ -33,7 +35,7 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
 			setPassword("");
 			setGate("open");
 		} catch (e) {
-			setError((e as Error).message || "登录失败");
+			setError((e as Error).message || t("登录失败"));
 		} finally {
 			setBusy(false);
 		}
@@ -53,11 +55,11 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
 			>
 				<BrandLogo size={56} className="login-logo" alt="梨园" />
 				<div className="login-title">梨园</div>
-				<div className="login-sub">请输入访问密码</div>
+				<div className="login-sub">{t("请输入访问密码")}</div>
 				<input
 					className="field-input login-input"
 					type="password"
-					placeholder="访问密码"
+					placeholder={t("访问密码")}
 					value={password}
 					autoFocus
 					autoComplete="current-password"
@@ -68,7 +70,7 @@ export function LoginGate({ children }: { children: React.ReactNode }) {
 				/>
 				{error && <div className="login-error">{error}</div>}
 				<button className="drawer-btn save-btn login-btn" type="submit" disabled={busy || !password}>
-					{busy ? "登录中…" : "进入"}
+					{busy ? t("登录中…") : t("进入")}
 				</button>
 			</form>
 		</div>

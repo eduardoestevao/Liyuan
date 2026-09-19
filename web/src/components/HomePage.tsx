@@ -7,6 +7,7 @@ import { UpdateChip } from "./UpdateFlow.tsx";
 import { useEffect, useMemo, useState } from "react";
 import type { WireSessionInfo } from "../wire.ts";
 import { BrandLogo } from "./BrandLogo.tsx";
+import { useI18n } from "../i18n.tsx";
 import {
 	IconGithub,
 	IconSessions,
@@ -16,13 +17,14 @@ const COLLAPSED = 5;
 /** 项目仓库（主页顶栏图标入口） */
 const GITHUB_URL = "https://github.com/weidu12123/Liyuan";
 
-function timeAgo(ms: number): string {
+function timeAgo(ms: number, locale: string): string {
 	const diff = Date.now() - ms;
-	if (diff < 90_000) return "刚刚";
-	if (diff < 3_600_000) return `${Math.round(diff / 60_000)} 分钟前`;
-	if (diff < 86_400_000) return `${Math.round(diff / 3_600_000)} 小时前`;
-	if (diff < 30 * 86_400_000) return `${Math.round(diff / 86_400_000)} 天前`;
-	return new Date(ms).toLocaleDateString();
+	if (diff < 90_000) return locale === "en" ? "Just now" : "刚刚";
+	const rtf = new Intl.RelativeTimeFormat(locale, { numeric: "always" });
+	if (diff < 3_600_000) return rtf.format(-Math.round(diff / 60_000), "minute");
+	if (diff < 86_400_000) return rtf.format(-Math.round(diff / 3_600_000), "hour");
+	if (diff < 30 * 86_400_000) return rtf.format(-Math.round(diff / 86_400_000), "day");
+	return new Date(ms).toLocaleDateString(locale);
 }
 
 function sessionTitle(s: { name?: string; firstMessage: string }): string {
@@ -58,6 +60,7 @@ export function WelcomePanel({
 	onBrowseAll,
 	onOpenPanel,
 }: WelcomePanelProps) {
+	const { locale, t } = useI18n();
 		const [, setTick] = useState(0);
 	useEffect(() => {
 		const t = setInterval(() => setTick((n) => n + 1), 60_000);
@@ -74,7 +77,7 @@ export function WelcomePanel({
 
 	const hour = new Date().getHours();
 	const greet =
-		hour < 5 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好";
+		t(hour < 5 ? "夜深了" : hour < 11 ? "早上好" : hour < 14 ? "中午好" : hour < 18 ? "下午好" : "晚上好");
 
 	return (
 		<div className="welcome">
@@ -102,9 +105,9 @@ export function WelcomePanel({
 						</a>
 						<UpdateChip update={update ?? null} onClick={() => onUpdateClick?.()} />
 					</div>
-					<p className="welcome-hero-tag">角色扮演 Agent · 开源</p>
+					<p className="welcome-hero-tag">{t("角色扮演 Agent · 开源")}</p>
 					{charName && (
-						<button type="button" className="welcome-char-chip" onClick={() => onOpenPanel("card")} title="打开角色卡">
+						<button type="button" className="welcome-char-chip" onClick={() => onOpenPanel("card")} title={t("打开角色卡")}>
 							{charAvatarUrl ? (
 								<img className="welcome-char-avatar" src={charAvatarUrl} alt="" width={22} height={22} />
 							) : (
@@ -112,7 +115,7 @@ export function WelcomePanel({
 									{charName.slice(0, 1)}
 								</span>
 							)}
-							<span className="welcome-char-label">当前角色</span>
+							<span className="welcome-char-label">{t("当前角色")}</span>
 							<span className="welcome-char-name">{charName}</span>
 						</button>
 					)}
@@ -124,29 +127,29 @@ export function WelcomePanel({
 						disabled={!ready}
 						onClick={() => (current ? onOpen(current.path) : onNew())}
 					>
-						{hasHistory ? "继续当前对话" : "开始对话"}
+						{hasHistory ? t("继续当前对话") : t("开始对话")}
 					</button>
 					<button type="button" className="welcome-cta welcome-cta-ghost" disabled={!ready} onClick={onNew}>
-						新建会话
+						{t("新建会话")}
 					</button>
 				</div>
 			</header>
 
 			{/* ── 统一会话大卡片：有会话记录时展示，无会话时完全留白让输入框居中 ── */}
 			{ready && hasHistory && (
-				<section className="welcome-recent-card" aria-label="最近会话">
+				<section className="welcome-recent-card" aria-label={t("最近会话")}>
 					<div className="welcome-recent-head">
 						<div className="welcome-recent-title-group">
-							<span className="welcome-section-title">最近会话</span>
+							<span className="welcome-section-title">{t("最近会话")}</span>
 							<span className="welcome-recent-meta-pill">
-								{list.length} 会话 · {totalMsgs} 消息
+								{locale === "en" ? `${list.length} sessions · ${totalMsgs} messages` : `${list.length} 会话 · ${totalMsgs} 消息`}
 							</span>
 						</div>
 						<div className="welcome-recent-actions">
 							<span className={`welcome-stat-dot dot-${conn}`} title={conn} />
 							<button type="button" className="welcome-link" disabled={!ready} onClick={onBrowseAll}>
 								<IconSessions size={13} />
-								全部会话
+								{t("全部会话")}
 							</button>
 						</div>
 					</div>
@@ -157,7 +160,7 @@ export function WelcomePanel({
 									<button
 										type="button"
 										className={`welcome-chat-row ${s.current ? "current" : ""}`}
-										title={s.current ? "点击进入当前对话" : "打开此会话"}
+										title={s.current ? t("点击进入当前对话") : t("打开此会话")}
 										onClick={() => onOpen(s.path)}
 									>
 										<span className="welcome-chat-avatar" aria-hidden="true">
@@ -180,13 +183,13 @@ export function WelcomePanel({
 												<strong className="welcome-chat-char">{s.cardName || charName || "会话"}</strong>
 												<span className="welcome-chat-sep">·</span>
 												<span className="welcome-chat-name">{sessionTitle(s)}</span>
-												{s.current ? <span className="session-current-badge">当前</span> : null}
+												{s.current ? <span className="session-current-badge">{t("当前")}</span> : null}
 											</span>
 											{s.preview && <span className="welcome-chat-preview">{s.preview}</span>}
 										</span>
 										<span className="welcome-chat-side">
-											<span className="welcome-chat-time">{timeAgo(s.modified)}</span>
-											<span className="welcome-chat-count">{s.messageCount} 条</span>
+											<span className="welcome-chat-time">{timeAgo(s.modified, locale)}</span>
+											<span className="welcome-chat-count">{locale === "en" ? `${s.messageCount} messages` : `${s.messageCount} 条`}</span>
 										</span>
 									</button>
 								</li>

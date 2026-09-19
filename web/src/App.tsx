@@ -118,6 +118,7 @@ import type {
 	UpdateWire,
 	WorldState,
 } from "./wire.ts";
+import { useI18n } from "./i18n.tsx";
 
 interface Toast {
 	id: number;
@@ -238,6 +239,7 @@ function loadPanelPrefs(): { left: PanelId | null; right: PanelId | null; lastSe
 }
 
 export default function App() {
+	const { t } = useI18n();
 	const [conn, setConn] = useState<ConnState>("connecting");
 	const [charName, setCharName] = useState("梨园");
 	const [userName, setUserName] = useState("");
@@ -1645,9 +1647,9 @@ export default function App() {
 										type="button"
 										className={`drawer-rail-btn ${leftPanel === sid ? "active" : ""}`}
 										onClick={() => openLeft(sid)}
-										aria-label={PANEL_LABEL[sid]}
+										aria-label={t(PANEL_LABEL[sid])}
 										aria-current={leftPanel === sid}
-										data-tip={PANEL_LABEL[sid]}
+										data-tip={t(PANEL_LABEL[sid])}
 									>
 										<Ic size={19} />
 									</button>
@@ -1699,7 +1701,7 @@ export default function App() {
 						) : (
 							<span className="panel-head-title">
 								<HeadIcon size={15} />
-								{agent ? agent.name : PANEL_LABEL[headId as PanelId]}
+								{agent ? agent.name : t(PANEL_LABEL[headId as PanelId])}
 							</span>
 						)}
 						<span className="panel-head-actions">
@@ -2254,7 +2256,7 @@ export default function App() {
 					)}
 					</div>
 					{rightPanel && (
-						<aside className="stage-col stage-col-right" aria-label={PANEL_LABEL[rightPanel as PanelId] || "状态栏"}>
+						<aside className="stage-col stage-col-right" aria-label={t(PANEL_LABEL[rightPanel as PanelId] || "状态栏")}>
 							<div className="stage-col-head">
 								<span className="stage-col-title">
 									{(() => {
@@ -2264,7 +2266,7 @@ export default function App() {
 										return (
 											<>
 												<Icon size={14} />
-												<span>{ag ? ag.name : PANEL_LABEL[rightPanel as PanelId] || "状态栏"}</span>
+												<span>{ag ? ag.name : t(PANEL_LABEL[rightPanel as PanelId] || "状态栏")}</span>
 											</>
 										);
 									})()}
@@ -2551,7 +2553,7 @@ export default function App() {
 					return (
 						<FloatWindow
 							id={floatPanel}
-							title={ag ? ag.name : PANEL_LABEL[floatPanel as PanelId]}
+							title={ag ? ag.name : t(PANEL_LABEL[floatPanel as PanelId])}
 							icon={<Icon size={15} />}
 							{...(ag
 								? {}
