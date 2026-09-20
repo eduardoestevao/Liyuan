@@ -794,7 +794,7 @@ export default function App() {
 						// 同会话 hello（重载）：刷新列表
 						sendRef.current({ type: "sessions" });
 					}
-						document.title = "梨园";
+						document.title = document.documentElement.lang === "en" ? "Liyuan" : "梨园";
 						setDraftWorkspace(frame.workspace);
 						setDraftHistory(undefined);
 						setBusy(frame.streaming === true);
