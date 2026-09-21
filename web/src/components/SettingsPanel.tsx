@@ -6,7 +6,6 @@
 
 import { useEffect, useRef, useState } from "react";
 import { api, apiGet, apiPut, createBackup, downloadBackup, importBackup, type RpConfigView } from "../api.ts";
-import { getTheme, setTheme, type ThemeMode } from "../theme.ts";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
 
 type MemoryStoreStats = {
@@ -731,7 +730,6 @@ export function SettingsPanel({
 	const [backendControl, setBackendControl] = useState(true);
 	const [askMode, setAskMode] = useState(false);
 	const [dirty, setDirty] = useState(false);
-	const [dark, setDark] = useState(() => getTheme() === "dark");
 
 	useEffect(() => {
 		if (data) {
@@ -746,12 +744,6 @@ export function SettingsPanel({
 
 	const touch = () => setDirty(true);
 
-	const onTheme = (on: boolean) => {
-		const mode: ThemeMode = on ? "dark" : "light";
-		setDark(on);
-		setTheme(mode);
-		toast("info", on ? "已切换到黑夜模式" : "已切换到白昼模式");
-	};
 
 	const save = () =>
 		run(async () => {
@@ -770,14 +762,6 @@ export function SettingsPanel({
 	return (
 		<div className="panel-body panel-body-sticky">
 			<PanelStatus loading={loading} error={error} hasData={!!data} />
-			<section className="sp-section">
-				<h4>外观</h4>
-				<div className="toggle-row">
-					<span>黑夜模式</span>
-					<Toggle checked={dark} onChange={onTheme} />
-				</div>
-				<div className="field-hint">白昼 / 黑夜立刻切换，偏好记在本机浏览器，与会话配置无关。</div>
-			</section>
 			<AccessSection toast={toast} />
 			<BackupSection toast={toast} />
 			<MemorySection toast={toast} />

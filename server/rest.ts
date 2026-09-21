@@ -84,8 +84,9 @@ import {
 	UPLOAD_PREFIX_LEGACY,
 	normalizeDataPath,
 	resolveConfigPath,
+	sameCardPath,
 } from "../src/paths.ts";
-import { deleteChat, exportChatZip, importChatZip, listCardSpaces, renameChat, resolveCardSpace } from "../src/cardspace.ts";
+import { createCardSpace, deleteChat, exportChatZip, importChatZip, listCardSpaces, renameChat, resolveCardSpace } from "../src/cardspace.ts";
 import { scanSkillFiles, stageSkillRoot } from "../src/stage/materials.ts";
 import { deleteStageSkill, saveStageSkill } from "../src/stage/skill-store.ts";
 import type { WorldlineView } from "../src/worldline.ts";
@@ -176,7 +177,8 @@ import {
 	type McpServerConfig,
 } from "../src/mcp.ts";
 import { listSkills, saveSkill } from "../src/skills.ts";
-import { BACKUP_ROOT, buildBackupZip, stageRestore } from "../src/backup.ts";
+import { BACKUP_ROOT, buildBackupZip, projectSessionDir, stageRestore } from "../src/backup.ts";
+import { promoteStagedCard } from "../src/migrate-cards.ts";
 import { DEFAULT_CONFIG, type LorebookEntry, type RpConfig } from "../src/types.ts";
 import { readJsonFile } from "../src/jsonio.ts";
 import { formatBytes, listMedia, listUploads, saveUpload } from "../src/uploads.ts";
@@ -490,6 +492,7 @@ const CONFIG_EDITABLE = new Set([
 	"creationMode",
 	"assistantModel",
 	"sideModel",
+	"compactEveryNTurns",
 ]);
 
 export function applyConfigPatch(config: RpConfig, patch: Record<string, unknown>): RpConfig {
@@ -1857,9 +1860,10 @@ export interface NewCardInput {
 export function createCardFile(cwd: string, input: NewCardInput): { name: string; path: string; abs: string } | null {
 	const safe = input.name.replace(/[\\/<>:"|?*]/g, "_").slice(0, 120).trim();
 	if (!safe) throw new Error("卡名无效");
-	const rel = `assets/cards/${safe}.json`;
-	const dest = join(cwd, "assets", "cards", `${safe}.json`);
-	if (existsSync(dest)) return null;
+	const fileName = `${safe}.json`;
+	const dest = join(cwd, "assets", "cards", fileName);
+	// 同名拒写：暂存里没有（创建后即升格清空），也要查已升格的卡空间
+	if (existsSync(dest) || listCardSpaces(cwd).some((s) => basename(s.cardFile) === fileName)) return null;
 	const card = {
 		spec: "chara_card_v3",
 		spec_version: "3.0",
@@ -1888,7 +1892,14 @@ export function createCardFile(cwd: string, input: NewCardInput): { name: string
 		}
 		throw e instanceof Error ? new Error(`${e.message}，已回滚`) : e;
 	}
-	return { name: safe, path: rel, abs: dest };
+	// 落库即建卡空间（与导入同一条）：新卡从出生就在两层布局里；升格失败留在暂存，仍可用
+	try {
+		const space = createCardSpace(cwd, dest, safe, { move: true });
+		return { name: safe, path: `${CARDS_ROOT}/${space.folder}/${basename(space.cardFile)}`, abs: space.cardFile };
+	} catch (err) {
+		console.error(`[liyuan] 新建卡升格失败（留在暂存）：${err instanceof Error ? err.message : String(err)}`);
+		return { name: safe, path: `assets/cards/${fileName}`, abs: dest };
+	}
 }
 
 /**
@@ -1900,22 +1911,32 @@ export async function selectCard(
 	cwd: string,
 	host: RestHost,
 	cardPath: string,
-): Promise<{ name: string; path: string; result: "switched" | "created"; embeddedLoreCount: number; persona: string | null }> {
+): Promise<{ name: string; path: string; result: "switched" | "created"; embeddedLoreCount: number; persona: string | null; promoted: boolean }> {
 	const card = loadCardFile(resolvePath(cwd, cardPath)); // 先验卡，坏卡不落盘
 	const config = loadConfig(cwd) as unknown as Record<string, unknown>;
+	// 暂存卡（还住在 assets/cards/ 的导入卡）在真正打开时升格为卡空间：搬进 cards/<卡名>/、
+	// 旧扁平会话各成一个子项目——「新建项目」这一层由此长出来。当前卡本身不升格：
+	// 它可能正开着会话，搬文件会动到活会话（切走再切回即自愈）。
+	const prevCard = typeof config.card === "string" ? config.card : "";
+	let finalPath = cardPath;
+	if (!sameCardPath(cardPath, prevCard, cwd)) {
+		const promoted = promoteStagedCard(cwd, projectSessionDir(cwd, host.agentDir()), cardPath);
+		if (promoted) finalPath = promoted;
+	}
 	delete config.displayName;
 	delete config.greetingIndex;
-	config.card = cardPath;
+	config.card = finalPath;
 	writeJsonWithBackup(configPath(cwd), config);
-	const persona = personaForCard(loadPersonas(cwd), cardPath);
+	const persona = personaForCard(loadPersonas(cwd), finalPath);
 	if (persona) projectPersonaToConfig(cwd, persona);
 	const result = await host.switchToCard();
 	return {
 		name: card.name,
-		path: cardPath,
+		path: finalPath,
 		result,
 		embeddedLoreCount: card.book.length,
 		persona: persona?.name ?? null,
+		promoted: finalPath !== cardPath,
 	};
 }
 
@@ -1972,6 +1993,69 @@ export function updatePersonaFor(cwd: string, id: string, patch: { name?: string
 // ---------- 路由 ----------
 
 /** /api/* 请求处理；非 /api 路径返回 false 交回静态托管 */
+export function importEmbeddedLoreForCards(
+	cwd: string,
+	targets: Array<{ card: string; mount: boolean }>,
+	config: RpConfig,
+): {
+	results: Array<{ path: string; entryCount: number; name: string; mounted: boolean }>;
+	newlyMounted: string[];
+	nextConfig: RpConfig | null;
+} {
+	if (targets.length === 0) throw new Error("缺少角色卡");
+
+	mkdirSync(join(cwd, LOREBOOKS_DIR), { recursive: true });
+	const results: Array<{ path: string; entryCount: number; name: string; mounted: boolean }> = [];
+	const newlyMounted: string[] = [];
+
+	for (const t of targets) {
+		const card = loadCardFile(resolvePath(cwd, t.card));
+		if (card.book.length === 0) continue;
+		const safeBase = card.name.replace(/[\\/:*?"<>|]/g, "-").trim() || "card-lore";
+		const stJson = exportStLorebook(card.name, card.book);
+		const jsonStr = `${JSON.stringify(stJson, null, "\t")}\n`;
+
+		let file = `${safeBase}.json`;
+		let dest = join(cwd, LOREBOOKS_DIR, file);
+		let n = 2;
+		while (existsSync(dest)) {
+			try {
+				const existing = readFileSync(dest, "utf8");
+				if (existing.trim() === jsonStr.trim()) {
+					break;
+				}
+			} catch {
+				/* ignore */
+			}
+			file = `${safeBase}-${n}.json`;
+			dest = join(cwd, LOREBOOKS_DIR, file);
+			n += 1;
+		}
+		writeFileSync(dest, jsonStr, "utf8");
+		const rel = `${LOREBOOKS_DIR}/${file}`;
+		if (t.mount) {
+			newlyMounted.push(rel);
+		}
+		results.push({ path: rel, entryCount: card.book.length, name: card.name, mounted: t.mount });
+	}
+
+	if (results.length === 0) {
+		throw new Error("所选角色卡均无内嵌世界书");
+	}
+
+	let nextConfig: RpConfig | null = null;
+	if (newlyMounted.length > 0) {
+		const existing = mountedLorebookPaths(config);
+		const merged = [...existing];
+		for (const p of newlyMounted) {
+			if (!merged.includes(p)) merged.push(p);
+		}
+		nextConfig = setMountedLorebooks(config, merged);
+	}
+
+	return { results, newlyMounted, nextConfig };
+}
+
 export async function handleApiRequest(req: IncomingMessage, res: ServerResponse, host: RestHost): Promise<boolean> {
 	const url = (req.url ?? "/").split("?")[0];
 	if (!url.startsWith("/api/")) return false;
@@ -2894,24 +2978,40 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 				const dir = join(host.cwd, "assets", "cards");
 				mkdirSync(dir, { recursive: true });
 				const dest = join(dir, safe);
-				if (existsSync(dest)) throw new Error(`同名卡已存在：${safe}`);
+				// 同名不覆盖：暂存里没有（导入后即升格清空），也要查已升格的卡空间
+				if (existsSync(dest) || listCardSpaces(host.cwd).some((s) => basename(s.cardFile) === safe)) {
+					throw new Error(`同名卡已存在：${safe}`);
+				}
 				const data = await readBodyRaw(req, MAX_UPLOAD);
 				if (data.length === 0) throw new Error("文件内容为空");
 				writeFileSync(dest, data);
+				let card: ReturnType<typeof loadCardFile>;
 				try {
-					const card = loadCardFile(dest);
+					card = loadCardFile(dest);
 					if (!card.name.trim()) throw new Error("卡名为空");
-					host.notify("info", `已导入角色卡「${card.name}」`);
-					sendJson(res, 200, {
-						ok: true,
-						path: `assets/cards/${safe}`,
-						name: card.name,
-						embeddedLoreCount: card.book.length,
-					});
 				} catch (e) {
-					unlinkSync(dest); // 坏卡不留盘
+					try {
+						unlinkSync(dest); // 坏卡不留盘
+					} catch {
+						/* ignore */
+					}
 					throw new Error(`不是有效的角色卡：${e instanceof Error ? e.message : String(e)}`);
 				}
+				// 落库即建卡空间：暂存 → cards/<卡名>/。升格失败留在暂存，仍是一张可用的旧布局卡。
+				let rel = `assets/cards/${safe}`;
+				try {
+					const space = createCardSpace(host.cwd, dest, card.name, { move: true });
+					rel = `${CARDS_ROOT}/${space.folder}/${basename(space.cardFile)}`;
+				} catch (err) {
+					console.error(`[liyuan] 导入卡升格失败（留在暂存）：${err instanceof Error ? err.message : String(err)}`);
+				}
+				host.notify("info", `已导入角色卡「${card.name}」`);
+				sendJson(res, 200, {
+					ok: true,
+					path: rel,
+					name: card.name,
+					embeddedLoreCount: card.book.length,
+				});
 				return true;
 			}
 			/**
@@ -2943,15 +3043,18 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					const others = listCardLibrary(host.cwd, config).filter((c) => resolvePath(host.cwd, c.path) !== abs);
 					const fallback = others.find((c) => c.path === DEFAULT_CONFIG.card) ?? others[0];
 					if (!fallback) throw new Error("这是卡库里最后一张卡，删掉就没有可用角色了：请先导入其它卡");
+					// 兜底卡若还在导入暂存：同切换路径升格（与 selectCard 同一机制，各自幂等）
+					const fallbackPath =
+						promoteStagedCard(host.cwd, projectSessionDir(host.cwd, host.agentDir()), fallback.path) ?? fallback.path;
 					const raw = config as unknown as Record<string, unknown>;
 					delete raw.displayName;
 					delete raw.greetingIndex;
-					raw.card = fallback.path;
+					raw.card = fallbackPath;
 					writeJsonWithBackup(configPath(host.cwd), raw);
-					const persona = personaForCard(loadPersonas(host.cwd), fallback.path);
+					const persona = personaForCard(loadPersonas(host.cwd), fallbackPath);
 					if (persona) projectPersonaToConfig(host.cwd, persona);
 					await host.switchToCard();
-					switchedTo = fallback.path;
+					switchedTo = fallbackPath;
 					config = loadConfig(host.cwd);
 				}
 
@@ -4294,6 +4397,7 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 					name: r.name,
 					path: r.path,
 					embeddedLoreCount: r.embeddedLoreCount,
+					promoted: r.promoted,
 				});
 				return true;
 			}
@@ -4303,31 +4407,62 @@ export async function handleApiRequest(req: IncomingMessage, res: ServerResponse
 			 */
 			case "POST /api/card/import-embedded-lore": {
 				if (refuseWhileStreaming()) return true;
-				const body = JSON.parse(await readBody(req)) as { card?: string };
+				const body = JSON.parse(await readBody(req)) as {
+					card?: string;
+					mount?: boolean;
+					cards?: Array<{ card: string; mount?: boolean }>;
+				};
 				const config = loadConfig(host.cwd);
-				const cardPath = (body.card ?? config.card).trim();
-				if (!cardPath) throw new Error("缺少角色卡");
-				const card = loadCardFile(resolvePath(host.cwd, cardPath));
-				if (card.book.length === 0) throw new Error(`「${card.name}」没有内嵌世界书`);
-				const safeBase = card.name.replace(/[\\/:*?"<>|]/g, "-").trim() || "card-lore";
-				mkdirSync(join(host.cwd, LOREBOOKS_DIR), { recursive: true });
-				let file = `${safeBase}.json`;
-				let dest = join(host.cwd, LOREBOOKS_DIR, file);
-				let n = 2;
-				while (existsSync(dest)) {
-					file = `${safeBase}-${n}.json`;
-					dest = join(host.cwd, LOREBOOKS_DIR, file);
-					n += 1;
+				const targets: Array<{ card: string; mount: boolean }> = [];
+				if (Array.isArray(body.cards) && body.cards.length > 0) {
+					for (const c of body.cards) {
+						if (typeof c?.card === "string" && c.card.trim()) {
+							targets.push({ card: c.card.trim(), mount: c.mount !== false });
+						}
+					}
+				} else {
+					const singleCard = (body.card ?? config.card).trim();
+					if (singleCard) {
+						targets.push({ card: singleCard, mount: body.mount !== false });
+					}
 				}
-				const stJson = exportStLorebook(card.name, card.book);
-				writeFileSync(dest, `${JSON.stringify(stJson, null, "\t")}\n`, "utf8");
-				const rel = `${LOREBOOKS_DIR}/${file}`;
-				// 追加挂载，不顶掉其它已启用的书
-				const next = setMountedLorebooks(config, [...mountedLorebookPaths(config), rel]);
-				writeJsonWithBackup(configPath(host.cwd), next);
-				await host.softRefreshConfig();
-				host.notify("info", `已导入配套世界书「${card.name}」（${card.book.length} 条）并加入挂载`);
-				sendJson(res, 200, { ok: true, path: rel, entryCount: card.book.length, name: card.name });
+
+				const { results, nextConfig } = importEmbeddedLoreForCards(host.cwd, targets, config);
+
+				if (nextConfig) {
+					writeJsonWithBackup(configPath(host.cwd), nextConfig);
+					await host.softRefreshConfig();
+				}
+
+				if (results.length === 1) {
+					const one = results[0];
+					host.notify(
+						"info",
+						`已导入配套世界书「${one.name}」（${one.entryCount} 条）${one.mounted ? "并加入挂载" : ""}`,
+					);
+					sendJson(res, 200, {
+						ok: true,
+						path: one.path,
+						entryCount: one.entryCount,
+						name: one.name,
+						mounted: one.mounted,
+						results,
+					});
+				} else {
+					const mountedCount = results.filter((r) => r.mounted).length;
+					host.notify(
+						"info",
+						`已导入 ${results.length} 本配套世界书${mountedCount > 0 ? `（其中 ${mountedCount} 本加入挂载）` : ""}`,
+					);
+					sendJson(res, 200, {
+						ok: true,
+						path: results[0].path,
+						entryCount: results[0].entryCount,
+						name: results[0].name,
+						mounted: mountedCount > 0,
+						results,
+					});
+				}
 				return true;
 			}
 

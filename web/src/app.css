@@ -770,6 +770,48 @@ html[data-theme="dark"] [data-tip]:focus-visible::after {
 	padding-top: 0;
 }
 
+.center.center-home-filled .stage-wrap {
+	/* 有记录：舞台必须撑满，输入钉在底部。空态把 wrap 收成内容高，
+	   手机上 flex-basis:auto 会按内容收缩，英雄区和输入重新粘在一起。 */
+	flex: 1 1 0;
+	min-height: 0;
+	overflow: hidden;
+}
+.center.center-home-filled .stage-col-left {
+	flex: 1 1 0;
+	min-height: 0;
+	height: auto;
+	overflow: hidden;
+}
+.center.center-home-filled .stage-col-left .list {
+	flex: 1 1 0;
+	min-height: 0;
+	height: auto;
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	padding-bottom: 8px;
+}
+.center.center-home-filled .flow {
+	flex: 1 1 auto;
+	min-height: 0;
+	width: 100%;
+	display: flex;
+	flex-direction: column;
+}
+.center.center-home-filled .welcome {
+	flex: 1 1 auto;
+	min-height: 0;
+}
+.center.center-home-filled .welcome-hero {
+	flex: none;
+}
+.center.center-home-filled .welcome-recent-card {
+	flex: 1 1 auto;
+	min-height: 0;
+	overflow: auto;
+}
+
 /* ── 左侧栏（桌面端）：与主工作区同图层、满高、平立分栏（非浮层卡片） ── */
 .side-left {
 	position: static;

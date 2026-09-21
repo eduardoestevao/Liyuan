@@ -143,9 +143,9 @@ import {
 import { sameCardPath } from "../src/paths.ts";
 import { readSessionCardInfo } from "../src/session-scan.ts";
 import { cardDirOfChatDir, cardFileIn, chatDataPath, chatDirOfSessionDir, createChat, loadCardConfig, mergeCardConfig, resolveCardSpace } from "../src/cardspace.ts";
-import { chatSessionsOf, chatsOfCard, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
+import { chatSessionsOf, chatsOfCard, ensureStorySessionDir, newChatSessionDir, storySessionTarget } from "../src/story-guide.ts";
 import { syncCardMemory } from "../src/card-memory.ts";
-import { alreadyMigrated, applyCardMigration, planCardMigration } from "../src/migrate-cards.ts";
+import { alreadyMigrated, applyCardMigration, planCardMigration, planOrphanSessions, promoteStagedCard } from "../src/migrate-cards.ts";
 import {
 	appendLorebookFileEntry,
 	appendOverlayEntry,
@@ -208,6 +208,37 @@ if (!alreadyMigrated(cwd)) {
 		if (!alreadyMigrated(cwd)) {
 			for (const line of applyCardMigration(cwd, plan)) console.log(`[liyuan] 卡迁移 ${line}`);
 		}
+	}
+}
+
+// 当前卡若还住在导入暂存（assets/cards/）：每次开机都补一次升格。
+// 整树迁移只在首启跑一次；而「导入 / 新建」落暂存的卡可能恰好就是当前卡——
+// 此时切换路径上的升格保护不生效（不许动开着的会话），开机这一刀是它唯一的自愈点
+// （此刻尚未创建任何会话，搬文件安全）。
+{
+	const cur = loadConfig(cwd).card ?? "";
+	if (cur) {
+		try {
+			const promoted = promoteStagedCard(cwd, projectSessionDir(cwd, agentHome), cur);
+			if (promoted) console.log(`[liyuan] 卡迁移 当前卡升格：${cur} → ${promoted}`);
+		} catch (err) {
+			console.error(`[liyuan] 当前卡升格失败：${err instanceof Error ? err.message : String(err)}`);
+		}
+	}
+}
+
+// 收散：扁平会话目录里指向已有卡空间的会话（卡空间化之后才生成的），搬回卡里。
+// 不收回来的话，它既不属于这张卡、项目树里也永远不出现。幂等，通常无事可做。
+{
+	try {
+		const strays = planOrphanSessions(cwd, projectSessionDir(cwd, agentHome));
+		if (strays.length > 0) {
+			for (const line of applyCardMigration(cwd, { cards: [], sessions: strays, skipped: [] })) {
+				console.log(`[liyuan] 卡迁移 ${line}`);
+			}
+		}
+	} catch (err) {
+		console.error(`[liyuan] 收散会话失败：${err instanceof Error ? err.message : String(err)}`);
 	}
 }
 
@@ -303,6 +334,11 @@ const createRuntime: CreateAgentSessionRuntimeFactory = async ({ cwd, sessionMan
 // 刀4 引导：当前卡是 cards/ 卡文件夹 ⇒ 按两层布局定 sessionDir（最新子项目的会话目录）；
 // 否则 undefined ⇒ pi 默认目录（老布局，行为与今天一致）。--new 仍表示「开局就要干净的」。
 const bootGuide = storySessionTarget(cwd, cardPath);
+// 卡空间还没有子项目（新导入/新升格、还没开聊的卡）：建第一个当落脚点——
+// 没有它，首拍会话会落进 pi 的扁平默认目录（不属于这张卡、项目树也不出现）。
+if (bootGuide.space && !bootGuide.sessionDir) {
+	bootGuide.sessionDir = ensureStorySessionDir(cwd, cardPath) ?? undefined;
+}
 let runtime = await createAgentSessionRuntime(createRuntime, {
 	cwd,
 	agentDir: getAgentDir(),
@@ -319,6 +355,20 @@ let unsubscribe: (() => void) | undefined;
 // ---------- WS 广播 ----------
 
 const clients = new Set<WebSocket>();
+const wsAlive = new WeakMap<WebSocket, boolean>();
+const wsPingTimer = setInterval(() => {
+	for (const sock of clients) {
+		if (sock.readyState !== sock.OPEN) continue;
+		if (wsAlive.get(sock) === false) {
+			sock.terminate();
+			clients.delete(sock);
+			continue;
+		}
+		wsAlive.set(sock, false);
+		sock.ping();
+	}
+}, 20_000);
+wsPingTimer.unref();
 const broadcast = (frame: ServerFrame) => {
 	const data = JSON.stringify(frame);
 	for (const ws of clients) {
@@ -1595,8 +1645,27 @@ const restHost: RestHost = {
 			await runtime.switchSession(target.path);
 			result = "switched";
 		} else {
-			await runtime.newSession();
-			result = "created";
+			// 没有可切的历史会话：卡空间就落到「落脚子项目」（没有子项目就先建一个）——
+			// 会话必须住进卡里，不然项目树不长项目、会话也不属于这张卡。
+			// 老布局（ensure 返回 null）或已经在该子项目里：保持原行为 runtime.newSession()。
+			const dir = ensureStorySessionDir(cwd, cardPath);
+			const curChat = chatDirOfSessionDir(session.sessionManager.getSessionDir());
+			if (dir && curChat !== chatDirOfSessionDir(dir)) {
+				const previousSessionFile = session.sessionFile;
+				await runtime.dispose();
+				runtime = await createAgentSessionRuntime(createRuntime, {
+					cwd,
+					agentDir: getAgentDir(),
+					sessionManager: SessionManager.create(cwd, dir),
+					sessionStartEvent: { type: "session_start", reason: "new", previousSessionFile },
+				});
+				wireRuntimeHooks();
+				await bindSession();
+				result = "created";
+			} else {
+				await runtime.newSession();
+				result = "created";
+			}
 		}
 		broadcast(await listSessions());
 		return result;
@@ -2980,6 +3049,8 @@ wss.on("connection", (ws, req) => {
 		return;
 	}
 	clients.add(ws);
+	wsAlive.set(ws, true);
+	ws.on("pong", () => wsAlive.set(ws, true));
 	ws.send(JSON.stringify(helloFrame()));
 	// hello already restores the active beat and its stream; another start would erase that snapshot.
 	// 在线更新状态：新连接即对齐（有新版/就绪时主页 chip 才能亮）
@@ -2990,6 +3061,7 @@ wss.on("connection", (ws, req) => {
 	for (const request of cardPreviews.pending()) ws.send(JSON.stringify({ type: "card_preview", ...request }));
 
 	ws.on("message", (data) => {
+		wsAlive.set(ws, true); // 任何入站帧都算活着——前端 20s 应用层 ping 覆盖 pong 迟到的情况
 		void (async () => {
 			let frame: ClientFrame;
 			try {
@@ -3135,6 +3207,8 @@ wss.on("connection", (ws, req) => {
 						broadcast({ type: "notify", level: "info", text: "已新建会话" });
 						break;
 					}
+					case "ping":
+						break;
 					case "choice_reply": {
 						const id = String(frame.id ?? "");
 						if (!pendingChoices.has(id)) return; // 已被他端应答/超时收敛
@@ -3184,6 +3258,7 @@ httpServer.listen(PORT, HOST, () => {
 const shutdown = async () => {
 	try {
 		unsubscribe?.();
+		clearInterval(wsPingTimer);
 		for (const ws of clients) ws.close();
 		wss.close();
 		httpServer.close();

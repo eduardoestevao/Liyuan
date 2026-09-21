@@ -53,6 +53,17 @@ export function newChatSessionDir(cwd: string, configCard: string, name?: string
 }
 
 /**
+ * 卡空间的「落脚子项目」：最新一个；还没有任何子项目就先建第一个。
+ * 卡在被使用（开机恢复 / 换到它）时必须有个项目当落脚点——没有的话，新会话会落进
+ * pi 的扁平默认目录：既不属于这张卡、项目树里也永远不出现。老布局返回 null，调用方保持原行为。
+ */
+export function ensureStorySessionDir(cwd: string, configCard: string): string | null {
+	const space = resolveCardSpace(cwd, configCard);
+	if (!space) return null;
+	return (latestChat(space.dir) ?? createChat(space.dir)).sessionsDir;
+}
+
+/**
  * 会话列表聚合：当前卡各子项目里的会话，全部展开成一个 SessionInfo 形状（path 供
  * runtime.switchSession 直用——它按父目录推导 sessionDir，正好回到该子项目）。
  * 当前卡不在 cards/ 里 ⇒ null（调用方走 SessionManager.list(cwd) 老路径）。

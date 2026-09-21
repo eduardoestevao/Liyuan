@@ -5,12 +5,15 @@ import { join } from "node:path";
 import test from "node:test";
 
 import { listCardSpaces, listChats, readChatMeta } from "../src/cardspace.ts";
+import { ensureStorySessionDir } from "../src/story-guide.ts";
 import { parseCardFromSessionHead } from "../src/session-scan.ts";
 import {
 	alreadyMigrated,
 	applyCardMigration,
 	chatIdFromSessionFile,
 	planCardMigration,
+	planOrphanSessions,
+	promoteStagedCard,
 	sessionIdFromFile,
 } from "../src/migrate-cards.ts";
 import { cardDirOf, chatDirOf, chatSessionsDirOf } from "../src/paths.ts";
@@ -237,4 +240,89 @@ test("会话文件名 → 子项目 id / 会话 id", () => {
 
 	assert.equal(sessionIdFromFile("2026-09-05T16-41-36-682Z_01a07272-6caa-7267.jsonl"), "01a07272-6caa-7267");
 	assert.equal(sessionIdFromFile("怪名字.jsonl"), "");
+});
+
+
+test("promoteStagedCard：暂存卡在打开时升格——只搬这一张、旧会话成子项目、幂等", () => {
+	const { cwd, sessionDir } = mkProject();
+	try {
+		writeCard(join(cwd, "assets", "cards", "a.json"), "甲卡");
+		writeCard(join(cwd, "assets", "cards", "b.json"), "乙卡");
+		writeSession(sessionDir, "2026-09-05T16-41-36-682Z_01a07272-aaaa.jsonl", "assets/cards/a.json", "甲卡");
+		writeSession(sessionDir, "2026-08-30T13-03-51-697Z_01a052c4-cccc.jsonl", "assets/cards/b.json", "乙卡");
+
+		const ref = promoteStagedCard(cwd, sessionDir, "assets/cards/a.json");
+		assert.equal(ref, "cards/甲卡/a.json");
+		// 只升格被打开的那张；旁边暂存的乙卡原地不动
+		assert.ok(!existsSync(join(cwd, "assets", "cards", "a.json")), "甲卡已搬进空间");
+		assert.ok(existsSync(join(cwd, "assets", "cards", "b.json")), "没打开的卡不许被连带搬走");
+		assert.deepEqual(listCardSpaces(cwd).map((s) => s.folder), ["甲卡"]);
+		// 旧扁平会话成了子项目（一个会话＝一个子项目）
+		const chats = listChats(cardDirOf(cwd, "甲卡"));
+		assert.equal(chats.length, 1);
+		assert.equal(chats[0].sessionCount, 1);
+		// 乙卡的扁平会话没被卷走
+		assert.ok(existsSync(join(sessionDir, "2026-08-30T13-03-51-697Z_01a052c4-cccc.jsonl")), "别卡会话原地不动");
+		// 幂等：已升格后再点、或直接给 cards/ 引用，都返回 null 且零改动
+		assert.equal(promoteStagedCard(cwd, sessionDir, "assets/cards/a.json"), null);
+		assert.equal(promoteStagedCard(cwd, sessionDir, "cards/甲卡/a.json"), null);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(sessionDir, { recursive: true, force: true });
+	}
+});
+
+
+test("planOrphanSessions：只收「指向已有卡空间」的散会话；落到该卡一个子项目", () => {
+	const { cwd, sessionDir } = mkProject();
+	try {
+		// 已有卡空间：青梧
+		mkdirSync(join(cwd, "cards", "青梧"), { recursive: true });
+		writeCard(join(cwd, "cards", "青梧", "q.json"), "青梧");
+		// 一张还在暂存的卡（不归收散管，归属跟着单卡升格走）
+		writeCard(join(cwd, "assets", "cards", "a.json"), "甲卡");
+
+		writeSession(sessionDir, "2026-09-21T10-00-00-000Z_01a0aaaa-aaaa.jsonl", "cards/青梧/q.json", "青梧");
+		writeSession(sessionDir, "2026-09-21T11-00-00-000Z_01a0bbbb-bbbb.jsonl", "assets/cards/a.json", "甲卡");
+		writeSession(sessionDir, "2026-09-21T12-00-00-000Z_01a0cccc-cccc.jsonl", "cards/不存在/无.json", "无");
+
+		const strays = planOrphanSessions(cwd, sessionDir);
+		assert.equal(strays.length, 1, "只收卡空间散会话");
+		assert.equal(strays[0].folder, "青梧");
+		assert.equal(strays[0].newRef, "cards/青梧/q.json");
+
+		applyCardMigration(cwd, { cards: [], sessions: strays, skipped: [] });
+		const chats = listChats(cardDirOf(cwd, "青梧"));
+		assert.equal(chats.length, 1);
+		assert.equal(chats[0].sessionCount, 1);
+		// 暂存卡的会话与认不出的会话原地不动
+		assert.ok(existsSync(join(sessionDir, "2026-09-21T11-00-00-000Z_01a0bbbb-bbbb.jsonl")));
+		assert.ok(existsSync(join(sessionDir, "2026-09-21T12-00-00-000Z_01a0cccc-cccc.jsonl")));
+		// 幂等：再跑一次无事可做
+		assert.equal(planOrphanSessions(cwd, sessionDir).length, 0);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(sessionDir, { recursive: true, force: true });
+	}
+});
+
+test("ensureStorySessionDir：没有子项目就建第一个；已有则复用；老布局 null", () => {
+	const { cwd, sessionDir } = mkProject();
+	try {
+		mkdirSync(join(cwd, "cards", "青梧"), { recursive: true });
+		writeCard(join(cwd, "cards", "青梧", "q.json"), "青梧");
+
+		const dir1 = ensureStorySessionDir(cwd, "cards/青梧/q.json");
+		assert.ok(dir1, "卡空间应有落脚子项目");
+		assert.equal(listChats(cardDirOf(cwd, "青梧")).length, 1, "第一个子项目被建出来");
+		const dir2 = ensureStorySessionDir(cwd, "cards/青梧/q.json");
+		assert.equal(dir2, dir1, "已有子项目则复用，不再新建");
+		assert.equal(listChats(cardDirOf(cwd, "青梧")).length, 1);
+
+		// 老布局（卡不在 cards/）：返回 null，调用方保持原行为
+		assert.equal(ensureStorySessionDir(cwd, "assets/cards/a.json"), null);
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+		rmSync(sessionDir, { recursive: true, force: true });
+	}
 });

@@ -236,3 +236,18 @@ test("对话 id：同一秒内也不撞（时间戳 + 随机后缀）", () => {
 	assert.ok(ids.size > 190, `200 次生成应几乎不重复，实际 ${ids.size}`);
 	for (const id of ids) assert.match(id, /^20260906-012345-[0-9a-f]{4}$/);
 });
+
+
+test("createCardFile：新卡直接落成卡空间，同名拒写", async () => {
+	const { createCardFile } = await import("../server/rest.ts");
+	const cwd = mkdtempSync(join(tmpdir(), "liyuan-newcard-"));
+	try {
+		const made = createCardFile(cwd, { name: "新卡", firstMes: "开场" });
+		assert.ok(made, "新卡应创建成功");
+		assert.equal(made.path, "cards/新卡/新卡.json");
+		assert.ok(existsSync(join(cwd, "cards", "新卡", "新卡.json")));
+		assert.equal(createCardFile(cwd, { name: "新卡", firstMes: "开场" }), null, "同名拒写（已升格的空间里也算）");
+	} finally {
+		rmSync(cwd, { recursive: true, force: true });
+	}
+});

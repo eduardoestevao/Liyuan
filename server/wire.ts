@@ -306,7 +306,8 @@ export type ClientFrame =
 	| { type: "choice_reply"; id: string; value?: string; stop?: boolean }
 	| { type: "new"; name?: string }
 	/** 两层布局：在指定子项目里再开一个会话（「第二个窗口继续聊」） */
-	| { type: "chat_new_session"; chatId: string };
+	| { type: "chat_new_session"; chatId: string }
+	| { type: "ping" }; // 保活，服务端丢弃
 
 /** 翻译时需要的显示名 */
 export interface WireNames {

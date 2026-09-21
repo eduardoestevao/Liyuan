@@ -20,6 +20,7 @@ import { randomBytes } from "node:crypto";
 import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { basename, dirname, join } from "node:path";
 
+import { copyPathSafe } from "./fs-copy.ts";
 import { readJsonFile } from "./jsonio.ts";
 import { buildZipBuffer, extractZipFile } from "./ziplite.ts";
 import {
@@ -158,8 +159,18 @@ export function createCardSpace(
 	const dirAbs = cardDirOf(cwd, folder);
 	mkdirSync(dirAbs, { recursive: true });
 	const dest = join(dirAbs, basename(cardFileAbs));
-	if (opts?.move) renameSync(cardFileAbs, dest);
-	else if (opts?.copy) opts.copy(cardFileAbs, dest);
+	if (opts?.move) {
+		// 跨设备（Docker 里 assets/cards 是 bind mount、cards/ 在容器层）rename 会 EXDEV：
+		// 整份拷过去再删源，语义仍是「搬」（失败时源还在，重跑幂等）。
+		try {
+			renameSync(cardFileAbs, dest);
+		} catch (err) {
+			const code = (err as { code?: string }).code;
+			if (code !== "EXDEV" && code !== "EPERM") throw err;
+			copyPathSafe(cardFileAbs, dest);
+			rmSync(cardFileAbs, { force: true });
+		}
+	} else if (opts?.copy) opts.copy(cardFileAbs, dest);
 	else throw new Error("createCardSpace：要么 move，要么给 copy");
 	return { folder, dir: dirAbs, cardFile: dest };
 }
