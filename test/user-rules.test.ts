@@ -114,6 +114,23 @@ test("applyConfigPatch：samplers 只收数字键、坏键丢弃、空对象清�
 	assert.equal((next2 as { samplers?: unknown }).samplers, undefined, "空 samplers 清键");
 });
 
+test("applyConfigPatch：compactEveryNTurns 在白名单内，0 表示关主动压缩，未打补丁保持原值", async () => {
+	const { applyConfigPatch } = await import("../server/rest.ts");
+	const base = {
+		card: "c.png",
+		userName: "沈舟",
+		language: "中文",
+		scanDepth: 4,
+		maxLoreInjections: 3,
+		greeting: true,
+		compactEveryNTurns: 30,
+	} as never;
+	assert.equal(applyConfigPatch(base, { compactEveryNTurns: 12 }).compactEveryNTurns, 12);
+	assert.equal(applyConfigPatch(base, { compactEveryNTurns: 0 }).compactEveryNTurns, 0, "0 = 仅被动压缩");
+	assert.equal(applyConfigPatch(base, { compactEveryNTurns: 999 }).compactEveryNTurns, 500, "上限 500");
+	assert.equal(applyConfigPatch(base, { scanDepth: 8 }).compactEveryNTurns, 30, "没打补丁保持原值");
+});
+
 test("规矩文件指纹进缓存：改文件后 loadStageMaterials 重算（端到端走真装载）", () => {
 	const cwd = mkdtempSync(join(tmpdir(), "liyuan-rules-"));
 	process.env.LIYUAN_CODING_AGENT_DIR = join(cwd, "agentDir");

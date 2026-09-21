@@ -556,10 +556,15 @@ function CardItem({
 }
 
 /** 配套世界书导入询问（ST 式） */
-interface LorePrompt {
+interface LorePromptItem {
 	cardName: string;
 	cardPath: string;
 	entryCount: number;
+	isCurrent?: boolean;
+}
+
+interface LorePrompt {
+	items: LorePromptItem[];
 }
 
 export function CardPanel({
@@ -583,6 +588,12 @@ export function CardPanel({
 	const { busy, run } = useAction(toast);
 	const [detail, setDetail] = useState(true);
 	const [lorePrompt, setLorePrompt] = useState<LorePrompt | null>(null);
+	const [importLore, setImportLore] = useState(true);
+
+	const openLorePrompt = (items: LorePromptItem[]) => {
+		setImportLore(true);
+		setLorePrompt({ items });
+	};
 	/** 删除确认弹窗：目标卡 + 两个勾选 */
 	const [deletePrompt, setDeletePrompt] = useState<CardLibItem | null>(null);
 	const [delLore, setDelLore] = useState(false);
@@ -665,11 +676,14 @@ export function CardPanel({
 		// 离开主页，进入该卡会话对话（switch 已由调用方完成）
 		onEnterChat?.();
 		if (info.embeddedLoreCount > 0 && isLorePending(info.path)) {
-			setLorePrompt({
-				cardName: info.name,
-				cardPath: info.path,
-				entryCount: info.embeddedLoreCount,
-			});
+			openLorePrompt([
+				{
+					cardName: info.name,
+					cardPath: info.path,
+					entryCount: info.embeddedLoreCount,
+					isCurrent: true,
+				},
+			]);
 		} else {
 			if (info.embeddedLoreCount === 0) clearLorePending(info.path);
 			setDetail(true);
@@ -677,33 +691,45 @@ export function CardPanel({
 	};
 
 	const skipLoreImport = () => {
-		if (lorePrompt) clearLorePending(lorePrompt.cardPath);
+		if (lorePrompt) {
+			for (const it of lorePrompt.items) {
+				clearLorePending(it.cardPath);
+			}
+		}
 		setLorePrompt(null);
 		setDetail(true);
 		onEnterChat?.();
 	};
 
-	const confirmLoreImport = () =>
+	const confirmLoreImport = (mountCurrent: boolean) =>
 		run(async () => {
-			if (!lorePrompt) return;
-			const path = lorePrompt.cardPath;
-			const r = await apiPost<{ path?: string; entryCount?: number; name?: string }>("/api/card/import-embedded-lore", {
-				card: path,
+			if (!lorePrompt || lorePrompt.items.length === 0) return;
+			const items = lorePrompt.items;
+			const r = await apiPost<{
+				ok: true;
+				results?: Array<{ path: string; entryCount: number; name: string; mounted: boolean }>;
+			}>("/api/card/import-embedded-lore", {
+				cards: items.map((it) => ({
+					card: it.cardPath,
+					mount: mountCurrent && (it.isCurrent || items.length === 1),
+				})),
 			});
-			clearLorePending(path);
+			for (const it of items) {
+				clearLorePending(it.cardPath);
+			}
 			setLorePrompt(null);
 			setDetail(true);
 			onEnterChat?.();
-			// 世界书面板多半已保活挂载：清缓存（api 层）后主动 bump，避免必须整页刷新
 			bumpWatchPanels();
-			if (r.path) {
+			const mountedItem = r.results?.find((x) => x.mounted);
+			if (mountedItem?.path) {
 				try {
-					sessionStorage.setItem("liyuan.lore.focus", r.path);
+					sessionStorage.setItem("liyuan.lore.focus", mountedItem.path);
 				} catch {
 					/* ignore */
 				}
 			}
-		}, "配套世界书已导入并加入挂载（可与其它书并存）");
+		}, mountCurrent ? "配套世界书已导入并加入挂载" : "配套世界书已导入（未挂载）");
 
 	// ST 交互：点卡即切换并进对话；同卡再点也进对话（不重复 switch）
 	const pick = (c: CardLibItem) => {
@@ -713,9 +739,11 @@ export function CardPanel({
 			return;
 		}
 		void run(async () => {
-			const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number }>("/api/card/switch", {
+			const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number; promoted?: boolean }>("/api/card/switch", {
 				card: c.path,
 			});
+			// 暂存卡升格后路径已变（旧条目失效）：重拉一次；普通切换不重拉，避免封面重下
+			if (r.promoted) lib.reload();
 			afterCardReady({
 				name: r.name,
 				path: r.path ?? c.path,
@@ -726,9 +754,10 @@ export function CardPanel({
 
 	const switchByPath = (p: string) =>
 		run(async () => {
-			const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number }>("/api/card/switch", {
+			const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number; promoted?: boolean }>("/api/card/switch", {
 				card: p,
 			});
+			if (r.promoted) lib.reload();
 			afterCardReady({
 				name: r.name,
 				path: r.path ?? p,
@@ -796,12 +825,19 @@ export function CardPanel({
 		setImporting(true);
 		try {
 			let last: { name: string; path: string; embeddedLoreCount: number } | null = null;
+			const withLore: LorePromptItem[] = [];
 			for (const f of Array.from(files)) {
 				try {
 					const r = await importCard(f);
 					toast("info", `已导入「${r.name}」`);
-					// 再次导入同一路径也会重新标记，下次进详情会再问一次世界书
-					markLorePending(r.path);
+					if ((r.embeddedLoreCount ?? 0) > 0) {
+						markLorePending(r.path);
+						withLore.push({
+							cardName: r.name,
+							cardPath: r.path,
+							entryCount: r.embeddedLoreCount!,
+						});
+					}
 					last = {
 						name: r.name,
 						path: r.path,
@@ -815,18 +851,25 @@ export function CardPanel({
 			// 导入后自动切换到最后一张；有内嵌书且 pending 则询问配套世界书
 			if (last) {
 				void run(async () => {
-					const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number }>("/api/card/switch", {
+					const r = await apiPost<{ name: string; path: string; embeddedLoreCount: number; promoted?: boolean }>("/api/card/switch", {
 						card: last!.path,
 					});
+					if (r.promoted) lib.reload();
 					const path = r.path ?? last!.path;
-					// switch 返回路径可能规范化，与 import 路径对齐后再记 pending
 					markLorePending(path);
 					if (path !== last!.path) markLorePending(last!.path);
-					afterCardReady({
-						name: r.name,
-						path,
-						embeddedLoreCount: r.embeddedLoreCount ?? last!.embeddedLoreCount,
-					});
+					setCurrentPath(path);
+					onEnterChat?.();
+					if (withLore.length > 0) {
+						openLorePrompt(
+							withLore.map((it) => ({
+								...it,
+								isCurrent: it.cardPath === path || it.cardPath === last!.path,
+							})),
+						);
+					} else {
+						setDetail(true);
+					}
 				});
 			}
 		} finally {
@@ -835,29 +878,86 @@ export function CardPanel({
 		}
 	};
 
-	const loreModal = lorePrompt && (
-		<div className="card-lore-modal" role="dialog" aria-modal="true" aria-labelledby="card-lore-title">
-			<div className="card-lore-dialog">
-				<button type="button" className="icon-btn card-lore-x" title="不挂载" aria-label="关闭" onClick={skipLoreImport}>
-					<IconClose size={18} />
-				</button>
-				<h3 id="card-lore-title">挂载世界书？</h3>
-				<p>
-					「{lorePrompt.cardName}」打包了世界书 <strong>{lorePrompt.entryCount}</strong> 条。
-					<br />
-					世界书与角色卡分开挂载：选<strong>导入并挂载</strong>后才会进本会话；选<strong>不挂载</strong>则只用角色卡，不带世界书。
-				</p>
-				<div className="panel-row card-lore-actions">
-					<button type="button" className="drawer-btn save-btn" disabled={busy} onClick={() => void confirmLoreImport()}>
-						导入并挂载
+	const loreModal = lorePrompt && lorePrompt.items.length > 0 && (() => {
+		const items = lorePrompt.items;
+		const totalEntries = items.reduce((sum, it) => sum + it.entryCount, 0);
+		const currentItem = items.find((it) => it.isCurrent) ?? items[items.length - 1];
+
+		return (
+			<div className="card-lore-modal" role="dialog" aria-modal="true" aria-labelledby="card-lore-title">
+				<div className="card-lore-dialog">
+					<button
+						type="button"
+						className="icon-btn card-lore-x"
+						title="关闭"
+						aria-label="关闭"
+						onClick={skipLoreImport}
+					>
+						<IconClose size={18} />
 					</button>
-					<button type="button" className="drawer-btn" disabled={busy} onClick={skipLoreImport}>
-						不挂载
-					</button>
+					<h3 id="card-lore-title">配套世界书</h3>
+					{items.length === 1 ? (
+						<p>
+							角色卡「{items[0].cardName}」打包了配套世界书 <strong>{items[0].entryCount}</strong> 条。
+							<br />
+							世界书导入后可在世界书面板管理，也可随时挂载到对话。
+						</p>
+					) : (
+						<p>
+							本次导入有 <strong>{items.length}</strong> 张角色卡包含配套世界书（共 <strong>{totalEntries}</strong> 条）：
+							<br />
+							<span style={{ fontSize: "12.5px", color: "var(--text-soft)" }}>
+								{items.map((it) => `「${it.cardName}」（${it.entryCount} 条）`).join("、")}
+							</span>
+						</p>
+					)}
+
+					<label className="card-del-opt" style={{ margin: "14px 0 16px" }}>
+						<input
+							type="checkbox"
+							checked={importLore}
+							onChange={(e) => setImportLore(e.target.checked)}
+						/>
+						<span>导入配套世界书{items.length > 1 ? `（${items.length} 本，共 ${totalEntries} 条）` : ""}</span>
+					</label>
+
+					<div className="panel-row card-lore-actions">
+						{importLore ? (
+							<>
+								<button
+									type="button"
+									className="drawer-btn save-btn"
+									disabled={busy}
+									onClick={() => void confirmLoreImport(true)}
+								>
+									{items.length > 1
+										? `全部导入，并挂载「${currentItem.cardName}」`
+										: "导入并挂载"}
+								</button>
+								<button
+									type="button"
+									className="drawer-btn"
+									disabled={busy}
+									onClick={() => void confirmLoreImport(false)}
+								>
+									导入但暂不挂载
+								</button>
+							</>
+						) : (
+							<button
+								type="button"
+								className="drawer-btn"
+								disabled={busy}
+								onClick={skipLoreImport}
+							>
+								不导入世界书
+							</button>
+						)}
+					</div>
 				</div>
 			</div>
-		</div>
-	);
+		);
+	})();
 
 	const deleteModal = deletePrompt && (
 		<div className="card-lore-modal" role="dialog" aria-modal="true" aria-labelledby="card-del-title">

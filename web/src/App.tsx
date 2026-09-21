@@ -43,6 +43,7 @@ import { PanelRefreshContext } from "./components/kit.tsx";
 import { registerLiyuanToast, registerTavernChatBridge } from "./tavernShim.ts";
 import { syncCardRuntimeVariables } from "./cardRuntimeFrames.ts";
 import { setAtHome, shouldShowHomeOnBoot, touchVisit } from "./visit.ts";
+import { getTheme, setTheme } from "./theme.ts";
 import {
 	IconApi,
 	IconAttach,
@@ -63,6 +64,8 @@ import {
 	IconSend,
 	IconSessions,
 	IconSettings,
+	IconSun,
+	IconMoon,
 	IconInfo,
 	IconStatus,
 	IconStop,
@@ -303,6 +306,7 @@ export default function App() {
 	/** 悬浮窗当前显示的面板（与左右栏并列的第三种形态，同时只开一个） */
 	const [floatPanel, setFloatPanel] = useState<PanelId | AgentPanelId | null>(null);
 	const [studioOpen, setStudioOpen] = useState(false);
+	const [dark, setDark] = useState(() => getTheme() === "dark");
 	/** 悬浮窗「刷新」用：+1 强制重挂载窗内面板（与侧栏 manualTick 同机制） */
 	const [floatTick, setFloatTick] = useState(0);
 	// 手机（≤999px，与 CSS 抽屉断点一致）：左右栏是全屏抽屉，同时只能开一个。
@@ -739,13 +743,16 @@ export default function App() {
 					setCharName(frame.charName);
 					setUserName(frame.userName);
 					// wire timeline → 本地 segments：持久化的时间线在刷新后仍按时序渲染
+					const sameSession = sessionIdRef.current === frame.sessionId;
+					const keepComposerFocus = document.activeElement === inputRef.current;
 					setMessages(
 						frame.messages.map((m) => {
 							if (!m.timeline || m.timeline.length === 0) return m;
 							return { ...m, segments: m.timeline as unknown as TurnSegment[] };
 						}),
 					);
-					setMsgEdit(null); // 会话对齐后关闭内联编辑
+					if (!sameSession) setMsgEdit(null);
+					if (keepComposerFocus) requestAnimationFrame(() => inputRef.current?.focus({ preventScroll: true }));
 					setWorldState(frame.state);
 					setStats(frame.stats);
 					// 一档皮肤:优先用 hello 同帧载荷(与消息同步),杜绝 REST 缓存/时序导致的漏皮
@@ -1192,32 +1199,47 @@ export default function App() {
 		// 附件随消息：路径清单作为尾行附在正文后（这一行即持久记录，重放同路径解析）
 		const attachLine = pending.length > 0 ? buildAttachmentLine(pending.map((p) => p.file)) : "";
 		const text = attachLine ? (typed ? `${typed}\n${attachLine}` : attachLine) : typed;
-		if (!text || conn !== "open") return;
-		// 在欢迎区发送 = 进入当前会话对话（学 ST）
+		if (!text) return;
+		if (/^\/store\s*$/i.test(typed) && pending.length === 0) {
+			setWelcome(false);
+			setAtHome(false);
+			touchVisit();
+			openStoreModal();
+			setInput("");
+			setPending([]);
+			return;
+		}
+		if (/^\/line\s*$/i.test(typed) && pending.length === 0) {
+			setWelcome(false);
+			setAtHome(false);
+			touchVisit();
+			toggleRight("worldline");
+			setInput("");
+			setPending([]);
+			return;
+		}
+		let sent: boolean;
+		if (/^\/compact(?:\s|$)/i.test(typed) && pending.length === 0) {
+			sent = typed === "/compact" || /^\/compact\s*$/i.test(typed)
+				? ws.send({ type: "compact" })
+				: ws.send({ type: "prompt", text: typed });
+		} else {
+			sent = ws.send({ type: "prompt", text });
+		}
+		if (!sent) {
+			pushToast("warning", "连接还没好，内容还在输入框里");
+			return;
+		}
 		setWelcome(false);
 		setAtHome(false);
 		touchVisit();
-		if (/^\/compact(?:\s|$)/i.test(typed) && pending.length === 0) {
-			// /compact：走专用帧（与会话面板按钮同源）；可选说明仍用 prompt，由服务端短路为 session.compact
-			if (typed === "/compact" || /^\/compact\s*$/i.test(typed)) {
-				ws.send({ type: "compact" });
-			} else {
-				ws.send({ type: "prompt", text: typed });
-			}
-		} else if (/^\/store\s*$/i.test(typed) && pending.length === 0) {
-			// 无参 /store → 弹窗起名（有参则直接命令）
-			openStoreModal();
-		} else if (/^\/line\s*$/i.test(typed) && pending.length === 0) {
-			toggleRight("worldline");
-		} else {
-			ws.send({ type: "prompt", text });
-		}
 		setInput("");
 		setPending([]);
 		atBottomRef.current = true;
 		setAtBottom(true);
 		if (inputRef.current) inputRef.current.style.height = "auto";
-	}, [input, pending, conn, ws, openStoreModal, openLeft]);
+	}, [input, pending, ws, openStoreModal, pushToast, toggleRight]);
+
 
 	// 卡 HTML（如 某卡 开场表单）调用 triggerSlash(`/send …|/trigger`)
 	// 须接到输入框 / WS，否则界面显示「档案已发送」但聊天栏空白
@@ -1319,25 +1341,28 @@ export default function App() {
 		if (!msgEdit || busy) return;
 		const text = msgEdit.draft.trim();
 		if (!text) return;
+		let sent: boolean;
 		if (msgEdit.kind === "user") {
-			// 保留原消息附件行
 			const orig = messages[msgEdit.idx]?.text ?? "";
 			const { attachments } = splitAttachments(orig);
 			const attachLine =
 				attachments.length > 0 ? buildAttachmentLine(attachments.map((a) => a.file)) : "";
 			const full = attachLine ? `${text}\n${attachLine}` : text;
-			ws.send({ type: "reroll", text: full });
+			sent = ws.send({ type: "reroll", text: full });
 		} else {
-			// agent / 开场白：采用改写（不重新跑模型）；原文未改则等同「重新生成」
 			const orig = (messages[msgEdit.idx]?.text ?? "").trim();
 			if (text === orig && msgEdit.kind === "narrative") {
-				ws.send({ type: "reroll" });
+				sent = ws.send({ type: "reroll" });
 			} else {
-				ws.send({ type: "prompt", text: `/editreply ${text}` });
+				sent = ws.send({ type: "prompt", text: `/editreply ${text}` });
 			}
 		}
+		if (!sent) {
+			pushToast("warning", "连接还没好，改写还在编辑框里");
+			return;
+		}
 		setMsgEdit(null);
-	}, [msgEdit, busy, messages, ws]);
+	}, [msgEdit, busy, messages, ws, pushToast]);
 
 	/** 回退到某条用户消息之前（含该条）：N = 从该条到末尾的剧情用户轮数 */
 	const rewindToUser = useCallback(
@@ -1658,6 +1683,22 @@ export default function App() {
 						</div>
 						<button
 							type="button"
+							className="drawer-rail-btn drawer-rail-foot"
+							onClick={() => {
+								const next = dark ? "light" : "dark";
+								setTheme(next);
+								setDark(next === "dark");
+								pushToast("info", next === "dark" ? "已切换到黑夜模式" : "已切换到白昼模式");
+							}}
+							aria-label={dark ? "切换到白天" : "切换到黑夜"}
+							aria-pressed={dark}
+							data-tip={dark ? "白天" : "黑夜"}
+							title={dark ? "白天" : "黑夜"}
+						>
+							{dark ? <IconSun size={19} /> : <IconMoon size={19} />}
+						</button>
+						<button
+							type="button"
 							className={`drawer-rail-btn drawer-rail-foot ${leftPanel === "settings" ? "active" : ""}`}
 							onClick={() => openLeft("settings")}
 							aria-label="设置"
@@ -1811,6 +1852,7 @@ export default function App() {
 
 	/** 顶栏主标题：当前会话与卡名 */
 	const currentSession = sessions?.find((s) => s.current);
+	const homeHasHistory = sessions !== null && sessions.some((s) => s.preview);
 
 	return (
 		<PanelRefreshContext.Provider value={agentTick}>
@@ -2037,7 +2079,7 @@ export default function App() {
 			</header>
 
 				<div className="layout">
-					<main className={`center ${welcome && sessions !== null && !sessions.some((s) => s.preview) ? "center-home-empty" : ""} ${studioOpen ? "center-studio-split" : ""}`}>
+					<main className={`center ${welcome && sessions !== null && !homeHasHistory ? "center-home-empty" : ""} ${welcome && homeHasHistory ? "center-home-filled" : ""} ${studioOpen ? "center-studio-split" : ""}`}>
 					<div className={`stage-wrap ${rightPanel ? "split-active" : ""}`}>
 					<div className="stage-col stage-col-left">
 						{(rightPanel || studioOpen) && (

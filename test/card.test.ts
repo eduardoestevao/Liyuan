@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { copyFileSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -121,6 +121,60 @@ test("JSON 卡可导出为 PNG（占位图 + tEXt）", () => {
 		const p = exportCardFile(dest, { format: "png", loreMode: "active", bookEntries: book });
 		const raw = readCardJsonFromPng(p.body) as { data?: { scenario?: string } };
 		assert.equal(raw.data?.scenario, "json-to-png");
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("importEmbeddedLoreForCards：支持单卡/多卡、挂载/仅导入存盘与同内容复用", async () => {
+	const { importEmbeddedLoreForCards } = await import("../server/rest.ts");
+	const dir = mkdtempSync(join(tmpdir(), "liyuan-embed-lore-"));
+	try {
+		// 拷贝测试卡到临时目录
+		const cardDir = join(dir, "assets", "cards");
+		mkdirSync(cardDir, { recursive: true });
+		copyFileSync(asset(CARD_JSON), join(cardDir, "card1.json"));
+		copyFileSync(asset(CARD_JSON), join(cardDir, "card2.json"));
+
+		const config = {
+			card: "assets/cards/card1.json",
+			userName: "旅人",
+			userPersona: "",
+			language: "中文",
+			scanDepth: 4,
+			maxLoreInjections: 3,
+			greeting: true,
+			lorebooks: [],
+		};
+
+		// 1. 导入但暂不挂载
+		const r1 = importEmbeddedLoreForCards(dir, [{ card: "assets/cards/card1.json", mount: false }], config);
+		assert.equal(r1.results.length, 1);
+		assert.equal(r1.results[0].mounted, false);
+		assert.ok(r1.results[0].entryCount >= 1);
+		assert.equal(r1.newlyMounted.length, 0);
+		assert.equal(r1.nextConfig, null, "mount=false 时不改配置");
+		assert.ok(existsSync(join(dir, r1.results[0].path)), "世界书文件应已落地");
+
+		// 2. 再次导入同内容：复用原文件，不无谓生 -2.json
+		const r2 = importEmbeddedLoreForCards(dir, [{ card: "assets/cards/card1.json", mount: true }], config);
+		assert.equal(r2.results[0].path, r1.results[0].path, "同名同内容应复用");
+		assert.equal(r2.results[0].mounted, true);
+		assert.ok(r2.nextConfig?.lorebooks?.includes(r2.results[0].path), "mount=true 应挂载");
+
+		// 3. 批量多张卡：同时处理，可各带各的挂载标记
+		const r3 = importEmbeddedLoreForCards(
+			dir,
+			[
+				{ card: "assets/cards/card1.json", mount: false },
+				{ card: "assets/cards/card2.json", mount: true },
+			],
+			config,
+		);
+		assert.equal(r3.results.length, 2);
+		assert.equal(r3.results[0].mounted, false);
+		assert.equal(r3.results[1].mounted, true);
+		assert.ok(r3.nextConfig?.lorebooks?.includes(r3.results[1].path));
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

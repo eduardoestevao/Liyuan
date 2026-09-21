@@ -94,4 +94,4 @@ docker compose up -d
 docker compose pull && docker compose up -d
 ```
 
-也可直接 `docker pull ghcr.io/weidu12123/liyuan:1.6.0` 指定版本。
+也可直接 `docker pull ghcr.io/weidu12123/liyuan:1.6.1` 指定版本。

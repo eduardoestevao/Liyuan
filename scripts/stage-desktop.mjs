@@ -90,12 +90,15 @@ for (const f of fs.readdirSync(path.join(root, ".liyuan", "extensions"))) {
 }
 
 // 种子源资产：提示词槽位底座、内置技能、默认卡（只带 default_*，绝不带社区/私人卡）
-for (const f of ["SYSTEM.md", "APPEND_SYSTEM.md"]) {
-	const p = path.join(root, "assets", f);
-	if (fs.existsSync(p)) {
-		copyFile(p, path.join(appDir, "assets", f));
-		total++;
-	}
+// 槽位底座＝assets 根下的 *.md（SYSTEM.md / APPEND_SYSTEM.md / AUTHORING.md…），按规则整取：
+// 它们是模块按 import.meta.url 直接读的产品文件，**漏一个就是一个 ENOENT**——1.6.0 桌面版
+// 漏了 AUTHORING.md，工作模式提示词读不到，每一拍开演都失败。加槽位文件不必再来这里改名单。
+const promptSlots = fs.readdirSync(path.join(root, "assets"), { withFileTypes: true })
+	.filter((e) => e.isFile() && e.name.endsWith(".md"))
+	.map((e) => e.name);
+for (const f of promptSlots) {
+	copyFile(path.join(root, "assets", f), path.join(appDir, "assets", f));
+	total++;
 }
 total += copyTree(path.join(root, "assets", "skills"), path.join(appDir, "assets", "skills"));
 for (const f of fs.readdirSync(path.join(root, "assets", "cards"))) {
@@ -191,7 +194,6 @@ const mustExist = [
 	"package.json",
 	"liyuan.config.example.json",
 	"liyuan.agent.example.json",
-	"assets/SYSTEM.md",
 	"node_modules/ws",
 	"node_modules/jiti",
 	"node_modules/@modelcontextprotocol/sdk",
@@ -200,6 +202,10 @@ const mustExist = [
 ];
 for (const rel of mustExist) {
 	if (!fs.existsSync(path.join(appDir, rel))) die(`缺件：${rel}（桌面版会启动失败）`);
+}
+// 提示词槽位底座按规则复检（同一份清单来源——列名单才会漏，见上面的拷贝注释）
+for (const f of promptSlots) {
+	if (!fs.existsSync(path.join(appDir, "assets", f))) die(`缺件：assets/${f}（提示词会读不到，开演即失败）`);
 }
 // @liyuan/agent-runtime 必须是实体目录不是残留链接
 if (fs.lstatSync(path.join(appDir, "node_modules/@liyuan/agent-runtime")).isSymbolicLink()) {

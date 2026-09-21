@@ -27,7 +27,7 @@ import { basename, join } from "node:path";
 import { loadCardFile } from "./card.ts";
 import { copyPathSafe } from "./fs-copy.ts";
 import { loadPersonas, savePersonas } from "./personas.ts";
-import { appendSessionCardRebind, createCardSpace, freeCardFolder, listCardSpaces, writeChatMeta, type CardSpace } from "./cardspace.ts";
+import { appendSessionCardRebind, createCardSpace, freeCardFolder, listCardSpaces, resolveCardSpace, writeChatMeta, type CardSpace } from "./cardspace.ts";
 import { stripBom } from "./jsonio.ts";
 import {
 	CARD_OVERLAY_FILE,
@@ -280,6 +280,63 @@ export function applyCardMigration(cwd: string, plan: CardMigrationPlan): string
 	// 4) 改写 config.card / personas byCard / 卡收藏：旧引用 → 新引用
 	rewriteCardRefs(cwd, plan, log);
 	return log;
+}
+
+/**
+ * 单卡升格（打开卡时调用）：把仍住在导入暂存（`assets/cards/`）里的卡搬进卡空间
+ * （`cards/<卡名>/`），连同它在扁平会话目录里的旧会话各成一个子项目——与一次性迁移
+ * 同一套动作（幂等、只搬不删、认不出的会话原地不动）。
+ *
+ * 补的是一条断链：一次性迁移只在首启跑一次，而此后的「导入 / 新建」卡都落暂存，
+ * 没有第二个人把它们搬进两层布局——不升格，这张卡永远只有「新建对话」，
+ * 聊多少轮都长不出「新建项目」。返回升格后的新引用；不是暂存卡（已在 cards/ 或找不到）返回 null。
+ */
+export function promoteStagedCard(cwd: string, sessionDir: string, cardRef: string): string | null {
+	const rel = cardRef.replace(/\\/g, "/").replace(/^\.\//, "");
+	if (!rel.startsWith("assets/cards/")) return null; // 只有导入暂存里的卡需要升格
+	const plan = planCardMigration(cwd, sessionDir);
+	const mine = plan.cards.find((c) => sameCardPath(c.ref, cardRef, cwd));
+	if (!mine) return null;
+	applyCardMigration(cwd, {
+		cards: [mine],
+		sessions: plan.sessions.filter((s) => s.folder === mine.folder),
+		skipped: [],
+	});
+	return newRefOf(mine);
+}
+
+/**
+ * 收散：扁平会话目录里**指向已有卡空间**的会话——卡空间化之后才生成的
+ * （升格前就已开聊、或修复前掉进默认目录的那批）。它们哪个项目树都不属于，
+ * 各搬进对应卡的一个子项目。暂存卡（assets/cards/…）的会话不在这里收：
+ * 它们的归属跟着「单卡升格」走。开机跑，幂等、通常无事可做。
+ */
+export function planOrphanSessions(cwd: string, sessionDir: string): SessionMove[] {
+	const out: SessionMove[] = [];
+	const sessionFiles = existsSync(sessionDir) ? readdirSync(sessionDir).sort() : [];
+	const usedChatIds = new Set<string>();
+	let idx = 0;
+	for (const f of sessionFiles) {
+		if (!f.endsWith(".jsonl")) continue;
+		idx += 1;
+		const abs = join(sessionDir, f);
+		const info = readSessionCardInfo(abs);
+		if (!info?.card) continue;
+		// 只收「指向已有卡空间」的：暂存卡、认不出的路径都不动
+		const space = resolveCardSpace(cwd, info.card);
+		if (!space) continue;
+		let chatId = chatIdFromSessionFile(f, idx);
+		while (usedChatIds.has(chatId)) chatId = `${chatId}x`;
+		usedChatIds.add(chatId);
+		let modified = 0;
+		try {
+			modified = statSync(abs).mtimeMs;
+		} catch {
+			modified = Date.now();
+		}
+		out.push({ file: abs, folder: space.folder, chatId, sessionId: sessionIdFromFile(f), modified, newRef: info.card });
+	}
+	return out;
 }
 
 /**

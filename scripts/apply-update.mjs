@@ -14,7 +14,7 @@
  * 退出码恒为 0：更新失败不阻断启动（旧版本继续可用）。
  */
 
-import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from "node:fs";
+import { cpSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 
 const cwd = process.cwd();
@@ -24,7 +24,8 @@ const PENDING = join(UPDATE_DIR, "pending.json");
 /**
  * 代码路径白名单（相对项目根）。与 pack-release.ps1 的发布树一致：
  * 新增顶层代码目录时两处同步改。
- * 注意 assets 只收 default_* 卡——用户自己的卡/世界书永不覆盖。
+ * 注意 assets 不在白名单里——它整棵是用户素材区，只由下面两个规则函数按名同步：
+ * default_* 示例卡，与提示词槽位底座（根下 *.md）。用户自己的卡/世界书/预设永不覆盖。
  */
 const CODE_PATHS = [
 	"server",
@@ -63,6 +64,27 @@ function syncDefaultCards(stagedDir) {
 	for (const f of readdirSafe(src)) {
 		if (!f.startsWith("default_")) continue;
 		cpSync(join(src, f), join(dst, f), { force: true });
+	}
+}
+
+/**
+ * assets 根下的 *.md ＝ 提示词槽位底座（SYSTEM.md / APPEND_SYSTEM.md / AUTHORING.md…）。
+ * 它们是模块按 import.meta.url 直接读的产品文件，不是用户素材（用户的活件在 <agentDir>），
+ * 所以按规则整取——**更新一次就该拿到一次**。漏掉的代价是模块读不到文件：1.6.0 桌面版漏了
+ * AUTHORING.md，每一拍开演都 ENOENT；原地更新若也不同步，1.5.x 升上来的安装会撞同一个坑。
+ */
+function syncPromptSlots(stagedDir) {
+	const dst = join(cwd, "assets");
+	mkdirSync(dst, { recursive: true });
+	for (const f of readdirSafe(join(stagedDir, "assets"))) {
+		if (!f.endsWith(".md")) continue;
+		const from = join(stagedDir, "assets", f);
+		try {
+			if (statSync(from).isDirectory()) continue;
+		} catch {
+			continue;
+		}
+		cpSync(from, join(dst, f), { force: true });
 	}
 }
 
@@ -146,6 +168,7 @@ function main() {
 			cpSync(from, to, { recursive: true, force: true });
 		}
 		syncDefaultCards(staged);
+		syncPromptSlots(staged);
 	} catch (err) {
 		log(`覆盖失败，回滚到 v${oldVer}：${err?.message ?? err}`);
 		try {
