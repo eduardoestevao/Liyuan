@@ -21,7 +21,7 @@ function initialLocale(): Locale {
 	} catch {
 		// Storage can be unavailable in hardened/private browser contexts.
 	}
-	return navigator.language.toLowerCase().startsWith("zh") ? "zh-CN" : "en";
+	return "zh-CN";
 }
 
 export function I18nProvider({ children }: { children: React.ReactNode }) {

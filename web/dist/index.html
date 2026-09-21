@@ -18,6 +18,11 @@
 		<link rel="apple-touch-icon" href="/logo-512.png" sizes="512x512" />
 		<title>Liyuan</title>
 		<script>
+			// Restore the selected language before React loads; Chinese is the default.
+			try {
+				var locale = localStorage.getItem("liyuan.locale");
+				document.documentElement.lang = locale === "en" ? "en" : "zh-CN";
+			} catch (e) {}
 			/* 尽早应用主题，避免白昼闪一下 */
 			try {
 				var t = localStorage.getItem("liyuan.theme");
@@ -52,7 +57,7 @@
 				}, 2500);
 			});
 		</script>
-		<script type="module" crossorigin src="/assets/index-CZcmVV0B.js"></script>
+		<script type="module" crossorigin src="/assets/index-Dz1WdQgr.js"></script>
 		<link rel="stylesheet" crossorigin href="/assets/index-ChUgFUld.css">
 	</head>
 	<body>
