@@ -112,8 +112,9 @@ export function PanelOrb({ entries, onPick }: { entries: OrbEntry[]; onPick: (id
 
 	if (entries.length === 0) return null;
 
-	// 菜单朝屏幕内侧展开：球在左半屏就往右开，在右半屏就往左开
+	// 菜单朝屏幕内侧展开：球在左半屏就往右开，在右半屏就往左开；球在下半屏就往上开
 	const openRight = pos.x < window.innerWidth / 2;
+	const openUp = pos.y > window.innerHeight / 2;
 	const anyActive = entries.some((e) => e.active);
 
 	return (
@@ -137,7 +138,7 @@ export function PanelOrb({ entries, onPick }: { entries: OrbEntry[]; onPick: (id
 					{open ? <IconClose size={18} /> : <IconDock size={18} />}
 				</button>
 				{open && (
-					<div className={`orb-menu ${openRight ? "to-right" : "to-left"}`} role="menu">
+					<div className={`orb-menu ${openRight ? "to-right" : "to-left"} ${openUp ? "to-up" : ""}`} role="menu">
 						{entries.map((it) => (
 							<button
 								key={it.id}

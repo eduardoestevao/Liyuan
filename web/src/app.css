@@ -7946,13 +7946,11 @@ label.drawer-btn {
 
 /* ---------- 梨园自己的悬浮球（components/PanelOrb.tsx） ---------- */
 /* z 55：在悬浮窗(60)之下——球是启动器，窗开着时不该压在内容上。
-   作者卡自带的球用到 9999/2147483647，本球一律在它之下，不抢作者地盘。 */
+   作者卡自带的球用到 9999/2147483647，本球一律在它之下，不抢作者地盘。
+   根盒子就是球本身的位置：菜单绝对定位挂在它旁边、球不动——菜单不许盖住球。 */
 .orb-root {
 	position: fixed;
 	z-index: 55;
-	display: flex;
-	align-items: flex-start;
-	gap: 8px;
 }
 .orb-backdrop {
 	position: fixed;
@@ -7991,6 +7989,8 @@ label.drawer-btn {
 	border-color: var(--accent);
 }
 .orb-menu {
+	position: absolute;
+	top: 0;
 	display: flex;
 	flex-direction: column;
 	min-width: 148px;
@@ -8004,9 +8004,19 @@ label.drawer-btn {
 	-webkit-backdrop-filter: blur(8px);
 	animation: orb-menu-in 0.14s ease-out;
 }
-/* 朝屏幕内侧展开：球贴左边就往右开，贴右边就往左开（往左时菜单排到球前面） */
+/* 朝屏幕内侧展开，球留在原地：贴左半屏往右开，贴右半屏往左开。
+   菜单不许压住球——触屏点球的 pointerup 之后浏览器还会补一个 click，它按手指位置重新命中：
+   菜单若盖在球上，这一击就落在最上面那项上（手机上点球＝直接开状态栏）。 */
+.orb-menu.to-right {
+	left: calc(100% + 8px);
+}
 .orb-menu.to-left {
-	order: -1;
+	right: calc(100% + 8px);
+}
+/* 球在下半屏：菜单改成贴着球的底边往上长，免得从屏幕底下出去 */
+.orb-menu.to-up {
+	top: auto;
+	bottom: 0;
 }
 @keyframes orb-menu-in {
 	from { opacity: 0; transform: translateY(-3px); }
