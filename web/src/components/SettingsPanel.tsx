@@ -7,6 +7,7 @@
 import { useEffect, useRef, useState } from "react";
 import { api, apiGet, apiPut, createBackup, downloadBackup, importBackup, type RpConfigView } from "../api.ts";
 import { getTheme, setTheme, type ThemeMode } from "../theme.ts";
+import { useI18n } from "../i18n.tsx";
 import { ConfirmButton, PanelStatus, SliderField, Toggle, useAction, usePanelData } from "./kit.tsx";
 
 type MemoryStoreStats = {
@@ -722,6 +723,7 @@ export function SettingsPanel({
 	onOpenAbout?: () => void;
 	currentVersion?: string;
 }) {
+	const { locale, setLocale, t } = useI18n();
 	const { data, error, loading, reload } = usePanelData(() => apiGet<{ config: RpConfigView }>("/api/config"), { cacheKey: "/api/config" });
 	const { busy, run } = useAction(toast);
 
@@ -750,7 +752,7 @@ export function SettingsPanel({
 		const mode: ThemeMode = on ? "dark" : "light";
 		setDark(on);
 		setTheme(mode);
-		toast("info", on ? "已切换到黑夜模式" : "已切换到白昼模式");
+		toast("info", t(on ? "已切换到黑夜模式" : "已切换到白昼模式"));
 	};
 
 	const save = () =>
@@ -765,18 +767,28 @@ export function SettingsPanel({
 				creationMode: askMode ? "ask" : "silent",
 			});
 			reload();
-		}, "已保存并重载会话");
+		}, t("已保存并重载会话"));
 
 	return (
 		<div className="panel-body panel-body-sticky">
 			<PanelStatus loading={loading} error={error} hasData={!!data} />
 			<section className="sp-section">
-				<h4>外观</h4>
+				<h4>{t("外观")}</h4>
+				<label className="field-label" htmlFor="interface-language">{t("界面语言")}</label>
+				<select
+					id="interface-language"
+					className="field-input"
+					value={locale}
+					onChange={(e) => setLocale(e.target.value as "zh-CN" | "en")}
+				>
+					<option value="zh-CN">{t("简体中文")}</option>
+					<option value="en">{t("英语")}</option>
+				</select>
 				<div className="toggle-row">
-					<span>黑夜模式</span>
+					<span>{t("黑夜模式")}</span>
 					<Toggle checked={dark} onChange={onTheme} />
 				</div>
-				<div className="field-hint">白昼 / 黑夜立刻切换，偏好记在本机浏览器，与会话配置无关。</div>
+				<div className="field-hint">{t("白昼 / 黑夜立刻切换，偏好记在本机浏览器，与会话配置无关。")}</div>
 			</section>
 			<AccessSection toast={toast} />
 			<BackupSection toast={toast} />
@@ -784,10 +796,10 @@ export function SettingsPanel({
 			{data && (
 				<>
 					<section className="sp-section">
-						<h4>世界书</h4>
+						<h4>{t("世界书")}</h4>
 						<SliderField
-							label="关键词扫描深度"
-							hint="被动触发回看最近几条消息"
+							label={t("关键词扫描深度")}
+							hint={t("被动触发回看最近几条消息")}
 							value={scanDepth}
 							min={1}
 							max={20}
@@ -797,8 +809,8 @@ export function SettingsPanel({
 							}}
 						/>
 						<SliderField
-							label="每轮注入条目上限"
-							hint="0 = 关闭被动注入（常驻条目不受影响）"
+							label={t("每轮注入条目上限")}
+							hint={t("0 = 关闭被动注入（常驻条目不受影响）")}
 							value={maxLore}
 							min={0}
 							max={10}
@@ -810,7 +822,7 @@ export function SettingsPanel({
 					</section>
 
 					<section className="sp-section">
-						<h4>上下文压缩</h4>
+						<h4>{t("上下文压缩")}</h4>
 						<SliderField
 							label="固定楼层压缩周期"
 							hint="每 N 个剧情轮把早期正文压成接力摘要（原文归档进剧情库可召回）；0 = 仅在上下文吃紧时被动压缩"
@@ -825,9 +837,9 @@ export function SettingsPanel({
 					</section>
 
 					<section className="sp-section">
-						<h4>agent 行为</h4>
+						<h4>{t("agent 行为")}</h4>
 						<div className="toggle-row">
-							<span>后端操控（bash / 文件等通用工具）</span>
+							<span>{t("后端操控（bash / 文件等通用工具）")}</span>
 							<Toggle
 								checked={backendControl}
 								onChange={(v) => {
@@ -840,7 +852,7 @@ export function SettingsPanel({
 							开启后 agent 能操作本机（调用你的其他项目、查资料）；全部调用都会显示在过程条。仅在自己的设备上开启。
 						</div>
 						<div className="toggle-row">
-							<span>决策门禁（戏内选择卡）</span>
+							<span>{t("决策门禁（戏内选择卡）")}</span>
 							<Toggle
 								checked={askMode}
 								onChange={(v) => {
@@ -855,14 +867,14 @@ export function SettingsPanel({
 					</section>
 
 					<section className="sp-section">
-						<h4>关于</h4>
+						<h4>{t("关于")}</h4>
 						<div className="field-hint">
 							梨园 Liyuan v{currentVersion || "1.6.0"} · 基于 pi 构建的 RP Agent
 						</div>
 						{onOpenAbout && (
 							<div className="access-actions" style={{ marginTop: 6 }}>
 								<button type="button" className="drawer-btn" onClick={onOpenAbout}>
-									查看完整关于
+									{t("查看完整关于")}
 								</button>
 							</div>
 						)}
@@ -870,7 +882,7 @@ export function SettingsPanel({
 
 					<div className="sticky-save">
 						<button className="drawer-btn save-btn" disabled={busy || !dirty} onClick={save}>
-							{dirty ? "保存并重载会话" : "已保存"}
+							{dirty ? t("保存并重载会话") : t("已保存")}
 						</button>
 					</div>
 				</>
